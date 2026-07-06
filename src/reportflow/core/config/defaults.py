@@ -39,6 +39,10 @@ DEFAULT_EMAIL_TEMPLATE = """\
 """
 
 
+# Where 'Send developer logs' bundles go unless the operator changes it in Settings.
+DEFAULT_DEVELOPER_EMAIL = "viren.hirpara@cerebulb.com"
+
+
 def default_config() -> AppConfig:
     """A minimal, valid config with no jobs. SMTP/test fields are left blank for the operator."""
     return AppConfig(
@@ -46,6 +50,6 @@ def default_config() -> AppConfig:
         smtp=SmtpConfig(),
         ui=UiSettings(),
         email=EmailSettings(),
-        test=TestSettings(),
+        test=TestSettings(developer_bundle_recipients=[DEFAULT_DEVELOPER_EMAIL]),
         jobs=[],
     )

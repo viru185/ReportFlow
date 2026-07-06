@@ -289,3 +289,30 @@ def test_help_dialog_builds(qtbot):
     assert "Help Guide" in text
     assert "Concurrency group" in text
     assert "Timeout" in text
+
+
+# -- theme -------------------------------------------------------------------------
+
+
+def test_apply_theme_runs_and_sets_dark_palette(qtbot):
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QApplication
+
+    from reportflow.ui.style import BG, TEXT, apply_theme
+
+    app = QApplication.instance()
+    apply_theme(app)
+    palette = app.palette()
+    assert palette.color(QPalette.ColorRole.Window).name() == BG
+    assert palette.color(QPalette.ColorRole.WindowText).name() == TEXT
+    assert app.styleSheet()  # QSS applied
+
+
+def test_status_colors_cover_all_run_states():
+    from reportflow.core.ipc.contract import RunStatus
+    from reportflow.ui.style import STATUS_COLORS, status_colors
+
+    for status in RunStatus:
+        assert status.value in STATUS_COLORS, f"missing status color for {status.value}"
+    assert status_colors(None) == STATUS_COLORS["never"]
+    assert status_colors("unknown-thing") == STATUS_COLORS["never"]
