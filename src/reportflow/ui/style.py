@@ -1,31 +1,52 @@
-"""Shared UI style: palette constants, app-wide QSS, and small widget helpers.
+"""Shared UI style: a complete DARK theme (palette + QSS + widget helpers).
 
-Applied once via ``app.setStyleSheet(APP_QSS)`` in ``ui.__main__`` so every window and dialog
-inherits it. Status colors are the single source of truth for run/job state everywhere.
+ReportFlow is deliberately dark-themed and independent of the OS light/dark setting.
+``apply_theme(app)`` is the single entry point: it activates the Fusion style (so the
+OS-native style can't inject its own colors), installs a matching dark ``QPalette`` (for
+anything QSS doesn't reach, e.g. hyperlink color), and applies the app-wide QSS in which
+every widget sets BOTH its text color and background — no combination is ever left to the
+system palette, which is what previously produced white-on-white text on Windows dark mode.
 """
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFrame, QLabel
+import sys
+from pathlib import Path
+
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication, QFrame, QLabel
+
+
+def _check_svg_url() -> str:
+    """QSS url() for the white checkmark used by checked indicators ('' if missing)."""
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "assets"
+    else:
+        base = Path(__file__).resolve().parents[3] / "assets"
+    svg = base / "check.svg"
+    return svg.as_posix() if svg.exists() else ""
+
 
 # -- palette ----------------------------------------------------------------------
 
-ACCENT = "#2563eb"  # primary blue
-ACCENT_DARK = "#1e40af"
-BG = "#f5f6fa"
-CARD_BG = "#ffffff"
-BORDER = "#d9dce3"
-TEXT = "#1f2430"
-TEXT_MUTED = "#6b7280"
+BG = "#16181d"  # window background
+CARD_BG = "#1f2229"  # cards, menus, bars
+FIELD_BG = "#262a33"  # inputs / editors / lists
+BORDER = "#363b47"
+TEXT = "#e6e9f0"
+TEXT_MUTED = "#9aa1b0"
+ACCENT = "#3b82f6"  # primary blue
+ACCENT_HOVER = "#60a5fa"
+LINK = "#60a5fa"
 
 STATUS_COLORS: dict[str, tuple[str, str]] = {
-    # status -> (foreground, background)
-    "success": ("#166534", "#dcfce7"),
-    "failed": ("#991b1b", "#fee2e2"),
-    "timed_out": ("#991b1b", "#fee2e2"),
-    "crashed": ("#991b1b", "#fee2e2"),
-    "running": ("#92400e", "#fef3c7"),
-    "never": ("#374151", "#e5e7eb"),
+    # status -> (foreground, background) — bright text on a deep tinted pill
+    "success": ("#4ade80", "#14331f"),
+    "failed": ("#f87171", "#3b1a1a"),
+    "timed_out": ("#f87171", "#3b1a1a"),
+    "crashed": ("#f87171", "#3b1a1a"),
+    "running": ("#fbbf24", "#3a2c10"),
+    "never": ("#c3c8d4", "#2b2f3a"),
 }
 
 
@@ -35,15 +56,31 @@ def status_colors(status: str | None) -> tuple[str, str]:
 
 # -- app-wide stylesheet ------------------------------------------------------------
 
+_CHECK_URL = _check_svg_url()
+
 APP_QSS = f"""
-QMainWindow, QDialog {{
+QMainWindow, QDialog, QMessageBox {{
     background: {BG};
+    color: {TEXT};
+}}
+QWidget {{
+    color: {TEXT};
 }}
 QLabel {{
+    color: {TEXT};
+    background: transparent;
+}}
+QLabel[muted="true"] {{
+    color: {TEXT_MUTED};
+}}
+QLabel[h1="true"] {{
+    font-size: 18px;
+    font-weight: 700;
     color: {TEXT};
 }}
 QGroupBox {{
     background: {CARD_BG};
+    color: {TEXT};
     border: 1px solid {BORDER};
     border-radius: 8px;
     margin-top: 12px;
@@ -54,42 +91,151 @@ QGroupBox::title {{
     subcontrol-origin: margin;
     left: 10px;
     padding: 0 4px;
-    color: {ACCENT_DARK};
+    color: {ACCENT_HOVER};
 }}
 QPushButton {{
-    background: {CARD_BG};
+    background: {FIELD_BG};
+    color: {TEXT};
     border: 1px solid {BORDER};
     border-radius: 6px;
     padding: 5px 14px;
 }}
 QPushButton:hover {{
     border-color: {ACCENT};
-    color: {ACCENT_DARK};
+    color: {ACCENT_HOVER};
+}}
+QPushButton:pressed {{
+    background: {BG};
 }}
 QPushButton:disabled {{
     color: {TEXT_MUTED};
+    background: {CARD_BG};
 }}
 QPushButton[accent="true"] {{
     background: {ACCENT};
     border-color: {ACCENT};
-    color: white;
+    color: #ffffff;
     font-weight: 600;
 }}
 QPushButton[accent="true"]:hover {{
-    background: {ACCENT_DARK};
+    background: {ACCENT_HOVER};
 }}
-QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QListWidget, QTimeEdit {{
-    background: {CARD_BG};
+QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QTextBrowser, QListWidget,
+QTimeEdit {{
+    background: {FIELD_BG};
+    color: {TEXT};
     border: 1px solid {BORDER};
     border-radius: 6px;
     padding: 4px 6px;
+    selection-background-color: {ACCENT};
+    selection-color: #ffffff;
 }}
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QPlainTextEdit:focus, QTimeEdit:focus {{
     border-color: {ACCENT};
 }}
+QLineEdit:read-only {{
+    color: {TEXT_MUTED};
+}}
+QLineEdit::placeholder {{
+    color: {TEXT_MUTED};
+}}
+QComboBox QAbstractItemView {{
+    background: {CARD_BG};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    selection-background-color: {ACCENT};
+    selection-color: #ffffff;
+}}
+QListWidget::item {{
+    color: {TEXT};
+    padding: 2px;
+}}
+QListWidget::item:selected {{
+    background: {ACCENT};
+    color: #ffffff;
+}}
+QCheckBox, QRadioButton {{
+    color: {TEXT};
+    background: transparent;
+    spacing: 6px;
+}}
+QCheckBox:disabled, QRadioButton:disabled {{
+    color: {TEXT_MUTED};
+}}
+QCheckBox::indicator, QGroupBox::indicator, QListView::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1px solid {TEXT_MUTED};
+    border-radius: 4px;
+    background: {FIELD_BG};
+}}
+QCheckBox::indicator:hover, QGroupBox::indicator:hover, QListView::indicator:hover {{
+    border-color: {ACCENT_HOVER};
+}}
+QCheckBox::indicator:checked, QGroupBox::indicator:checked, QListView::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+    image: url("{_CHECK_URL}");
+}}
+QCheckBox::indicator:disabled, QListView::indicator:disabled {{
+    border-color: {BORDER};
+    background: {CARD_BG};
+}}
+QRadioButton::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1px solid {TEXT_MUTED};
+    border-radius: 8px;
+    background: {FIELD_BG};
+}}
+QRadioButton::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+}}
+QTabWidget::pane {{
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    background: {FIELD_BG};
+}}
+QTabBar::tab {{
+    background: {CARD_BG};
+    color: {TEXT_MUTED};
+    border: 1px solid {BORDER};
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 5px 16px;
+    margin-right: 2px;
+}}
+QTabBar::tab:selected {{
+    background: {FIELD_BG};
+    color: {TEXT};
+}}
 QMenuBar {{
     background: {CARD_BG};
+    color: {TEXT};
     border-bottom: 1px solid {BORDER};
+}}
+QMenuBar::item {{
+    background: transparent;
+    color: {TEXT};
+    padding: 4px 10px;
+}}
+QMenuBar::item:selected {{
+    background: {FIELD_BG};
+    color: {ACCENT_HOVER};
+}}
+QMenu {{
+    background: {CARD_BG};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+}}
+QMenu::item {{
+    padding: 5px 24px 5px 16px;
+}}
+QMenu::item:selected {{
+    background: {ACCENT};
+    color: #ffffff;
 }}
 QStatusBar {{
     background: {CARD_BG};
@@ -97,35 +243,98 @@ QStatusBar {{
     color: {TEXT_MUTED};
 }}
 QToolTip {{
-    background: {TEXT};
-    color: white;
-    border: none;
+    background: {FIELD_BG};
+    color: {TEXT};
+    border: 1px solid {BORDER};
     padding: 5px 8px;
+}}
+QScrollArea {{
+    border: none;
+    background: transparent;
+}}
+QScrollBar:vertical {{
+    background: {BG};
+    width: 12px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {BORDER};
+    border-radius: 5px;
+    min-height: 24px;
+    margin: 2px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {TEXT_MUTED};
+}}
+QScrollBar:horizontal {{
+    background: {BG};
+    height: 12px;
+    margin: 0;
+}}
+QScrollBar::handle:horizontal {{
+    background: {BORDER};
+    border-radius: 5px;
+    min-width: 24px;
+    margin: 2px;
+}}
+QScrollBar::add-line, QScrollBar::sub-line {{
+    height: 0;
+    width: 0;
+}}
+QScrollBar::add-page, QScrollBar::sub-page {{
+    background: transparent;
 }}
 QFrame[card="true"] {{
     background: {CARD_BG};
     border: 1px solid {BORDER};
     border-radius: 8px;
 }}
-QLabel[muted="true"] {{
-    color: {TEXT_MUTED};
-}}
-QLabel[h1="true"] {{
-    font-size: 18px;
-    font-weight: 700;
-}}
-QScrollArea {{
-    border: none;
-    background: transparent;
-}}
 """
+
+
+def apply_theme(app: QApplication) -> None:
+    """Activate the ReportFlow dark theme: Fusion style + dark palette + app QSS."""
+    app.setStyle("Fusion")
+
+    palette = QPalette()
+    groups = (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive)
+    roles = {
+        QPalette.ColorRole.Window: BG,
+        QPalette.ColorRole.WindowText: TEXT,
+        QPalette.ColorRole.Base: FIELD_BG,
+        QPalette.ColorRole.AlternateBase: CARD_BG,
+        QPalette.ColorRole.Text: TEXT,
+        QPalette.ColorRole.Button: FIELD_BG,
+        QPalette.ColorRole.ButtonText: TEXT,
+        QPalette.ColorRole.ToolTipBase: FIELD_BG,
+        QPalette.ColorRole.ToolTipText: TEXT,
+        QPalette.ColorRole.PlaceholderText: TEXT_MUTED,
+        QPalette.ColorRole.Highlight: ACCENT,
+        QPalette.ColorRole.HighlightedText: "#ffffff",
+        QPalette.ColorRole.Link: LINK,
+        QPalette.ColorRole.LinkVisited: LINK,
+        QPalette.ColorRole.BrightText: "#ffffff",
+    }
+    for group in groups:
+        for role, color in roles.items():
+            palette.setColor(group, role, QColor(color))
+    disabled = QPalette.ColorGroup.Disabled
+    for role in (
+        QPalette.ColorRole.WindowText,
+        QPalette.ColorRole.Text,
+        QPalette.ColorRole.ButtonText,
+    ):
+        palette.setColor(disabled, role, QColor(TEXT_MUTED))
+    app.setPalette(palette)
+
+    app.setStyleSheet(APP_QSS)
 
 
 # -- widget helpers -----------------------------------------------------------------
 
 
 def card_frame() -> QFrame:
-    """A white rounded card container styled by the app QSS."""
+    """A rounded card container styled by the app QSS."""
     frame = QFrame()
     frame.setProperty("card", True)
     return frame
@@ -145,5 +354,5 @@ def status_badge(status: str | None) -> QLabel:
 def connection_pill(connected: bool) -> str:
     """Rich-text for the header connection indicator."""
     if connected:
-        return '<span style="color:#166534;">●</span> Connected'
-    return '<span style="color:#991b1b;">●</span> Service not reachable'
+        return '<span style="color:#4ade80;">●</span> Connected'
+    return '<span style="color:#f87171;">●</span> Service not reachable'

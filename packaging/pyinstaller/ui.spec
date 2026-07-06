@@ -63,7 +63,10 @@ _QT_EXCLUDES = [
 a = Analysis(
     [os.path.join(ROOT, "src", "reportflow", "ui", "__main__.py")],
     pathex=[os.path.join(ROOT, "src")],
-    datas=[(os.path.join(ROOT, "assets", "reportflow.png"), "assets")],
+    datas=[
+        (os.path.join(ROOT, "assets", "reportflow.png"), "assets"),
+        (os.path.join(ROOT, "assets", "check.svg"), "assets"),
+    ],
     hiddenimports=["httpx", "win32crypt"],
     excludes=["xlwings", "tkinter", "matplotlib", *_QT_EXCLUDES],
     noarchive=False,

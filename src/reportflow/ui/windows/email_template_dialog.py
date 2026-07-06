@@ -125,6 +125,11 @@ class EmailTemplateDialog(QDialog):
 
         self.preview = QTextBrowser()
         self.preview.setPlaceholderText("Click Preview to render the email with sample data.")
+        # Emails are designed on white — the preview is a deliberate light island inside the
+        # dark app so it shows what recipients actually see.
+        self.preview.setStyleSheet(
+            "QTextBrowser { background: #ffffff; color: #1a1a1a; border: 1px solid #363b47; }"
+        )
         layout.addWidget(preview_btn)
         layout.addWidget(self.preview, 2)
 
