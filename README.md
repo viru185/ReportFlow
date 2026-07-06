@@ -1,32 +1,367 @@
 # ReportFlow
 
-Windows desktop automation for Excel-based reporting. One codebase, one installer, three
-executables with isolated runtime roles:
+Windows desktop automation for Excel-based reporting. ReportFlow opens a workbook template,
+refreshes its data, freezes formulas to values, exports a PDF per sheet using the workbook's
+own print layout, saves the outputs, logs the run, and can email the results — on a schedule
+or on demand.
 
-- **UI** (`reportflow-ui`, PySide6) — configure/manage jobs, discover sheets, view status &
-  logs, trigger run/test, send developer logs.
-- **Service** (`reportflow-service`, FastAPI + APScheduler, hosted by NSSM) — localhost API +
-  scheduler; launches one worker per job run; tracks history.
-- **Excel Worker** (`reportflow-worker`, xlwings) — short-lived, disposable process that does
-  the Excel automation for exactly one run, then exits.
+It ships as **one installer** but runs as **three separate executables** so responsibilities
+stay isolated at runtime:
 
-The workbook template owns all print layout / PDF appearance. The app only orchestrates:
-refresh data → freeze formulas to values → export one PDF per selected sheet → save output
-Excel → log → optionally email.
+| Executable | Role |
+|---|---|
+| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs, discover sheets, run/test, view logs. |
+| **Service** (`reportflow-service`) | Background control plane: localhost API + scheduler; launches workers. Runs as a Windows service (via NSSM). |
+| **Excel Worker** (`reportflow-worker`) | Short-lived process that does the Excel automation for one run, then exits. |
 
-## Development
+The **workbook template owns all print layout and PDF appearance** — the app never redesigns
+report layout in code.
+
+---
+
+## Table of contents
+
+- [User guide](#user-guide)
+  - [Install](#install)
+  - [First run](#first-run)
+  - [Create a job](#create-a-job)
+  - [Recipients & email template](#recipients--email-template)
+  - [Run, test, and schedule](#run-test-and-schedule)
+  - [Logs & diagnostics](#logs--diagnostics)
+  - [SMTP settings](#smtp-settings)
+  - [Where data lives](#where-data-lives)
+- [Developer guide](#developer-guide)
+  - [Prerequisites](#prerequisites)
+  - [Setup](#setup)
+  - [Run in development](#run-in-development)
+  - [Testing](#testing)
+  - [Lint, format, type-check](#lint-format-type-check)
+  - [Build the executables](#build-the-executables)
+  - [Build the installer](#build-the-installer)
+  - [Project layout](#project-layout)
+  - [Configuration reference](#configuration-reference)
+  - [HTTP API](#http-api)
+  - [Design notes](#design-notes)
+  - [CI/CD & releases](#cicd--releases)
+
+---
+
+## User guide
+
+### Install
+
+Run **`ReportFlow-Setup-<version>.exe`** (requires administrator rights). The installer:
+
+- installs the three executables under `C:\Program Files\ReportFlow\`,
+- creates the data folder `C:\ProgramData\ReportFlow\` (config, logs, run history),
+- registers and starts the **ReportFlow** Windows service (auto-starts on boot),
+- adds a **ReportFlow** Start-menu shortcut for the UI.
+
+> **Requirement:** Microsoft Excel must be installed on the machine — the worker automates the
+> real Excel application.
+
+Upgrading is the same installer: it stops the service, replaces the program files, **preserves
+your configuration, logs, and run history**, and restarts the service.
+
+### First run
+
+1. Confirm the **ReportFlow** service is running (Services app, or the UI status bar shows
+   *Connected*).
+2. Launch **ReportFlow** from the Start menu. The window lists your jobs and shows a connection
+   banner if the service can't be reached.
+
+The service creates a default configuration and email template on first start — you don't need
+to hand-create anything.
+
+### Create a job
+
+Click **New** and fill in the editor:
+
+- **Job name** — unique; also used in filenames.
+- **Workbook template** — browse to the `.xlsx`/`.xlsm`. On selection the app **discovers the
+  sheet names** and lists them with checkboxes.
+- **Sheets** — tick the sheets this job should process. (Selection is stored by *name*, so it
+  survives sheet reordering.)
+- **Output Excel path** — where the processed workbook is written. Supports tokens `{date}`,
+  `{datetime}`, `{job}`, `{run_id}`.
+- **Output PDF path** — one PDF is produced **per selected sheet**; include a `{sheet}` token
+  (e.g. `C:\Reports\{date}_{sheet}.pdf`).
+- **Freeze formulas to values** — convert the selected sheets' formulas to static values in the
+  output copy (source sheets are untouched).
+- **Generate PDF** — export the per-sheet PDFs.
+- **Schedule (cron)** — optional 5-field cron (e.g. `0 6 * * MON-FRI`). Leave blank for
+  manual-only.
+- **Timeout / Concurrency group / Notes** — optional.
+
+Only the workbook, at least one sheet, and the **Prod → To** address are required. Everything
+optional can be left blank.
+
+### Recipients & email template
+
+Each job has two recipient sets — **production** and **test** — each with **To** (required),
+**Cc** (optional), and **Bcc** (optional).
+
+- **Test runs** email the **test** recipients only — they can never reach production addresses.
+- **Real runs** email the **production** recipients only if **"Email report … on real runs"**
+  is enabled. Failures never send an automatic email.
+- Report emails attach the **output Excel** plus **all per-sheet PDFs**.
+
+The email **body** is an HTML template rendered with placeholders (job name, status, timings,
+sheets, host…). Leave **Email template** blank to use the built-in default, or point it at your
+own `.html` file. Click **Preview** to see it rendered with sample data.
+
+### Run, test, and schedule
+
+- **Run now** — a real run (production recipients, if enabled).
+- **Test run** — a test run to the test recipients, subject prefixed `[TEST]`.
+- **Schedule** — the service runs enabled jobs on their cron automatically.
+
+Multiple jobs run in parallel, each in its own disposable worker process. A failed run is never
+retried automatically — it's recorded and visible in the history.
+
+### Logs & diagnostics
+
+- **View logs** opens the run history: status, timings, output paths, error summary, and the
+  worker log tail. It refreshes live while a run is in progress.
+- **Send dev logs** emails a redacted diagnostic bundle (logs + sanitized config + environment)
+  to the configured developer recipients. Secrets are never included.
+
+### SMTP settings
+
+SMTP host/port/TLS/from-address/username live in the configuration file (see
+[Where data lives](#where-data-lives)); edit them and either restart the service or call the
+config-reload endpoint. The SMTP **password** is stored securely via Windows DPAPI (machine
+scope), not in the config file.
+
+> Provisioning the SMTP password currently requires the developer environment (see
+> [Design notes](#design-notes)); a Settings screen for it is a planned enhancement.
+
+### Where data lives
+
+Everything runtime lives under **`C:\ProgramData\ReportFlow\`**:
+
+```
+config\reportflow.toml     application + SMTP + job definitions
+templates\email\default.html   default email body
+logs\                      rolling per-process logs (ui, service, worker)
+state\runs.db              run history (SQLite)
+state\secrets\             encrypted secrets (DPAPI)
+runs\<run_id>\             per-run request/result/log artifacts
+```
+
+---
+
+## Developer guide
+
+### Prerequisites
+
+- **Windows** (the product targets Windows; `pywin32`/`PySide6`/`xlwings` are Windows-native).
+- **Python 3.11+** (the repo pins 3.12 via `.python-version`).
+- **[uv](https://docs.astral.sh/uv/)** for dependency and environment management.
+- **Microsoft Excel** installed — required only to run the Excel-marked tests and the real worker.
+
+### Setup
 
 ```powershell
-uv sync --all-extras          # create venv + install everything
-uv run pytest -m "not excel"  # unit tests (no Excel required)
+uv sync --all-extras
+```
+
+This creates `.venv/` and installs the base package plus the `service`, `ui`, `worker`, and
+`dev` extras. `uv` provisions Python 3.12 automatically if needed.
+
+### Run in development
+
+```powershell
+# Service (localhost API + scheduler) — http://127.0.0.1:8787
+uv run python -m reportflow.service        # or: uv run reportflow-service
+
+# UI (talks to the running service)
+uv run python -m reportflow.ui             # or: uv run reportflow-ui
+
+# Generate a sample workbook, then drive the worker end-to-end (needs Excel)
+uv run python scripts/make_sample.py
+uv run python scripts/dev_run_worker.py            # in-process
+uv run python scripts/dev_run_worker.py --subprocess --runs 3   # parallel, ghost-check
+```
+
+Set **`REPORTFLOW_DATA_DIR`** to redirect the data root (config/logs/state) away from
+`C:\ProgramData\ReportFlow` — useful for local runs and tests:
+
+```powershell
+$env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
+```
+
+### Testing
+
+Excel-dependent tests are marked `excel` and skipped by default (and in CI).
+
+```powershell
+uv run pytest -m "not excel"      # fast suite, no Excel required
+uv run pytest -m excel            # real-Excel suite (local, needs Excel)
+uv run pytest                     # everything
+```
+
+Qt tests run headless via `QT_QPA_PLATFORM=offscreen` (set automatically in `tests/ui/`).
+
+The Excel suite includes a **ghost-process assertion** — it fails if any `EXCEL.EXE` survives a
+run (including 3 parallel worker processes).
+
+### Lint, format, type-check
+
+```powershell
 uv run ruff check .
+uv run ruff format .            # or --check in CI
 uv run mypy
 ```
 
-Run a worker against a sample workbook (requires local Excel):
+### Build the executables
 
 ```powershell
-uv run python scripts/dev_run_worker.py --template scripts/sample/template.xlsx
+uv run python packaging/build_all.py            # all three
+uv run python packaging/build_all.py worker     # just one
 ```
 
-See `C:\ProgramData\ReportFlow\` for config, logs, state, and per-run artifacts at runtime.
+Output (onedir bundles): `dist/worker`, `dist/service`, `dist/ui`. Validate the frozen UI's Qt
+platform plugin without a visible window:
+
+```powershell
+dist\ui\reportflow-ui.exe --selftest    # exits 0 if qwindows.dll loaded
+```
+
+### Build the installer
+
+Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) and `packaging/nssm/nssm.exe`
+(download the 64-bit binary from [nssm.cc](https://nssm.cc/download)).
+
+```powershell
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.1.0 packaging\innosetup\reportflow.iss
+# -> packaging\innosetup\Output\ReportFlow-Setup-0.1.0.exe
+```
+
+### Project layout
+
+```
+src/reportflow/
+  core/            shared library (no PySide6, no xlwings)
+    paths.py       ProgramData/install-dir resolution
+    config/        Pydantic models + TOML loader + defaults
+    logging_setup.py   loguru sinks with secret redaction
+    secrets.py     DPAPI machine-scope secret store
+    email/         Jinja2 render + SMTP sender + redaction/bundle
+    state/         SQLite run history
+    ipc/           WorkerRequest / WorkerResult contract
+  worker/          xlwings automation (the only xlwings importer)
+  service/         FastAPI app, launcher, scheduler, bootstrap, workbook discovery
+  ui/              PySide6 app: api_client + windows
+packaging/         PyInstaller specs, build_all.py, Inno Setup, NSSM
+scripts/           sample workbook generator + dev worker runner
+tests/             core / worker / service / ui suites
+```
+
+### Configuration reference
+
+`config/reportflow.toml` (seeded on first service start):
+
+```toml
+config_version = 1
+
+[app]
+api_host = "127.0.0.1"        # local-only; do not bind 0.0.0.0
+api_port = 8787
+max_global_concurrency = 4
+default_timeout_seconds = 900
+log_retention_days = 30
+
+[smtp]
+host = "smtp.corp.example.com"
+port = 587
+use_starttls = true
+from_address = "reportflow@corp.example.com"
+username = "reportflow@corp.example.com"
+# password is NOT here — stored via DPAPI under state\secrets
+
+[ui]
+api_base_url = "http://127.0.0.1:8787"
+
+[email]
+default_template_path = "email/default.html"   # relative to templates\
+
+[test]
+recipients = ["dev-team@corp.example.com"]
+developer_bundle_recipients = ["dev-team@corp.example.com"]
+
+[[job]]
+name = "daily_sales"
+enabled = true
+workbook_template_path = "C:/Templates/daily_sales.xlsx"
+email_template_path = "C:/Templates/sales_email.html"   # optional
+output_xlsx_path = "C:/Reports/daily_sales/{date}.xlsx"
+output_pdf_path  = "C:/Reports/daily_sales/{date}_{sheet}.pdf"
+sheet_names = ["Summary", "Detail"]       # names, not indexes
+freeze_values = true
+generate_pdf = true
+schedule_cron = "0 6 * * MON-FRI"
+timeout_seconds = 1200
+concurrency_group = "reports"
+subject = "Daily Sales — {date}"
+send_report_email = true                  # real runs email prod only if true
+
+  [job.prod]
+  to  = ["managers@corp.example.com"]
+  cc  = ["ops@corp.example.com"]          # optional
+  # bcc = [...]                           # optional
+
+  [job.test]
+  to  = ["dev-team@corp.example.com"]
+```
+
+Provision the SMTP password (dev environment; writes to the resolved data root):
+
+```powershell
+uv run python -c "from reportflow.core import secrets; secrets.set_secret('smtp_password', 'YOUR_PASSWORD')"
+```
+
+### HTTP API
+
+Bound to `127.0.0.1` only.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /health` · `GET /system/status` | Liveness and runtime status. |
+| `GET /config` | Sanitized config snapshot (no secrets). |
+| `POST /config/reload` | Reload config from disk and re-schedule. |
+| `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD. |
+| `POST /jobs/{name}/run` · `POST /jobs/{name}/test` | Trigger a real / test run. |
+| `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs. |
+| `POST /workbook/sheets` | Discover sheet names (openpyxl, no COM). |
+| `POST /email/preview` | Render the email template with sample data. |
+| `POST /system/send-dev-logs` | Email the redacted diagnostic bundle. |
+
+### Design notes
+
+- **Excel isolation.** Only the worker imports `xlwings`. The service launches one worker
+  subprocess per run and communicates via a request/result JSON file + exit code — never stdout.
+- **No ghost Excel.** Each worker uses a dedicated hidden Excel instance whose PID is captured
+  and force-reaped in `finally` (`quit` → `kill` → psutil verify). The service tree-kills a hung
+  worker on timeout.
+- **Parallel-safe startup.** Concurrent Excel activations can raise transient COM errors
+  (`RPC server unavailable`), so worker startup is serialized with a session-local named mutex
+  and the whole session is retried on transient COM errors (idempotent output). Deterministic
+  failures (missing sheet/template) are not retried.
+- **Test-recipient guard** lives in exactly one function; a test run cannot reach production
+  addresses. BCC is passed only in the SMTP envelope, never as a header.
+- **Config vs. state** are physically separate: TOML for configuration, SQLite for run history.
+- **Secrets** use machine-scope DPAPI so the LocalSystem service can read what the interactive
+  user wrote.
+
+### CI/CD & releases
+
+- **`.github/workflows/ci.yml`** (push/PR, `windows-latest`): `ruff check`, `ruff format
+  --check`, `mypy`, `pytest -m "not excel"`, and Conventional-Commits linting on PRs.
+- **`.github/workflows/release.yml`** (tag `v*`): builds the three exes, fetches NSSM, compiles
+  the Inno Setup installer, generates the changelog with git-cliff, and publishes a GitHub
+  Release with the installer + zipped executables.
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/); the changelog is
+generated from history by [git-cliff](https://git-cliff.org/).
+```
