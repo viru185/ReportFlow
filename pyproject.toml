@@ -83,3 +83,8 @@ python_classes = ["*Tests"]
 markers = [
     "excel: tests that require a real local Excel install (skipped in CI)",
 ]
+
+[dependency-groups]
+dev = [
+    "pillow>=12.3.0",
+]

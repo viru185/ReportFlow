@@ -65,35 +65,42 @@ your configuration, logs, and run history**, and restarts the service.
 
 ### First run
 
-1. Confirm the **ReportFlow** service is running (Services app, or the UI status bar shows
-   *Connected*).
-2. Launch **ReportFlow** from the Start menu. The window lists your jobs and shows a connection
-   banner if the service can't be reached.
+1. Confirm the **ReportFlow** service is running (Services app, or the header pill in the app
+   shows *● Connected*).
+2. Launch **ReportFlow** from the Start menu. The dashboard shows summary cards (jobs, active
+   runs, recent failures) and one card per job with Run / Test / Edit / Logs buttons.
 
 The service creates a default configuration and email template on first start — you don't need
-to hand-create anything.
+to hand-create anything. An in-app **Help guide** (menu → Help) walks through everything below,
+and every field has a tooltip.
 
 ### Create a job
 
-Click **New** and fill in the editor:
+Click **+ New Job**. The editor is organized in sections:
 
-- **Job name** — unique; also used in filenames.
-- **Workbook template** — browse to the `.xlsx`/`.xlsm`. On selection the app **discovers the
-  sheet names** and lists them with checkboxes.
-- **Sheets** — tick the sheets this job should process. (Selection is stored by *name*, so it
-  survives sheet reordering.)
-- **Output Excel path** — where the processed workbook is written. Supports tokens `{date}`,
-  `{datetime}`, `{job}`, `{run_id}`.
-- **Output PDF path** — one PDF is produced **per selected sheet**; include a `{sheet}` token
-  (e.g. `C:\Reports\{date}_{sheet}.pdf`).
-- **Freeze formulas to values** — convert the selected sheets' formulas to static values in the
-  output copy (source sheets are untouched).
-- **Generate PDF** — export the per-sheet PDFs.
-- **Schedule (cron)** — optional 5-field cron (e.g. `0 6 * * MON-FRI`). Leave blank for
-  manual-only.
-- **Timeout / Concurrency group / Notes** — optional.
+**Input**
+- **Job name** — unique; also used in output filenames.
+- **Input Excel file** — browse to the `.xlsx`/`.xlsm`. The app **discovers the sheet names**
+  automatically; tick the sheets to process. (Stored by *name*, so reordering sheets is safe.)
 
-Only the workbook, at least one sheet, and the **Prod → To** address are required. Everything
+**Output**
+- **Output folder** — browse to where results are saved, or leave empty to save **next to the
+  input file**.
+- **Filename** — optional stem; empty means `{job}_{date}`. Placeholders: `{job}`, `{date}`,
+  `{datetime}`, `{run_id}`. A live example shows the resulting names. Each run writes
+  `<name>.xlsx` plus one `<name>_<sheet>.pdf` per selected sheet.
+- **Freeze formulas to values** / **Generate PDF** toggles.
+
+**Schedule** — visual builder: **Manual**, **Daily**, **Weekly** (weekday picker),
+**Monthly** (day-of-month picker), or **Advanced (cron)**. Add **multiple run times per day**
+(e.g. 06:00 and 18:00) in any preset mode.
+
+**Email** — subject, recipients, and the in-app template editor (next section).
+
+**Advanced** (collapsed by default) — **Timeout** (max seconds before a hung run is killed)
+and **Concurrency group** (jobs sharing a group run one-at-a-time), plus notes.
+
+Only the input file, at least one sheet, and the **To** addresses are required. Everything
 optional can be left blank.
 
 ### Recipients & email template
@@ -106,35 +113,38 @@ Each job has two recipient sets — **production** and **test** — each with **
   is enabled. Failures never send an automatic email.
 - Report emails attach the **output Excel** plus **all per-sheet PDFs**.
 
-The email **body** is an HTML template rendered with placeholders (job name, status, timings,
-sheets, host…). Leave **Email template** blank to use the built-in default, or point it at your
-own `.html` file. Click **Preview** to see it rendered with sample data.
+The email **body** is authored in-app: click **Edit email template…** in the job editor and
+write it in **Simple** mode (plain text + placeholder-insert buttons) or **HTML** mode, with a
+live **Preview** against sample data. The template is stored per job; leave it untouched to use
+the built-in default.
 
 ### Run, test, and schedule
 
-- **Run now** — a real run (production recipients, if enabled).
-- **Test run** — a test run to the test recipients, subject prefixed `[TEST]`.
-- **Schedule** — the service runs enabled jobs on their cron automatically.
+- **▶ Run** (on the job card) — a real run (production recipients, if enabled).
+- **🧪 Test** — a test run to the test recipients, subject prefixed `[TEST]`.
+- **Schedule** — the service runs enabled jobs on their configured times automatically; each
+  configured time registers its own trigger.
 
 Multiple jobs run in parallel, each in its own disposable worker process. A failed run is never
 retried automatically — it's recorded and visible in the history.
 
 ### Logs & diagnostics
 
-- **View logs** opens the run history: status, timings, output paths, error summary, and the
-  worker log tail. It refreshes live while a run is in progress.
-- **Send dev logs** emails a redacted diagnostic bundle (logs + sanitized config + environment)
-  to the configured developer recipients. Secrets are never included.
+- **Logs** on a job card — that job's run history: status, timings, output paths, error
+  summary, and the worker log tail. It refreshes live while a run is in progress.
+- **File → Application logs** — the full rolling logs of the Service, Worker, and UI.
+- **File → Send developer logs** — emails a redacted diagnostic bundle (logs + sanitized
+  config + environment) to the configured developer email. Secrets are never included.
 
-### SMTP settings
+### Settings (SMTP, developer email, application)
 
-SMTP host/port/TLS/from-address/username live in the configuration file (see
-[Where data lives](#where-data-lives)); edit them and either restart the service or call the
-config-reload endpoint. The SMTP **password** is stored securely via Windows DPAPI (machine
-scope), not in the config file.
+**File → Settings** configures everything in-app:
 
-> Provisioning the SMTP password currently requires the developer environment (see
-> [Design notes](#design-notes)); a Settings screen for it is a planned enhancement.
+- **SMTP** — host, port, STARTTLS/SSL, from-address, username, and the **password** (stored
+  encrypted via Windows DPAPI, machine scope — never in the config file).
+- **Test & developer email** — global test-run fallback recipients and the developer address
+  that receives diagnostic bundles.
+- **Application** — max parallel runs, default timeout, log retention.
 
 ### Where data lives
 
@@ -143,6 +153,7 @@ Everything runtime lives under **`C:\ProgramData\ReportFlow\`**:
 ```
 config\reportflow.toml     application + SMTP + job definitions
 templates\email\default.html   default email body
+templates\jobs\<job>.html  per-job email templates authored in-app
 logs\                      rolling per-process logs (ui, service, worker)
 state\runs.db              run history (SQLite)
 state\secrets\             encrypted secrets (DPAPI)
@@ -293,14 +304,14 @@ developer_bundle_recipients = ["dev-team@corp.example.com"]
 [[job]]
 name = "daily_sales"
 enabled = true
-workbook_template_path = "C:/Templates/daily_sales.xlsx"
-email_template_path = "C:/Templates/sales_email.html"   # optional
-output_xlsx_path = "C:/Reports/daily_sales/{date}.xlsx"
-output_pdf_path  = "C:/Reports/daily_sales/{date}_{sheet}.pdf"
+input_excel_path = "C:/Templates/daily_sales.xlsx"
+email_template_path = 'C:/ProgramData/ReportFlow/templates/jobs/daily_sales.html'  # optional
+output_dir = "C:/Reports/daily_sales"     # optional; empty -> next to the input file
+output_name = "{job}_{date}"              # optional filename stem; PDFs get _<sheet> suffix
 sheet_names = ["Summary", "Detail"]       # names, not indexes
 freeze_values = true
 generate_pdf = true
-schedule_cron = "0 6 * * MON-FRI"
+schedule_crons = ["0 6 * * MON-FRI", "0 18 * * MON-FRI"]   # one trigger per entry
 timeout_seconds = 1200
 concurrency_group = "reports"
 subject = "Daily Sales — {date}"
@@ -315,7 +326,8 @@ send_report_email = true                  # real runs email prod only if true
   to  = ["dev-team@corp.example.com"]
 ```
 
-Provision the SMTP password (dev environment; writes to the resolved data root):
+The SMTP password is provisioned from the app (**File → Settings**), which stores it via
+machine-scope DPAPI. Dev-environment alternative:
 
 ```powershell
 uv run python -c "from reportflow.core import secrets; secrets.set_secret('smtp_password', 'YOUR_PASSWORD')"
@@ -330,8 +342,12 @@ Bound to `127.0.0.1` only.
 | `GET /health` · `GET /system/status` | Liveness and runtime status. |
 | `GET /config` | Sanitized config snapshot (no secrets). |
 | `POST /config/reload` | Reload config from disk and re-schedule. |
+| `PUT /settings` | Update app/smtp/ui/email/test sections (jobs untouched). |
+| `GET/POST/DELETE /system/smtp-password` | Status / store / clear the DPAPI SMTP password. |
+| `GET /system/logs?process=&tail=` | Tail the Service/Worker/UI rolling log. |
 | `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD. |
 | `POST /jobs/{name}/run` · `POST /jobs/{name}/test` | Trigger a real / test run. |
+| `GET/PUT /jobs/{name}/email-template` | Read / write the job's per-job email template. |
 | `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs. |
 | `POST /workbook/sheets` | Discover sheet names (openpyxl, no COM). |
 | `POST /email/preview` | Render the email template with sample data. |

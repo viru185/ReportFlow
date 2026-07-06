@@ -67,9 +67,8 @@ def _config(port: int) -> AppConfig:
 def _job() -> JobConfig:
     return JobConfig(
         name="daily",
-        workbook_template_path="C:/t.xlsx",
-        output_xlsx_path="C:/out.xlsx",
-        output_pdf_path="C:/{sheet}.pdf",
+        input_excel_path="C:/t.xlsx",
+        output_dir="C:/out",
         sheet_names=["Summary"],
         subject="Daily Report",
         prod=Recipients(to=["boss@corp.example.com"], cc=["ops@corp.example.com"]),

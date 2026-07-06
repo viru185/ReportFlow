@@ -46,15 +46,33 @@ def default_worker_command() -> list[str]:
     return [sys.executable, "-m", "reportflow.worker"]
 
 
-def _substitute_tokens(path: Path, *, job_name: str, run_id: str, now: datetime) -> Path:
-    """Expand {date}/{datetime}/{job}/{run_id} in an output path. {sheet} is left for the
+DEFAULT_OUTPUT_STEM = "{job}_{date}"
+
+
+def _substitute_tokens(text: str, *, job_name: str, run_id: str, now: datetime) -> str:
+    """Expand {date}/{datetime}/{job}/{run_id} in an output name. {sheet} is left for the
     worker (one PDF per sheet)."""
-    text = str(path)
     text = text.replace("{date}", now.strftime("%Y%m%d"))
     text = text.replace("{datetime}", now.strftime("%Y%m%d_%H%M%S"))
     text = text.replace("{job}", job_name)
     text = text.replace("{run_id}", run_id)
-    return Path(text)
+    return text
+
+
+def resolve_output_paths(job: JobConfig, *, run_id: str, now: datetime) -> tuple[Path, Path | None]:
+    """Derive the concrete output .xlsx path and the {sheet}-tokenized PDF pattern.
+
+    Folder: ``job.output_dir``, or the input file's folder when unset. Filename stem:
+    ``job.output_name`` (tokens expanded), or ``{job}_{date}``. PDFs always get a per-sheet
+    suffix; the ``{sheet}`` token is resolved by the worker.
+    """
+    base = Path(job.output_dir) if job.output_dir else Path(job.input_excel_path).parent
+    stem = _substitute_tokens(
+        job.output_name or DEFAULT_OUTPUT_STEM, job_name=job.name, run_id=run_id, now=now
+    )
+    output_xlsx = base / f"{stem}.xlsx"
+    output_pdf = base / f"{stem}_{{sheet}}.pdf" if job.generate_pdf else None
+    return output_xlsx, output_pdf
 
 
 class Launcher:
@@ -172,18 +190,11 @@ class Launcher:
         is_test: bool,
     ) -> WorkerRequest:
         timeout = job.timeout_seconds or config.app.default_timeout_seconds
-        out_xlsx = _substitute_tokens(
-            job.output_xlsx_path, job_name=job.name, run_id=run_id, now=now
-        )
-        out_pdf = (
-            _substitute_tokens(job.output_pdf_path, job_name=job.name, run_id=run_id, now=now)
-            if job.output_pdf_path is not None
-            else None
-        )
+        out_xlsx, out_pdf = resolve_output_paths(job, run_id=run_id, now=now)
         return WorkerRequest(
             run_id=run_id,
             job_name=job.name,
-            workbook_template_path=job.workbook_template_path,
+            input_excel_path=job.input_excel_path,
             output_xlsx_path=out_xlsx,
             output_pdf_path=out_pdf,
             sheet_names=job.sheet_names,

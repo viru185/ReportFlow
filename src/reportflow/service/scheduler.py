@@ -32,30 +32,33 @@ class SchedulerService:
         return [j.id for j in self.scheduler.get_jobs()]
 
     def rebuild(self, config: AppConfig) -> None:
-        """Replace all scheduled jobs from the current config."""
+        """Replace all scheduled jobs from the current config.
+
+        A job may have several cron entries (e.g. multiple run-times per day); one trigger is
+        registered per entry, with the id ``{job.name}#{index}``.
+        """
         self.scheduler.remove_all_jobs()
         for job in config.jobs:
-            if not job.enabled or not job.schedule_cron:
+            if not job.enabled or not job.schedule_crons:
                 continue
-            try:
-                trigger = CronTrigger.from_crontab(job.schedule_cron)
-            except Exception as e:  # noqa: BLE001 — one bad cron must not break scheduling
-                logger.error(
-                    "Skipping job {!r}: invalid cron {!r}: {}", job.name, job.schedule_cron, e
+            for i, cron in enumerate(job.schedule_crons):
+                try:
+                    trigger = CronTrigger.from_crontab(cron)
+                except Exception as e:  # noqa: BLE001 — one bad cron must not break scheduling
+                    logger.error("Skipping job {!r} cron {!r}: {}", job.name, cron, e)
+                    continue
+                self.scheduler.add_job(
+                    self._fire,
+                    trigger=trigger,
+                    args=[job.name],
+                    id=f"{job.name}#{i}",
+                    name=job.name,
+                    coalesce=True,
+                    misfire_grace_time=300,
+                    max_instances=1,
+                    replace_existing=True,
                 )
-                continue
-            self.scheduler.add_job(
-                self._fire,
-                trigger=trigger,
-                args=[job.name],
-                id=job.name,
-                name=job.name,
-                coalesce=True,
-                misfire_grace_time=300,
-                max_instances=1,
-                replace_existing=True,
-            )
-            logger.info("Scheduled job {!r}: {}", job.name, job.schedule_cron)
+                logger.info("Scheduled job {!r}: {}", job.name, cron)
 
     def _fire(self, name: str) -> None:
         try:

@@ -47,7 +47,7 @@ def _build_request(template: Path, sheets: list[str], run_id: str, *, freeze: bo
     return WorkerRequest(
         run_id=run_id,
         job_name="dev_sample",
-        workbook_template_path=template,
+        input_excel_path=template,
         output_xlsx_path=WORK / f"{run_id}.xlsx",
         output_pdf_path=WORK / f"{run_id}_{{sheet}}.pdf",
         sheet_names=sheets,

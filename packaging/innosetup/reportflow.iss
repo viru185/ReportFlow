@@ -23,6 +23,8 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 WizardStyle=modern
+SetupIconFile=..\..\assets\reportflow.ico
+UninstallDisplayIcon={app}\ui\reportflow-ui.exe
 
 [Files]
 Source: "..\..\dist\worker\*";  DestDir: "{app}\worker";  Flags: recursesubdirs ignoreversion

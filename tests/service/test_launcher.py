@@ -18,7 +18,7 @@ from reportflow.core.config.models import (
 )
 from reportflow.core.ipc.contract import RunStatus
 from reportflow.core.state import RunStore, RunTrigger
-from reportflow.service.launcher import Launcher
+from reportflow.service.launcher import Launcher, resolve_output_paths
 
 FAKE = str(Path(__file__).parent / "fake_worker.py")
 
@@ -26,9 +26,9 @@ FAKE = str(Path(__file__).parent / "fake_worker.py")
 def _job(tmp_path: Path, **over) -> JobConfig:
     base = dict(
         name="daily",
-        workbook_template_path=tmp_path / "t.xlsx",
-        output_xlsx_path=tmp_path / "out" / "{run_id}.xlsx",
-        output_pdf_path=tmp_path / "out" / "{run_id}_{sheet}.pdf",
+        input_excel_path=tmp_path / "t.xlsx",
+        output_dir=tmp_path / "out",
+        output_name="{run_id}",
         sheet_names=["Summary", "Detail"],
         subject="Daily",
         prod=Recipients(to=["boss@corp.example.com"]),
@@ -67,6 +67,36 @@ class _Capture:
     async def handle_DATA(self, server, session, envelope):
         self.envelopes.append(list(envelope.rcpt_tos))
         return "250 OK"
+
+
+def test_resolve_output_paths_with_folder_and_stem(tmp_path):
+    from datetime import datetime
+
+    job = _job(tmp_path, output_dir=tmp_path / "reports", output_name="{job}_{date}")
+    now = datetime(2026, 7, 7, 6, 0, 0)
+    xlsx, pdf = resolve_output_paths(job, run_id="abc", now=now)
+    assert xlsx == tmp_path / "reports" / "daily_20260707.xlsx"
+    assert pdf == tmp_path / "reports" / "daily_20260707_{sheet}.pdf"
+
+
+def test_resolve_output_paths_defaults_next_to_input(tmp_path):
+    from datetime import datetime
+
+    job = _job(tmp_path, output_dir=None, output_name=None)
+    now = datetime(2026, 7, 7, 6, 0, 0)
+    xlsx, pdf = resolve_output_paths(job, run_id="abc", now=now)
+    # input is tmp_path/t.xlsx -> outputs land next to it with the default stem
+    assert xlsx == tmp_path / "daily_20260707.xlsx"
+    assert pdf == tmp_path / "daily_20260707_{sheet}.pdf"
+
+
+def test_resolve_output_paths_no_pdf_when_disabled(tmp_path):
+    from datetime import datetime
+
+    job = _job(tmp_path, generate_pdf=False)
+    xlsx, pdf = resolve_output_paths(job, run_id="abc", now=datetime(2026, 7, 7))
+    assert xlsx.name.endswith(".xlsx")
+    assert pdf is None
 
 
 def test_success_real_run_no_email_when_not_optedin(tmp_path, monkeypatch):

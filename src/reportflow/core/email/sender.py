@@ -18,8 +18,7 @@ from loguru import logger
 from reportflow.core import secrets
 from reportflow.core.config.models import AppConfig, JobConfig, Recipients, SmtpConfig
 from reportflow.core.email.render import html_to_text, render_email, resolve_template
-
-_SMTP_PASSWORD_KEY = "smtp_password"
+from reportflow.core.secrets import SMTP_PASSWORD_KEY
 
 
 def resolve_recipients(job: JobConfig, config: AppConfig, *, is_test: bool) -> Recipients:
@@ -77,7 +76,7 @@ def build_report_message(
 
 
 def send_message(smtp: SmtpConfig, message: EmailMessage, envelope_to: list[str]) -> None:
-    password = secrets.get_secret(_SMTP_PASSWORD_KEY)
+    password = secrets.get_secret(SMTP_PASSWORD_KEY)
     sender = message["From"]
 
     if smtp.use_ssl:

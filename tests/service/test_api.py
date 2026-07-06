@@ -43,9 +43,9 @@ def _make_wb(path: Path) -> None:
 def _job_payload(tmp_path: Path) -> dict:
     return {
         "name": "daily",
-        "workbook_template_path": str(tmp_path / "t.xlsx"),
-        "output_xlsx_path": str(tmp_path / "out" / "{run_id}.xlsx"),
-        "output_pdf_path": str(tmp_path / "out" / "{run_id}_{sheet}.pdf"),
+        "input_excel_path": str(tmp_path / "t.xlsx"),
+        "output_dir": str(tmp_path / "out"),
+        "output_name": "{run_id}",
         "sheet_names": ["Summary", "Detail"],
         "prod": {"to": ["boss@corp.example.com"]},
         "test": {"to": ["dev@corp.example.com"]},
@@ -121,3 +121,72 @@ def test_config_endpoint_has_no_secrets(client):
     cfg = c.get("/config").json()
     assert "smtp" in cfg
     assert "password" not in str(cfg).lower()
+
+
+def test_settings_update_persists(client):
+    c, _ = client
+    resp = c.put(
+        "/settings",
+        json={
+            "smtp": {"host": "smtp.new.example.com", "port": 2525, "use_starttls": False},
+            "test": {"recipients": ["new-dev@corp.example.com"]},
+        },
+    )
+    assert resp.status_code == 200
+    cfg = c.get("/config").json()
+    assert cfg["smtp"]["host"] == "smtp.new.example.com"
+    assert cfg["smtp"]["port"] == 2525
+    assert cfg["test"]["recipients"] == ["new-dev@corp.example.com"]
+
+
+def test_settings_rejects_invalid(client):
+    c, _ = client
+    assert c.put("/settings", json={}).status_code == 400
+    assert c.put("/settings", json={"smtp": {"port": -5}}).status_code == 400
+
+
+def test_smtp_password_lifecycle(client):
+    c, _ = client
+    assert c.get("/system/smtp-password").json() == {"set": False}
+    assert c.post("/system/smtp-password", json={"password": "hunter2"}).status_code == 200
+    assert c.get("/system/smtp-password").json() == {"set": True}
+    assert c.delete("/system/smtp-password").status_code == 200
+    assert c.get("/system/smtp-password").json() == {"set": False}
+
+
+def test_system_logs_endpoint(client):
+    c, _ = client
+    resp = c.get("/system/logs", params={"process": "service", "tail": 100})
+    assert resp.status_code == 200
+    assert "log" in resp.json()
+    assert c.get("/system/logs", params={"process": "bogus"}).status_code == 400
+
+
+def test_email_template_get_put(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+
+    assert c.get("/jobs/daily/email-template").json()["exists"] is False
+
+    html = "<p>Hello {{ job_name }}</p>"
+    resp = c.put("/jobs/daily/email-template", json={"content": html})
+    assert resp.status_code == 200
+    saved_path = Path(resp.json()["path"])
+    assert saved_path.exists()
+    assert saved_path.read_text(encoding="utf-8") == html
+
+    got = c.get("/jobs/daily/email-template").json()
+    assert got == {"content": html, "exists": True}
+    # the job now points at the per-job template file
+    assert c.get("/jobs/daily").json()["job"]["email_template_path"] == str(saved_path)
+
+
+def test_multiple_crons_register_multiple_triggers(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    payload = dict(_job_payload(tmp_path), schedule_crons=["0 6 * * *", "0 18 * * *"])
+    assert c.post("/jobs", json=payload).status_code == 201
+
+    scheduled = c.get("/system/status").json()["scheduled_jobs"]
+    assert sorted(scheduled) == ["daily#0", "daily#1"]

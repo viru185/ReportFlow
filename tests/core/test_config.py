@@ -17,11 +17,11 @@ from reportflow.core.config.loader import ConfigError
 def _sample_job(**overrides) -> JobConfig:
     base = dict(
         name="daily_sales",
-        workbook_template_path="C:/Templates/daily_sales.xlsx",
-        output_xlsx_path="C:/Reports/daily_sales/out.xlsx",
-        output_pdf_path="C:/Reports/daily_sales/{sheet}.pdf",
+        input_excel_path="C:/Templates/daily_sales.xlsx",
+        output_dir="C:/Reports/daily_sales",
+        output_name="{job}_{date}",
         sheet_names=["Summary", "Detail"],
-        schedule_cron="0 6 * * 1-5",
+        schedule_crons=["0 6 * * 1-5", "0 18 * * 1-5"],
         prod=Recipients(to=["managers@corp.example.com"], cc=["ops@corp.example.com"]),
         test=Recipients(to=["dev-team@corp.example.com"]),
     )
@@ -68,14 +68,20 @@ def test_empty_to_rejected():
         Recipients(to=[])
 
 
-def test_pdf_requires_sheet_token_for_multisheet():
+def test_output_dir_and_name_are_optional():
+    job = _sample_job(output_dir=None, output_name=None)
+    assert job.output_dir is None
+    assert job.output_name is None
+
+
+def test_bad_cron_rejected():
     with pytest.raises(ValidationError):
-        _sample_job(output_pdf_path="C:/Reports/daily.pdf")  # no {sheet}, two sheets
+        _sample_job(schedule_crons=["not a cron"])
 
 
-def test_single_sheet_pdf_without_token_ok():
-    job = _sample_job(sheet_names=["Summary"], output_pdf_path="C:/Reports/daily.pdf")
-    assert job.generate_pdf is True
+def test_blank_cron_entries_dropped():
+    job = _sample_job(schedule_crons=["0 6 * * *", "  ", ""])
+    assert job.schedule_crons == ["0 6 * * *"]
 
 
 def test_job_lookup_is_case_insensitive():
