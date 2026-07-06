@@ -1,43 +1,69 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for the UI exe (onedir, windowed).
 
-collect_all("PySide6") ensures the platforms/qwindows.dll plugin ships (the #1 PySide6
-packaging failure). Heavy unused Qt modules are excluded to cut size.
+The UI uses only QtCore/QtGui/QtWidgets. Rather than collect_all("PySide6") (which pulls
+~680 MB of Qt), we let PyInstaller's bundled PySide6 hook collect exactly the imported
+modules plus the required plugins (crucially platforms/qwindows.dll), and exclude the heavy
+unused Qt modules so nothing drags them in. Validate the frozen build with:
+
+    reportflow-ui.exe --selftest    # exit 0 == the qwindows platform plugin loaded
 """
 
 import os
 
-from PyInstaller.utils.hooks import collect_all
-
 ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 
-datas, binaries, hiddenimports = [], [], []
-for pkg in ("PySide6",):
-    d, b, h = collect_all(pkg)
-    datas += d
-    binaries += b
-    hiddenimports += h
-
-hiddenimports += ["httpx", "win32crypt"]
+# Heavy Qt modules this app never imports. Excluding them keeps the analysis from pulling
+# their (large) DLLs and data.
+_QT_EXCLUDES = [
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineWidgets",
+    "PySide6.QtWebEngineQuick",
+    "PySide6.QtWebChannel",
+    "PySide6.QtQml",
+    "PySide6.QtQuick",
+    "PySide6.QtQuickWidgets",
+    "PySide6.QtQuick3D",
+    "PySide6.Qt3DCore",
+    "PySide6.Qt3DRender",
+    "PySide6.Qt3DInput",
+    "PySide6.Qt3DAnimation",
+    "PySide6.Qt3DExtras",
+    "PySide6.QtCharts",
+    "PySide6.QtDataVisualization",
+    "PySide6.QtMultimedia",
+    "PySide6.QtMultimediaWidgets",
+    "PySide6.QtSpatialAudio",
+    "PySide6.QtSensors",
+    "PySide6.QtSerialPort",
+    "PySide6.QtWebSockets",
+    "PySide6.QtPdf",
+    "PySide6.QtPdfWidgets",
+    "PySide6.QtNetwork",
+    "PySide6.QtSql",
+    "PySide6.QtTest",
+    "PySide6.QtDesigner",
+    "PySide6.QtHelp",
+    "PySide6.QtUiTools",
+    "PySide6.QtOpenGL",
+    "PySide6.QtOpenGLWidgets",
+    "PySide6.QtBluetooth",
+    "PySide6.QtNfc",
+    "PySide6.QtPositioning",
+    "PySide6.QtLocation",
+    "PySide6.QtTextToSpeech",
+    "PySide6.QtScxml",
+    "PySide6.QtStateMachine",
+    "PySide6.QtRemoteObjects",
+    "PySide6.QtHttpServer",
+    "PySide6.QtSvgWidgets",
+]
 
 a = Analysis(
     [os.path.join(ROOT, "src", "reportflow", "ui", "__main__.py")],
     pathex=[os.path.join(ROOT, "src")],
-    binaries=binaries,
-    datas=datas,
-    hiddenimports=hiddenimports,
-    excludes=[
-        "xlwings",
-        "tkinter",
-        "matplotlib",
-        "PySide6.QtWebEngineCore",
-        "PySide6.QtWebEngineWidgets",
-        "PySide6.QtQml",
-        "PySide6.Qt3DCore",
-        "PySide6.QtCharts",
-        "PySide6.QtMultimedia",
-        "PySide6.QtQuick",
-    ],
+    hiddenimports=["httpx", "win32crypt"],
+    excludes=["xlwings", "tkinter", "matplotlib", *_QT_EXCLUDES],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
