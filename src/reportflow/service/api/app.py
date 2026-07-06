@@ -1,0 +1,267 @@
+"""FastAPI application wiring: state, lifespan, and all local-only endpoints."""
+
+from __future__ import annotations
+
+import os
+import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from loguru import logger
+from pydantic import BaseModel
+
+from reportflow import __version__
+from reportflow.core import paths
+from reportflow.core.config.loader import ConfigError, load_config, save_config
+from reportflow.core.config.models import AppConfig, JobConfig
+from reportflow.core.email import (
+    build_log_bundle,
+    redact_config,
+    render_email,
+    resolve_template,
+    sample_context,
+    send_dev_log_bundle,
+)
+from reportflow.core.state import RunStore, RunTrigger
+from reportflow.service.bootstrap import seed_data_files
+from reportflow.service.launcher import Launcher
+from reportflow.service.scheduler import SchedulerService
+from reportflow.service.workbook import WorkbookError, discover_sheets
+
+
+class ServiceState:
+    """Holds the reloadable config plus the run store, launcher, and scheduler."""
+
+    def __init__(self, worker_command: list[str] | None = None) -> None:
+        seed_data_files()
+        self.config: AppConfig = self._load_or_default()
+        self.run_store = RunStore()
+        self.launcher = Launcher(self.run_store, lambda: self.config, worker_command=worker_command)
+        self.scheduler = SchedulerService(self.launcher)
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _load_or_default() -> AppConfig:
+        try:
+            return load_config()
+        except ConfigError as e:
+            logger.error("Config invalid at startup; API stays up, scheduling disabled: {}", e)
+            from reportflow.core.config.defaults import default_config
+
+            return default_config()
+
+    def reload(self) -> None:
+        with self._lock:
+            self.config = load_config()
+            self.scheduler.rebuild(self.config)
+
+    def save_jobs(self, jobs: list[JobConfig]) -> None:
+        """Validate (uniqueness), persist, and re-schedule with the new job list."""
+        with self._lock:
+            data = self.config.model_dump(mode="python", by_alias=True)
+            data["job"] = [j.model_dump(mode="python", by_alias=True) for j in jobs]
+            new_config = AppConfig.model_validate(data)
+            save_config(new_config)
+            self.config = new_config
+            self.scheduler.rebuild(new_config)
+
+
+# --- request/response models ---------------------------------------------------
+
+
+class SheetsRequest(BaseModel):
+    path: str
+
+
+class EmailPreviewRequest(BaseModel):
+    job_name: str | None = None
+
+
+class RunResponse(BaseModel):
+    run_id: str
+    status: str = "running"
+
+
+# --- app factory ---------------------------------------------------------------
+
+
+def create_app(state: ServiceState | None = None) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        st: ServiceState = app.state.svc
+        st.scheduler.start()
+        st.scheduler.rebuild(st.config)
+        logger.info("Service started (version {})", __version__)
+        try:
+            yield
+        finally:
+            st.scheduler.shutdown()
+            logger.info("Service stopped")
+
+    app = FastAPI(title="ReportFlow Service", version=__version__, lifespan=lifespan)
+    app.state.svc = state or ServiceState()
+
+    def svc() -> ServiceState:
+        return app.state.svc
+
+    def _require_job(name: str) -> JobConfig:
+        job = svc().config.job(name)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"unknown job: {name}")
+        return job
+
+    def _job_summary(job: JobConfig) -> dict[str, Any]:
+        latest = svc().run_store.latest_for_job(job.name)
+        last_failure = svc().run_store.latest_failure_for_job(job.name)
+        return {
+            "name": job.name,
+            "enabled": job.enabled,
+            "schedule_cron": job.schedule_cron,
+            "sheet_names": job.sheet_names,
+            "last_status": str(latest.status) if latest else None,
+            "last_run_at": latest.started_at if latest else None,
+            "last_failure_at": last_failure.started_at if last_failure else None,
+        }
+
+    # -- system ----------------------------------------------------------------
+
+    @app.get("/health")
+    def health() -> dict[str, Any]:
+        return {"status": "ok", "version": __version__}
+
+    @app.get("/system/status")
+    def system_status() -> dict[str, Any]:
+        return {
+            "version": __version__,
+            "active_runs": svc().launcher.active_run_ids(),
+            "scheduled_jobs": svc().scheduler.scheduled_job_names(),
+            "job_count": len(svc().config.jobs),
+        }
+
+    @app.get("/config")
+    def get_config() -> dict[str, Any]:
+        return redact_config(svc().config)
+
+    @app.post("/config/reload")
+    def reload_config() -> dict[str, Any]:
+        try:
+            svc().reload()
+        except ConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "job_count": len(svc().config.jobs)}
+
+    # -- jobs ------------------------------------------------------------------
+
+    @app.get("/jobs")
+    def list_jobs() -> list[dict[str, Any]]:
+        return [_job_summary(j) for j in svc().config.jobs]
+
+    @app.get("/jobs/{name}")
+    def get_job(name: str) -> dict[str, Any]:
+        job = _require_job(name)
+        return {"job": job.model_dump(mode="json"), "summary": _job_summary(job)}
+
+    @app.post("/jobs", status_code=201)
+    def create_job(job: JobConfig) -> dict[str, Any]:
+        if svc().config.job(job.name) is not None:
+            raise HTTPException(status_code=409, detail=f"job already exists: {job.name}")
+        jobs = [*svc().config.jobs, job]
+        _save_jobs_or_400(svc(), jobs)
+        return {"ok": True, "name": job.name}
+
+    @app.put("/jobs/{name}")
+    def update_job(name: str, job: JobConfig) -> dict[str, Any]:
+        _require_job(name)
+        jobs = [job if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
+        _save_jobs_or_400(svc(), jobs)
+        return {"ok": True, "name": job.name}
+
+    @app.delete("/jobs/{name}")
+    def delete_job(name: str) -> dict[str, Any]:
+        _require_job(name)
+        jobs = [j for j in svc().config.jobs if j.name.casefold() != name.casefold()]
+        _save_jobs_or_400(svc(), jobs)
+        return {"ok": True}
+
+    @app.post("/jobs/{name}/run", response_model=RunResponse)
+    def run_job(name: str) -> RunResponse:
+        _require_job(name)
+        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.MANUAL, is_test=False)
+        return RunResponse(run_id=run_id)
+
+    @app.post("/jobs/{name}/test", response_model=RunResponse)
+    def test_job(name: str) -> RunResponse:
+        _require_job(name)
+        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.TEST, is_test=True)
+        return RunResponse(run_id=run_id)
+
+    # -- runs ------------------------------------------------------------------
+
+    @app.get("/runs")
+    def list_runs(job: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        return [r.model_dump(mode="json") for r in svc().run_store.list(job, min(limit, 500))]
+
+    @app.get("/runs/{run_id}")
+    def get_run(run_id: str) -> dict[str, Any]:
+        rec = svc().run_store.get(run_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="unknown run")
+        return rec.model_dump(mode="json")
+
+    @app.get("/runs/{run_id}/log")
+    def get_run_log(run_id: str, tail: int = 400) -> dict[str, Any]:
+        rec = svc().run_store.get(run_id)
+        if rec is None or not rec.worker_log_path:
+            raise HTTPException(status_code=404, detail="no log for run")
+        path = Path(rec.worker_log_path)
+        if not path.exists():
+            return {"run_id": run_id, "log": ""}
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return {"run_id": run_id, "log": "\n".join(lines[-tail:])}
+
+    # -- workbook / email ------------------------------------------------------
+
+    @app.post("/workbook/sheets")
+    def workbook_sheets(req: SheetsRequest) -> dict[str, Any]:
+        try:
+            return {"sheets": discover_sheets(Path(req.path))}
+        except WorkbookError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/email/preview")
+    def email_preview(req: EmailPreviewRequest) -> dict[str, Any]:
+        job = svc().config.job(req.job_name) if req.job_name else None
+        html = render_email(resolve_template(job, svc().config), sample_context(job))
+        return {"html": html}
+
+    @app.post("/system/send-dev-logs")
+    def send_dev_logs() -> dict[str, Any]:
+        st = svc()
+        if not st.config.test.developer_bundle_recipients:
+            raise HTTPException(status_code=400, detail="no developer_bundle_recipients configured")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bundle = paths.state_dir() / "bundles" / f"reportflow_logs_{stamp}.zip"
+        metadata = {
+            "hostname": os.environ.get("COMPUTERNAME", "host"),
+            "windows_user": os.environ.get("USERNAME", "unknown"),
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        build_log_bundle(bundle, st.config, metadata=metadata)
+        try:
+            recipients = send_dev_log_bundle(st.config, bundle, metadata)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"failed to send: {e}") from e
+        return {"ok": True, "recipients": recipients, "bundle": str(bundle)}
+
+    return app
+
+
+def _save_jobs_or_400(state: ServiceState, jobs: list[JobConfig]) -> None:
+    try:
+        state.save_jobs(jobs)
+    except Exception as e:  # noqa: BLE001 — validation / write error -> 400
+        raise HTTPException(status_code=400, detail=str(e)) from e

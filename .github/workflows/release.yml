@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref_name }}"
+          $ver = $ref -replace '^v', ''
+          if (-not $ver) { $ver = "0.0.0-dev" }
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build executables
+        run: uv run python packaging/build_all.py
+
+      - name: Fetch NSSM
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://nssm.cc/release/nssm-2.24.zip -OutFile nssm.zip
+          Expand-Archive nssm.zip -DestinationPath nssm_extract -Force
+          New-Item -ItemType Directory -Force packaging\nssm | Out-Null
+          Copy-Item nssm_extract\nssm-2.24\win64\nssm.exe packaging\nssm\nssm.exe
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            /DMyAppVersion=${{ steps.ver.outputs.version }} `
+            packaging\innosetup\reportflow.iss
+
+      - name: Zip executables
+        shell: pwsh
+        run: |
+          Compress-Archive dist\worker  dist\reportflow-worker-${{ steps.ver.outputs.version }}.zip
+          Compress-Archive dist\service dist\reportflow-service-${{ steps.ver.outputs.version }}.zip
+          Compress-Archive dist\ui      dist\reportflow-ui-${{ steps.ver.outputs.version }}.zip
+
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header --output RELEASE_NOTES.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: |
+            packaging/innosetup/Output/ReportFlow-Setup-*.exe
+            dist/*.zip
