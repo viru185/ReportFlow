@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / venv
+.venv/
+
+# Builds
+build/
+dist/
+*.spec.bak
+packaging/nssm/nssm.exe
+
+# Claude Code local (per-machine) settings
+.claude/settings.local.json
+
+# Local runtime / scratch
+*.log
+scripts/sample/output/
+scripts/sample/_data/
+_ptmp/
