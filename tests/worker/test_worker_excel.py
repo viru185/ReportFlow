@@ -62,7 +62,7 @@ def _request(tmp_path: Path, sheets, **over) -> WorkerRequest:
     defaults = dict(
         run_id="r1",
         job_name="j",
-        workbook_template_path=wb,
+        input_excel_path=wb,
         output_xlsx_path=tmp_path / "out.xlsx",
         output_pdf_path=tmp_path / "{sheet}.pdf",
         sheet_names=sheets,
@@ -104,7 +104,7 @@ def test_missing_sheet_fails_cleanly(tmp_path):
 
 def test_missing_template_fails_cleanly(tmp_path):
     before = _excel_pids()
-    req = _request(tmp_path, ["Summary"], workbook_template_path=tmp_path / "nope.xlsx")
+    req = _request(tmp_path, ["Summary"], input_excel_path=tmp_path / "nope.xlsx")
     result = run_job(req)
 
     assert result.status is RunStatus.FAILED

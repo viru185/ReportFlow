@@ -15,7 +15,7 @@ def _request(run_dir) -> WorkerRequest:
     return WorkerRequest(
         run_id="run-123",
         job_name="daily_sales",
-        workbook_template_path="C:/Templates/daily_sales.xlsx",
+        input_excel_path="C:/Templates/daily_sales.xlsx",
         output_xlsx_path=str(run_dir / "out.xlsx"),
         output_pdf_path=str(run_dir / "{sheet}.pdf"),
         sheet_names=["Summary", "Detail"],

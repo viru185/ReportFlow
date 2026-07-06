@@ -75,18 +75,23 @@ class JobConfig(_Base):
     name: str
     enabled: bool = True
 
-    workbook_template_path: Path
+    input_excel_path: Path
     email_template_path: Path | None = None
 
-    output_xlsx_path: Path
-    output_pdf_path: Path | None = None
+    # Output location: a folder (empty -> next to the input file) plus an optional filename
+    # stem (empty -> "{job}_{date}"). Concrete .xlsx/.pdf paths are derived at launch time;
+    # PDFs get an automatic per-sheet suffix.
+    output_dir: Path | None = None
+    output_name: str | None = None
 
     sheet_names: list[str] = Field(min_length=1)
 
     freeze_values: bool = True
     generate_pdf: bool = True
 
-    schedule_cron: str | None = None
+    # Zero or more 5-field cron expressions; empty = manual-only. Multiple entries support
+    # e.g. several run-times per day (one APScheduler trigger is registered per entry).
+    schedule_crons: list[str] = Field(default_factory=list)
     timeout_seconds: int | None = Field(default=None, gt=0)
     concurrency_group: str | None = None
 
@@ -109,30 +114,19 @@ class JobConfig(_Base):
             raise ValueError(f"job name contains invalid characters: {v!r}")
         return v
 
-    @field_validator("schedule_cron")
+    @field_validator("schedule_crons")
     @classmethod
-    def _cron_shape(cls, v: str | None) -> str | None:
+    def _cron_shapes(cls, v: list[str]) -> list[str]:
         # Light structural check only; the service does full validation via APScheduler.
-        if v is None:
-            return None
-        v = v.strip()
-        if not v:
-            return None
-        if len(v.split()) != 5:
-            raise ValueError(f"cron expression must have 5 fields, got {v!r}")
-        return v
-
-    @model_validator(mode="after")
-    def _pdf_requires_sheet_token(self) -> JobConfig:
-        if self.generate_pdf:
-            if self.output_pdf_path is None:
-                raise ValueError("output_pdf_path is required when generate_pdf is true")
-            if len(self.sheet_names) > 1 and "{sheet}" not in str(self.output_pdf_path):
-                raise ValueError(
-                    "output_pdf_path must contain a '{sheet}' token when generate_pdf is "
-                    "true and multiple sheets are selected (one PDF is produced per sheet)"
-                )
-        return self
+        cleaned: list[str] = []
+        for expr in v:
+            expr = expr.strip()
+            if not expr:
+                continue
+            if len(expr.split()) != 5:
+                raise ValueError(f"cron expression must have 5 fields, got {expr!r}")
+            cleaned.append(expr)
+        return cleaned
 
 
 class AppConfig(_Base):

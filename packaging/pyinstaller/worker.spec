@@ -9,6 +9,7 @@ import os
 from PyInstaller.utils.hooks import collect_all
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
+ICON = os.path.join(ROOT, "assets", "reportflow.ico")
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("xlwings",):

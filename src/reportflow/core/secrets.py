@@ -17,6 +17,9 @@ from reportflow.core import paths
 _NAMESPACE = "ReportFlow"
 _LOCAL_MACHINE = 0x4  # CRYPTPROTECT_LOCAL_MACHINE
 
+# Well-known secret keys.
+SMTP_PASSWORD_KEY = "smtp_password"
+
 
 def _secret_path(key: str) -> Path:
     safe = "".join(c for c in key if c.isalnum() or c in "._-")

@@ -12,6 +12,7 @@ unused Qt modules so nothing drags them in. Validate the frozen build with:
 import os
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
+ICON = os.path.join(ROOT, "assets", "reportflow.ico")
 
 # Heavy Qt modules this app never imports. Excluding them keeps the analysis from pulling
 # their (large) DLLs and data.
@@ -62,6 +63,7 @@ _QT_EXCLUDES = [
 a = Analysis(
     [os.path.join(ROOT, "src", "reportflow", "ui", "__main__.py")],
     pathex=[os.path.join(ROOT, "src")],
+    datas=[(os.path.join(ROOT, "assets", "reportflow.png"), "assets")],
     hiddenimports=["httpx", "win32crypt"],
     excludes=["xlwings", "tkinter", "matplotlib", *_QT_EXCLUDES],
     noarchive=False,
@@ -74,5 +76,6 @@ exe = EXE(
     exclude_binaries=True,
     name="reportflow-ui",
     console=False,
+    icon=ICON,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="ui")

@@ -29,7 +29,7 @@ class WorkerRequest(_IpcBase):
     run_id: str
     job_name: str
 
-    workbook_template_path: Path
+    input_excel_path: Path
     output_xlsx_path: Path
     output_pdf_path: Path | None = None
 

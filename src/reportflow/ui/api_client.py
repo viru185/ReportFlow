@@ -99,6 +99,30 @@ class ApiClient:
         payload = {"job_name": job_name} if job_name else {}
         return self._request("POST", "/email/preview", json=payload)["html"]
 
+    def get_email_template(self, job_name: str) -> dict:
+        return self._request("GET", f"/jobs/{job_name}/email-template")
+
+    def put_email_template(self, job_name: str, content: str) -> dict:
+        return self._request("PUT", f"/jobs/{job_name}/email-template", json={"content": content})
+
+    # -- settings / secrets / logs --
+    def update_settings(self, sections: dict) -> dict:
+        return self._request("PUT", "/settings", json=sections)
+
+    def smtp_password_status(self) -> bool:
+        return bool(self._request("GET", "/system/smtp-password")["set"])
+
+    def set_smtp_password(self, password: str) -> dict:
+        return self._request("POST", "/system/smtp-password", json={"password": password})
+
+    def clear_smtp_password(self) -> dict:
+        return self._request("DELETE", "/system/smtp-password")
+
+    def system_logs(self, process: str = "service", tail: int = 500) -> str:
+        return self._request("GET", "/system/logs", params={"process": process, "tail": tail})[
+            "log"
+        ]
+
 
 def _safe_detail(resp: httpx.Response) -> str:
     try:

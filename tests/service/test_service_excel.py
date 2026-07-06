@@ -46,9 +46,9 @@ def test_service_runs_real_worker(tmp_path):
     with TestClient(app) as c:
         job = {
             "name": "e2e",
-            "workbook_template_path": str(wb),
-            "output_xlsx_path": str(tmp_path / "out" / "{run_id}.xlsx"),
-            "output_pdf_path": str(tmp_path / "out" / "{run_id}_{sheet}.pdf"),
+            "input_excel_path": str(wb),
+            "output_dir": str(tmp_path / "out"),
+            "output_name": "{run_id}",
             "sheet_names": ["Summary", "Detail"],
             "send_report_email": False,
             "prod": {"to": ["boss@corp.example.com"]},
@@ -65,6 +65,47 @@ def test_service_runs_real_worker(tmp_path):
             time.sleep(0.2)
 
     assert rec is not None and rec["status"] == "success", rec
-    assert Path(rec["output_xlsx"]).exists()
+    out_xlsx = Path(rec["output_xlsx"])
+    assert out_xlsx.exists()
+    assert out_xlsx.parent == tmp_path / "out"  # honored output_dir
     assert len(rec["pdf_paths"]) == 2
     assert all(Path(p).exists() for p in rec["pdf_paths"])
+
+
+def _wait_done(c: TestClient, run_id: str) -> dict:
+    rec: dict = {}
+    for _ in range(150):
+        rec = c.get(f"/runs/{run_id}").json()
+        if rec["status"] != "running":
+            break
+        time.sleep(0.2)
+    return rec
+
+
+def test_default_output_lands_next_to_input(tmp_path):
+    save_config(AppConfig(smtp=SmtpConfig(host="127.0.0.1", port=1, username="")))
+    wb = tmp_path / "input" / "t.xlsx"
+    wb.parent.mkdir(parents=True)
+    _make_wb(wb)
+
+    state = ServiceState()
+    app = create_app(state)
+    with TestClient(app) as c:
+        job = {
+            "name": "e2e_default",
+            "input_excel_path": str(wb),
+            # no output_dir / output_name -> next to input, stem {job}_{date}
+            "sheet_names": ["Summary"],
+            "send_report_email": False,
+            "prod": {"to": ["boss@corp.example.com"]},
+            "test": {"to": ["dev@corp.example.com"]},
+        }
+        assert c.post("/jobs", json=job).status_code == 201
+        rec = _wait_done(c, c.post("/jobs/e2e_default/run").json()["run_id"])
+
+    assert rec["status"] == "success", rec
+    out_xlsx = Path(rec["output_xlsx"])
+    assert out_xlsx.parent == wb.parent  # defaulted next to the input file
+    assert out_xlsx.name.startswith("e2e_default_")  # {job}_{date} stem
+    assert len(rec["pdf_paths"]) == 1
+    assert Path(rec["pdf_paths"][0]).name.endswith("_Summary.pdf")

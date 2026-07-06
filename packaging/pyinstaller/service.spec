@@ -6,6 +6,7 @@ import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
+ICON = os.path.join(ROOT, "assets", "reportflow.ico")
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("uvicorn",):
@@ -43,5 +44,6 @@ exe = EXE(
     exclude_binaries=True,
     name="reportflow-service",
     console=True,
+    icon=ICON,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="service")

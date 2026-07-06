@@ -15,7 +15,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from reportflow import __version__
-from reportflow.core import paths
+from reportflow.core import paths, secrets
 from reportflow.core.config.loader import ConfigError, load_config, save_config
 from reportflow.core.config.models import AppConfig, JobConfig
 from reportflow.core.email import (
@@ -26,6 +26,7 @@ from reportflow.core.email import (
     sample_context,
     send_dev_log_bundle,
 )
+from reportflow.core.secrets import SMTP_PASSWORD_KEY
 from reportflow.core.state import RunStore, RunTrigger
 from reportflow.service.bootstrap import seed_data_files
 from reportflow.service.launcher import Launcher
@@ -69,6 +70,22 @@ class ServiceState:
             self.config = new_config
             self.scheduler.rebuild(new_config)
 
+    def save_settings(self, sections: dict[str, Any]) -> None:
+        """Merge the given non-job sections (app/smtp/ui/email/test) into the config,
+        validate, persist, and re-schedule. Jobs are never touched here."""
+        allowed = {"app", "smtp", "ui", "email", "test"}
+        unknown = set(sections) - allowed
+        if unknown:
+            raise ValueError(f"unknown settings section(s): {sorted(unknown)}")
+        with self._lock:
+            data = self.config.model_dump(mode="python", by_alias=True)
+            for key, value in sections.items():
+                data[key] = value
+            new_config = AppConfig.model_validate(data)
+            save_config(new_config)
+            self.config = new_config
+            self.scheduler.rebuild(new_config)
+
 
 # --- request/response models ---------------------------------------------------
 
@@ -79,6 +96,22 @@ class SheetsRequest(BaseModel):
 
 class EmailPreviewRequest(BaseModel):
     job_name: str | None = None
+
+
+class SettingsUpdate(BaseModel):
+    app: dict[str, Any] | None = None
+    smtp: dict[str, Any] | None = None
+    ui: dict[str, Any] | None = None
+    email: dict[str, Any] | None = None
+    test: dict[str, Any] | None = None
+
+
+class SmtpPasswordUpdate(BaseModel):
+    password: str
+
+
+class EmailTemplateUpdate(BaseModel):
+    content: str
 
 
 class RunResponse(BaseModel):
@@ -120,7 +153,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         return {
             "name": job.name,
             "enabled": job.enabled,
-            "schedule_cron": job.schedule_cron,
+            "schedule_crons": job.schedule_crons,
             "sheet_names": job.sheet_names,
             "last_status": str(latest.status) if latest else None,
             "last_run_at": latest.started_at if latest else None,
@@ -153,6 +186,43 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         except ConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True, "job_count": len(svc().config.jobs)}
+
+    @app.put("/settings")
+    def update_settings(update: SettingsUpdate) -> dict[str, Any]:
+        sections = {k: v for k, v in update.model_dump().items() if v is not None}
+        if not sections:
+            raise HTTPException(status_code=400, detail="no settings sections provided")
+        try:
+            svc().save_settings(sections)
+        except Exception as e:  # noqa: BLE001 — validation / write error -> 400
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "sections": sorted(sections)}
+
+    @app.get("/system/smtp-password")
+    def smtp_password_status() -> dict[str, Any]:
+        return {"set": secrets.has_secret(SMTP_PASSWORD_KEY)}
+
+    @app.post("/system/smtp-password")
+    def set_smtp_password(update: SmtpPasswordUpdate) -> dict[str, Any]:
+        if not update.password:
+            raise HTTPException(status_code=400, detail="password must not be empty")
+        secrets.set_secret(SMTP_PASSWORD_KEY, update.password)
+        return {"ok": True, "set": True}
+
+    @app.delete("/system/smtp-password")
+    def clear_smtp_password() -> dict[str, Any]:
+        secrets.delete_secret(SMTP_PASSWORD_KEY)
+        return {"ok": True, "set": False}
+
+    @app.get("/system/logs")
+    def system_logs(process: str = "service", tail: int = 500) -> dict[str, Any]:
+        if process not in ("service", "worker", "ui"):
+            raise HTTPException(status_code=400, detail=f"unknown process: {process}")
+        log_path = paths.logs_dir() / process / f"{process}.log"
+        if not log_path.exists():
+            return {"process": process, "log": ""}
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return {"process": process, "log": "\n".join(lines[-min(tail, 5000) :])}
 
     # -- jobs ------------------------------------------------------------------
 
@@ -198,6 +268,32 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         _require_job(name)
         run_id = svc().launcher.submit_job_by_name(name, RunTrigger.TEST, is_test=True)
         return RunResponse(run_id=run_id)
+
+    def _job_template_path(job: JobConfig) -> Path:
+        return paths.templates_dir() / "jobs" / f"{job.name}.html"
+
+    @app.get("/jobs/{name}/email-template")
+    def get_email_template(name: str) -> dict[str, Any]:
+        job = _require_job(name)
+        # Prefer the job's configured template; fall back to the conventional per-job file.
+        path = Path(job.email_template_path) if job.email_template_path else _job_template_path(job)
+        if path.exists():
+            return {"content": path.read_text(encoding="utf-8"), "exists": True}
+        return {"content": "", "exists": False}
+
+    @app.put("/jobs/{name}/email-template")
+    def put_email_template(name: str, update: EmailTemplateUpdate) -> dict[str, Any]:
+        job = _require_job(name)
+        path = _job_template_path(job)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(update.content, encoding="utf-8")
+        if job.email_template_path != path:
+            updated = job.model_copy(update={"email_template_path": path})
+            jobs = [
+                updated if j.name.casefold() == name.casefold() else j for j in svc().config.jobs
+            ]
+            _save_jobs_or_400(svc(), jobs)
+        return {"ok": True, "path": str(path)}
 
     # -- runs ------------------------------------------------------------------
 
