@@ -38,11 +38,21 @@ jobs:
 
       - name: Fetch NSSM
         shell: pwsh
+        # nssm.cc is a single flaky server (frequent 503s), so install NSSM from the
+        # Chocolatey community repo instead and copy the real 64-bit exe out of the
+        # package's tools directory.
         run: |
-          Invoke-WebRequest https://nssm.cc/release/nssm-2.24.zip -OutFile nssm.zip
-          Expand-Archive nssm.zip -DestinationPath nssm_extract -Force
+          choco install nssm -y --no-progress
+          $lib = Join-Path $env:ChocolateyInstall "lib\nssm"
+          $exe = Get-ChildItem $lib -Recurse -Filter nssm.exe |
+            Where-Object { $_.FullName -match 'win64' } | Select-Object -First 1
+          if (-not $exe) {
+            $exe = Get-ChildItem $lib -Recurse -Filter nssm.exe | Select-Object -First 1
+          }
+          if (-not $exe) { throw "nssm.exe not found under $lib after choco install" }
           New-Item -ItemType Directory -Force packaging\nssm | Out-Null
-          Copy-Item nssm_extract\nssm-2.24\win64\nssm.exe packaging\nssm\nssm.exe
+          Copy-Item $exe.FullName packaging\nssm\nssm.exe
+          "Bundled NSSM: $($exe.FullName) ($([math]::Round($exe.Length/1KB)) KB)"
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress

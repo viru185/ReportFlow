@@ -7,7 +7,8 @@ Service as a Windows service. Place the 64-bit `nssm.exe` here before building t
 packaging/nssm/nssm.exe
 ```
 
-CI downloads it automatically (see `.github/workflows/release.yml`). Locally, download from
-https://nssm.cc/download and copy `win64\nssm.exe` into this folder.
+CI installs it automatically via Chocolatey (see `.github/workflows/release.yml`; nssm.cc
+itself is often down). Locally, either `choco install nssm` and copy the win64 `nssm.exe`
+from `%ChocolateyInstall%\lib\nssm\tools\`, or download from https://nssm.cc/download.
 
 This file is intentionally git-ignored so the binary isn't committed.
