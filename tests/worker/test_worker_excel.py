@@ -13,12 +13,14 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import openpyxl
 import psutil
 import pytest
 
 from reportflow.core.ipc import RunStatus, WorkerRequest, read_result, write_request
+from reportflow.worker.excel import ExcelRun
 from reportflow.worker.runner import run_job
 
 pytestmark = pytest.mark.excel
@@ -91,6 +93,51 @@ def test_success_freezes_and_exports(tmp_path):
     assert str(wb["Data"]["D2"].value).startswith("=")  # non-selected sheet untouched
 
 
+def test_refresh_retries_until_selected_sheet_has_content():
+    class FakeRange:
+        def __init__(self, value):
+            self.value = value
+
+    class FakeSheet:
+        def __init__(self, value):
+            self.name = "Main"
+            self.used_range = FakeRange(value)
+
+    class FakeBook:
+        def __init__(self):
+            self.api = SimpleNamespace(Connections=[])
+            self.sheets = {"Main": FakeSheet(None)}
+
+    book = FakeBook()
+    refresh_calls = 0
+
+    def refresh_all():
+        nonlocal refresh_calls
+        refresh_calls += 1
+        if refresh_calls < 3:
+            book.sheets["Main"].used_range.value = None
+        else:
+            book.sheets["Main"].used_range.value = [["value"]]
+
+    app = SimpleNamespace(
+        api=SimpleNamespace(
+            CalculateUntilAsyncQueriesDone=lambda: None,
+            CalculateFullRebuild=lambda: None,
+            CalculationState=0,
+        ),
+        calculate=lambda: None,
+    )
+    run = ExcelRun()
+    run.app = app
+    book.api.RefreshAll = refresh_all
+    run._wait_for_calc = lambda: None
+
+    run.refresh_and_wait(book, 0, ["Main"])
+
+    assert refresh_calls == 3
+    assert book.sheets["Main"].used_range.value == [["value"]]
+
+
 def test_missing_sheet_fails_cleanly(tmp_path):
     before = _excel_pids()
     result = run_job(_request(tmp_path, ["Summary", "DoesNotExist"]))
@@ -114,9 +161,7 @@ def test_missing_template_fails_cleanly(tmp_path):
 
 def test_no_pdf_no_freeze_keeps_formulas(tmp_path):
     before = _excel_pids()
-    req = _request(
-        tmp_path, ["Summary"], generate_pdf=False, output_pdf_path=None, freeze_values=False
-    )
+    req = _request(tmp_path, ["Summary"], generate_pdf=False, output_pdf_path=None, freeze_values=False)
     result = run_job(req)
 
     assert result.status is RunStatus.SUCCESS
