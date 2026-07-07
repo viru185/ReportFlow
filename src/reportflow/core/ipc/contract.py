@@ -36,6 +36,7 @@ class WorkerRequest(_IpcBase):
     sheet_names: list[str] = Field(min_length=1)
     freeze_values: bool = True
     generate_pdf: bool = True
+    post_refresh_wait_seconds: int = Field(default=0, ge=0)
 
     timeout_seconds: int = Field(gt=0)
     is_test: bool = False

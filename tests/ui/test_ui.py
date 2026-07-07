@@ -316,6 +316,29 @@ def test_help_dialog_builds(qtbot):
     assert "Timeout" in text
 
 
+def test_editor_email_hint_and_refresh_wait(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi())
+    qtbot.addWidget(dlg)
+
+    # Opt-in unticked -> the hint warns that real runs won't email.
+    assert not dlg.send_email.isChecked()
+    assert "NOT send email" in dlg.email_hint.text()
+    dlg.send_email.setChecked(True)
+    assert "will email the production recipients" in dlg.email_hint.text()
+
+    # Extra wait plumbs into the payload.
+    dlg.name.setText("j")
+    dlg.input_excel.setText("C:/t.xlsx")
+    dlg._discover_sheets()
+    _check_all(dlg)
+    dlg.prod_to.setText("a@x.com")
+    dlg.test_to.setText("b@x.com")
+    dlg.post_refresh_wait.setValue(120)
+    assert dlg.payload()["post_refresh_wait_seconds"] == 120
+
+
 def test_editor_is_tabbed_not_scrollable(qtbot):
     from PySide6.QtWidgets import QScrollArea, QTabWidget
 

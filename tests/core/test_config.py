@@ -84,6 +84,18 @@ def test_blank_cron_entries_dropped():
     assert job.schedule_crons == ["0 6 * * *"]
 
 
+def test_post_refresh_wait_defaults_to_zero_and_round_trips():
+    assert _sample_job().post_refresh_wait_seconds == 0
+
+    cfg = default_config()
+    cfg.jobs.append(_sample_job(post_refresh_wait_seconds=90))
+    save_config(cfg)
+    assert load_config().jobs[0].post_refresh_wait_seconds == 90
+
+    with pytest.raises(ValidationError):
+        _sample_job(post_refresh_wait_seconds=-5)
+
+
 def test_job_lookup_is_case_insensitive():
     cfg = default_config()
     cfg.jobs.append(_sample_job())

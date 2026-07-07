@@ -119,11 +119,45 @@ class ExcelRun:
             self.excel_pid = int(self.app.pid)
             logger.info("Excel session started (pid={})", self.excel_pid)
             self._harden(self.app)
+            self._connect_com_addins(self.app)
         except Exception:
             # Entry failed: __exit__ will NOT be called, so clean up here.
             self._teardown()
             raise
         return self
+
+    @staticmethod
+    def _connect_com_addins(app: xw.App) -> None:
+        """Connect COM add-ins (e.g. PI DataLink) in this automation instance.
+
+        Excel does NOT load COM add-ins when started via automation, so add-in worksheet
+        functions (PI DataLink, Bloomberg, …) silently return nothing and the output
+        comes out empty. Best-effort: every failure is logged and skipped. The INFO log
+        of names + states is deliberate — support bundles must show whether the add-in
+        the workbook depends on actually loaded.
+        """
+        try:
+            addins = app.api.COMAddIns
+        except Exception as e:  # noqa: BLE001 — no COMAddIns collection: nothing to do
+            logger.info("COM add-ins unavailable in this Excel instance: {}", e)
+            return
+        try:
+            count = int(addins.Count)
+        except Exception:  # noqa: BLE001
+            count = 0
+        if count == 0:
+            logger.info("No COM add-ins registered for this account (COMAddIns is empty)")
+            return
+        for i in range(1, count + 1):
+            name = f"#{i}"
+            try:
+                addin = addins.Item(i)
+                name = str(addin.Description or addin.ProgId)
+                if not addin.Connect:
+                    addin.Connect = True
+                logger.info("COM add-in {!r}: connected={}", name, bool(addin.Connect))
+            except Exception as e:  # noqa: BLE001 — one bad add-in must not stop the rest
+                logger.warning("COM add-in {!r} could not be connected: {}", name, e)
 
     def _acquire_startup_lock(self) -> None:
         try:
@@ -284,7 +318,7 @@ class ExcelRun:
         self._release_startup_lock()
         return book
 
-    def refresh_and_wait(self, book: xw.Book) -> None:
+    def refresh_and_wait(self, book: xw.Book, post_refresh_wait_seconds: int = 0) -> None:
         """Force a synchronous refresh of connections/Power Query, then wait for calc."""
         # Make every query synchronous so RefreshAll blocks instead of returning early.
         try:
@@ -308,8 +342,28 @@ class ExcelRun:
         except Exception as e:  # noqa: BLE001
             logger.debug("CalculateUntilAsyncQueriesDone unavailable: {}", e)
 
-        self.app.calculate()
+        # Full rebuild forces re-evaluation of EVERY formula — essential for add-in
+        # functions (PI DataLink & co.) whose add-in was only just connected and whose
+        # cached results are stale or empty.
+        try:
+            self.app.api.CalculateFullRebuild()
+            logger.info("CalculateFullRebuild issued")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("CalculateFullRebuild unavailable ({}); using normal calculate", e)
+            self.app.calculate()
         self._wait_for_calc()
+
+        if post_refresh_wait_seconds > 0:
+            logger.info("Extra settle wait for slow add-ins: {}s", post_refresh_wait_seconds)
+            waited = 0.0
+            while waited < post_refresh_wait_seconds:
+                self._check_deadline("post-refresh wait")
+                step = min(1.0, post_refresh_wait_seconds - waited)
+                time.sleep(step)
+                waited += step
+            # The add-in may have filled cells asynchronously — settle the calc chain.
+            self.app.calculate()
+            self._wait_for_calc()
 
     def _wait_for_calc(self) -> None:
         assert self.app is not None

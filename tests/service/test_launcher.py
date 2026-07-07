@@ -173,8 +173,40 @@ def test_success_real_run_no_email_when_not_optedin(tmp_path, monkeypatch):
 
     assert rec.status is RunStatus.SUCCESS
     assert rec.email_sent is False
+    assert "'Email report on real runs' option is off" in (rec.email_note or "")
     assert len(rec.pdf_paths) == 2
     assert Path(rec.output_xlsx).exists()
+
+
+def test_success_real_run_emails_when_opted_in(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    handler = _Capture()
+    port = _free_port()
+    controller = Controller(handler, hostname="127.0.0.1", port=port)
+    controller.start()
+    try:
+        job = _job(tmp_path, send_report_email=True)
+        launcher = _launcher(tmp_path, _config(job, smtp_port=port))
+        rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+    finally:
+        controller.stop()
+
+    assert rec.email_sent is True
+    assert rec.email_note == "sent to 1 production recipient(s)"
+    assert handler.envelopes and set(handler.envelopes[0]) == {"boss@corp.example.com"}
+
+
+def test_smtp_down_records_failed_note_without_failing_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    # SMTP points at a refused port -> send raises -> run still succeeds, note says failed.
+    job = _job(tmp_path, send_report_email=True)
+    launcher = _launcher(tmp_path, _config(job, smtp_port=1))
+
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+
+    assert rec.status is RunStatus.SUCCESS
+    assert rec.email_sent is False
+    assert (rec.email_note or "").startswith("failed:")
 
 
 def test_fail_records_failed_and_no_email(tmp_path, monkeypatch):
@@ -186,6 +218,7 @@ def test_fail_records_failed_and_no_email(tmp_path, monkeypatch):
 
     assert rec.status is RunStatus.FAILED
     assert rec.email_sent is False
+    assert rec.email_note == "not sent — run did not succeed"
     assert "boom" in (rec.error_summary or "")
 
 
@@ -225,6 +258,7 @@ def test_test_run_sends_email_to_test_recipients(tmp_path, monkeypatch):
 
     assert rec.status is RunStatus.SUCCESS
     assert rec.email_sent is True
+    assert rec.email_note == "sent to 1 test recipient(s)"
     assert handler.envelopes and set(handler.envelopes[0]) == {"dev@corp.example.com"}
 
 

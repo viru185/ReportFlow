@@ -34,3 +34,5 @@ class RunRecord(BaseModel):
     error_summary: str | None = None
     worker_log_path: str | None = None
     email_sent: bool = False
+    # Human-readable email outcome: "sent to N recipient(s)", "not sent — …", "failed: …"
+    email_note: str | None = None

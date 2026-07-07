@@ -58,3 +58,42 @@ def test_pdf_paths_round_trip(tmp_path):
     rec.pdf_paths = ["C:/out/Summary.pdf", "C:/out/Detail.pdf"]
     store.upsert(rec)
     assert store.get("r1").pdf_paths == ["C:/out/Summary.pdf", "C:/out/Detail.pdf"]
+
+
+def test_email_note_round_trip(tmp_path):
+    store = RunStore(tmp_path / "runs.db")
+    rec = _rec()
+    rec.email_note = "sent to 2 production recipient(s)"
+    store.upsert(rec)
+    assert store.get("r1").email_note == "sent to 2 production recipient(s)"
+
+
+def test_migration_adds_email_note_to_old_db(tmp_path):
+    """A database created before the email_note column existed gains it on open."""
+    import sqlite3
+
+    db = tmp_path / "runs.db"
+    old_schema = """
+    CREATE TABLE runs (
+        run_id TEXT PRIMARY KEY, job_name TEXT NOT NULL, trigger TEXT NOT NULL,
+        status TEXT NOT NULL, is_test INTEGER NOT NULL DEFAULT 0, started_at TEXT,
+        finished_at TEXT, exit_code INTEGER, output_xlsx TEXT,
+        pdf_paths TEXT NOT NULL DEFAULT '[]', error_summary TEXT,
+        worker_log_path TEXT, email_sent INTEGER NOT NULL DEFAULT 0
+    );
+    """
+    conn = sqlite3.connect(db)
+    conn.executescript(old_schema)
+    conn.execute(
+        "INSERT INTO runs (run_id, job_name, trigger, status) VALUES ('old', 'j', "
+        "'manual', 'success')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = RunStore(db)  # opening migrates
+    old = store.get("old")
+    assert old is not None and old.email_note is None
+    old.email_note = "sent to 1 test recipient(s)"
+    store.upsert(old)
+    assert store.get("old").email_note == "sent to 1 test recipient(s)"

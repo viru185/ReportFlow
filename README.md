@@ -163,6 +163,22 @@ retried automatically — it's recorded and visible in the history.
   until you click **Update now**; the download shows progress and the installer upgrades
   automatically, preserving jobs, settings, and logs.
 
+### Workbooks using PI DataLink (or other Excel add-ins)
+
+ReportFlow connects Excel **COM add-ins** automatically at the start of every run (they do
+not load by themselves in an automated Excel session) and forces a full recalculation so
+add-in functions fetch live data. If the output is still empty or incomplete:
+
+- Check the run's worker log — it lists every COM add-in found and its connect state. If
+  the add-in (e.g. PI DataLink) is **not listed**, it is installed per-user only: reinstall
+  it "for all users", or run the ReportFlow service under that user account
+  (Services → ReportFlow → Log On, or `nssm set ReportFlow ObjectName`).
+- If the add-in loads but data lags, set **Extra wait after refresh** (job → Advanced) to
+  give it time (e.g. 30–120 s).
+
+Every run's history entry also shows an **email:** line — sent to how many recipients, or
+exactly why nothing was sent (e.g. the job's "Email report on real runs" option is off).
+
 ### Where data lives
 
 Everything runtime lives under **`C:\ProgramData\ReportFlow\`**:
