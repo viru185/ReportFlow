@@ -1,6 +1,6 @@
 [project]
 name = "reportflow"
-version = "0.3.0"
+version = "0.3.1"
 description = "Windows desktop automation for Excel-based reporting (UI + Service + Excel Worker)."
 readme = "README.md"
 requires-python = ">=3.11"
