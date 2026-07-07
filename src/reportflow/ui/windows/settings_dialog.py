@@ -66,6 +66,13 @@ class SettingsDialog(QDialog):
             "Stored encrypted on this machine (Windows DPAPI) — never in the config file. "
             "Leave blank to keep the current password."
         )
+        self._pw_toggle = self.smtp_password.addAction(
+            self.style().standardIcon(self.style().StandardPixmap.SP_DialogYesButton),
+            QLineEdit.ActionPosition.TrailingPosition,
+        )
+        self._pw_toggle.setToolTip("Show/hide the password while typing.")
+        self._pw_toggle.setCheckable(True)
+        self._pw_toggle.toggled.connect(self._toggle_password_visible)
         self.password_status = QLabel("")
         self.password_status.setProperty("muted", True)
         clear_pw = QPushButton("Clear stored password")
@@ -79,6 +86,13 @@ class SettingsDialog(QDialog):
         tls_row.addWidget(self.smtp_ssl)
         tls_row.addStretch()
 
+        test_btn = QPushButton("Test connection")
+        test_btn.setToolTip(
+            "Connect to the SMTP server with these settings (and log in when a username "
+            "is set) to verify they work — no email is sent."
+        )
+        test_btn.clicked.connect(self._test_connection)
+
         smtp_form.addRow("Host", self.smtp_host)
         smtp_form.addRow("Port", self.smtp_port)
         smtp_form.addRow("", tls_row)
@@ -86,9 +100,10 @@ class SettingsDialog(QDialog):
         smtp_form.addRow("Username", self.smtp_user)
         smtp_form.addRow("Password", pw_row)
         smtp_form.addRow("", self.password_status)
+        smtp_form.addRow("", test_btn)
 
         # Recipients
-        rcpt_box = QGroupBox("Test && developer email")
+        rcpt_box = QGroupBox("Test && support email")
         rcpt_form = QFormLayout(rcpt_box)
         self.test_recipients = QLineEdit()
         self.test_recipients.setToolTip(
@@ -97,10 +112,11 @@ class SettingsDialog(QDialog):
         )
         self.dev_recipients = QLineEdit()
         self.dev_recipients.setToolTip(
-            "Where 'Send developer logs' bundles are emailed. Comma-separated."
+            "Receives the diagnostic log bundles sent from File → Send logs to support. "
+            "Comma-separated."
         )
         rcpt_form.addRow("Test recipients", self.test_recipients)
-        rcpt_form.addRow("Developer email", self.dev_recipients)
+        rcpt_form.addRow("Support email", self.dev_recipients)
 
         # App settings
         app_box = QGroupBox("Application")
@@ -118,9 +134,15 @@ class SettingsDialog(QDialog):
         self.log_retention.setRange(1, 365)
         self.log_retention.setSuffix(" days")
         self.log_retention.setToolTip("How long rolling log files are kept.")
+        self.check_updates = QCheckBox("Check for updates when the app starts")
+        self.check_updates.setToolTip(
+            "Silently checks GitHub for a newer version on startup (skipped when offline). "
+            "Updates are only ever installed when you click Update."
+        )
         app_form.addRow("Max parallel runs", self.max_concurrency)
         app_form.addRow("Default timeout", self.default_timeout)
         app_form.addRow("Log retention", self.log_retention)
+        app_form.addRow("", self.check_updates)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -159,21 +181,18 @@ class SettingsDialog(QDialog):
         self.default_timeout.setValue(int(app_cfg.get("default_timeout_seconds", 900)))
         self.log_retention.setValue(int(app_cfg.get("log_retention_days", 30)))
 
+        ui_cfg = cfg.get("ui", {})
+        self.check_updates.setChecked(bool(ui_cfg.get("check_updates_on_startup", True)))
+
         self._app_section_base: dict[str, Any] = app_cfg
+        self._ui_section_base: dict[str, Any] = ui_cfg
         self.password_status.setText(
             "A password is currently stored." if pw_set else "No password stored yet."
         )
 
     def _save(self) -> None:
         sections: dict[str, Any] = {
-            "smtp": {
-                "host": self.smtp_host.text().strip(),
-                "port": self.smtp_port.value(),
-                "use_starttls": self.smtp_starttls.isChecked(),
-                "use_ssl": self.smtp_ssl.isChecked(),
-                "from_address": self.smtp_from.text().strip(),
-                "username": self.smtp_user.text().strip() or None,
-            },
+            "smtp": self._smtp_form_values(),
             "test": {
                 "recipients": _split_csv(self.test_recipients.text()),
                 "developer_bundle_recipients": _split_csv(self.dev_recipients.text()),
@@ -183,6 +202,10 @@ class SettingsDialog(QDialog):
                 "max_global_concurrency": self.max_concurrency.value(),
                 "default_timeout_seconds": self.default_timeout.value(),
                 "log_retention_days": self.log_retention.value(),
+            },
+            "ui": {
+                **getattr(self, "_ui_section_base", {}),
+                "check_updates_on_startup": self.check_updates.isChecked(),
             },
         }
         try:
@@ -194,6 +217,32 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Save failed", str(e))
             return
         self.accept()
+
+    def _toggle_password_visible(self, show: bool) -> None:
+        self.smtp_password.setEchoMode(
+            QLineEdit.EchoMode.Normal if show else QLineEdit.EchoMode.Password
+        )
+
+    def _smtp_form_values(self) -> dict[str, Any]:
+        return {
+            "host": self.smtp_host.text().strip(),
+            "port": self.smtp_port.value(),
+            "use_starttls": self.smtp_starttls.isChecked(),
+            "use_ssl": self.smtp_ssl.isChecked(),
+            "from_address": self.smtp_from.text().strip(),
+            "username": self.smtp_user.text().strip() or None,
+        }
+
+    def _test_connection(self) -> None:
+        payload = {**self._smtp_form_values(), "password": self.smtp_password.text() or None}
+        try:
+            self._api.smtp_test(payload)
+        except ApiError as e:
+            QMessageBox.warning(self, "SMTP test failed", str(e))
+            return
+        QMessageBox.information(
+            self, "SMTP test", "Connection successful — the SMTP settings work."
+        )
 
     def _clear_password(self) -> None:
         confirm = QMessageBox.question(self, "Clear password", "Remove the stored SMTP password?")

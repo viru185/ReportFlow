@@ -47,10 +47,16 @@ class FakeApi:
                 "default_timeout_seconds": 900,
                 "log_retention_days": 30,
             },
+            # Startup update checks stay off in tests so no thread hits the network.
+            "ui": {"api_base_url": "http://127.0.0.1:8787", "check_updates_on_startup": False},
         }
 
     def smtp_password_status(self):
         return True
+
+    def smtp_test(self, smtp):
+        self.smtp_tested = smtp
+        return {"ok": True}
 
     def update_settings(self, sections):
         self.saved_settings = sections
@@ -289,6 +295,81 @@ def test_help_dialog_builds(qtbot):
     assert "Help Guide" in text
     assert "Concurrency group" in text
     assert "Timeout" in text
+
+
+def test_editor_is_tabbed_not_scrollable(qtbot):
+    from PySide6.QtWidgets import QScrollArea, QTabWidget
+
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi())
+    qtbot.addWidget(dlg)
+    assert isinstance(dlg.tabs, QTabWidget)
+    assert dlg.tabs.count() == 5  # General / Output / Schedule / Email / Advanced
+    assert not dlg.findChildren(QScrollArea)  # compact: no scrolling anywhere
+
+
+def test_settings_smtp_test_uses_form_values(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows import settings_dialog as sd
+
+    # Message boxes are modal and would hang the offscreen test run.
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+
+    api = FakeApi()
+    dlg = sd.SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    dlg.smtp_host.setText("smtp.other.com")
+    dlg.smtp_password.setText("secret")
+    dlg._test_connection()
+    assert api.smtp_tested["host"] == "smtp.other.com"
+    assert api.smtp_tested["password"] == "secret"
+
+
+def test_settings_password_eye_toggle(qtbot):
+    from PySide6.QtWidgets import QLineEdit
+
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    dlg = SettingsDialog(FakeApi())
+    qtbot.addWidget(dlg)
+    assert dlg.smtp_password.echoMode() == QLineEdit.EchoMode.Password
+    dlg._pw_toggle.setChecked(True)
+    assert dlg.smtp_password.echoMode() == QLineEdit.EchoMode.Normal
+    dlg._pw_toggle.setChecked(False)
+    assert dlg.smtp_password.echoMode() == QLineEdit.EchoMode.Password
+
+
+def test_settings_saves_update_toggle(qtbot):
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    api = FakeApi()
+    dlg = SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    assert dlg.check_updates.isChecked() is False  # from FakeApi config
+    dlg.check_updates.setChecked(True)
+    dlg._save()
+    assert api.saved_settings["ui"]["check_updates_on_startup"] is True
+    assert api.saved_settings["ui"]["api_base_url"]  # base section preserved
+
+
+def test_update_dialog_builds_from_info(qtbot):
+    from reportflow.ui.updater import UpdateInfo
+    from reportflow.ui.windows.update_dialog import UpdateDialog
+
+    info = UpdateInfo(
+        version="9.9.9", notes="# Big changes", installer_url="https://x/setup.exe", size=1
+    )
+    dlg = UpdateDialog(info)
+    qtbot.addWidget(dlg)
+    assert dlg.update_btn.isEnabled()
+
+    no_asset = UpdateInfo(version="9.9.9", notes="", installer_url=None, size=None)
+    dlg2 = UpdateDialog(no_asset)
+    qtbot.addWidget(dlg2)
+    assert not dlg2.update_btn.isEnabled()
 
 
 # -- theme -------------------------------------------------------------------------

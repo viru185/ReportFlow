@@ -110,6 +110,16 @@ class SmtpPasswordUpdate(BaseModel):
     password: str
 
 
+class SmtpTestRequest(BaseModel):
+    host: str = ""
+    port: int = 587
+    use_starttls: bool = True
+    use_ssl: bool = False
+    from_address: str = ""
+    username: str | None = None
+    password: str | None = None  # None/empty -> fall back to the stored secret
+
+
 class EmailTemplateUpdate(BaseModel):
     content: str
 
@@ -213,6 +223,18 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
     def clear_smtp_password() -> dict[str, Any]:
         secrets.delete_secret(SMTP_PASSWORD_KEY)
         return {"ok": True, "set": False}
+
+    @app.post("/system/smtp-test")
+    def smtp_test(req: SmtpTestRequest) -> dict[str, Any]:
+        from reportflow.core.config.models import SmtpConfig
+        from reportflow.core.email.sender import test_smtp_connection
+
+        try:
+            smtp = SmtpConfig.model_validate(req.model_dump(exclude={"password"}))
+            test_smtp_connection(smtp, req.password or None)
+        except Exception as e:  # noqa: BLE001 — surface the reason to the UI
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True}
 
     @app.get("/system/logs")
     def system_logs(process: str = "service", tail: int = 500) -> dict[str, Any]:

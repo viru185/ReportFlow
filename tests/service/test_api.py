@@ -123,6 +123,49 @@ def test_config_endpoint_has_no_secrets(client):
     assert "password" not in str(cfg).lower()
 
 
+def test_smtp_test_success_against_local_server(client):
+    import socket
+
+    from aiosmtpd.controller import Controller
+
+    class _Ok:
+        async def handle_DATA(self, server, session, envelope):
+            return "250 OK"
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    controller = Controller(_Ok(), hostname="127.0.0.1", port=port)
+    controller.start()
+    try:
+        c, _ = client
+        resp = c.post(
+            "/system/smtp-test",
+            json={"host": "127.0.0.1", "port": port, "use_starttls": False, "username": ""},
+        )
+        assert resp.status_code == 200 and resp.json()["ok"] is True
+    finally:
+        controller.stop()
+
+
+def test_smtp_test_failure_reports_reason(client):
+    c, _ = client
+    resp = c.post(
+        "/system/smtp-test",
+        json={"host": "127.0.0.1", "port": 1, "use_starttls": False, "username": ""},
+    )
+    assert resp.status_code == 400
+    assert "could not connect" in resp.json()["detail"]
+
+
+def test_smtp_test_requires_host(client):
+    c, _ = client
+    resp = c.post("/system/smtp-test", json={"host": "", "username": ""})
+    assert resp.status_code == 400
+    assert "host" in resp.json()["detail"].lower()
+
+
 def test_settings_update_persists(client):
     c, _ = client
     resp = c.put(
