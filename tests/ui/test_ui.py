@@ -19,9 +19,16 @@ class FakeApi:
         if not self._connected:
             raise ApiError("service not reachable")
 
+    config_error = None
+
     def system_status(self):
         self._check()
-        return {"version": "0.2.0", "active_runs": ["r1"], "scheduled_jobs": ["a#0", "a#1"]}
+        return {
+            "version": "0.2.0",
+            "active_runs": ["r1"],
+            "scheduled_jobs": ["a#0", "a#1"],
+            "config_error": self.config_error,
+        }
 
     def list_jobs(self):
         self._check()
@@ -222,6 +229,18 @@ def test_main_window_disconnected_state(qtbot):
     win = MainWindow(FakeApi(connected=False))
     qtbot.addWidget(win)
     assert "not reachable" in win.conn_label.text()
+
+
+def test_main_window_surfaces_config_error(qtbot):
+    from reportflow.ui.windows.main_window import MainWindow
+
+    api = FakeApi(jobs=[])
+    api.config_error = "could not parse reportflow.toml: Illegal character"
+    win = MainWindow(api)
+    qtbot.addWidget(win)
+
+    assert "configuration file is invalid" in win.statusBar().currentMessage()
+    assert "Illegal character" in win.conn_label.toolTip()
 
 
 # -- dialogs ----------------------------------------------------------------------

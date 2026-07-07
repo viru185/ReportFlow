@@ -166,6 +166,33 @@ def test_smtp_test_requires_host(client):
     assert "host" in resp.json()["detail"].lower()
 
 
+def test_invalid_config_is_surfaced_and_backed_up(monkeypatch):
+    """A corrupt config file must be visible in /system/status, preserved as a backup,
+    and cleared once valid settings are saved."""
+    from reportflow.core import paths
+
+    paths.ensure_dirs()
+    cfg_file = paths.config_file()
+    cfg_file.write_text('config_version = 1\n[smtp]\nhost = "broken\n', encoding="utf-8")
+
+    state = ServiceState(worker_command=[sys.executable, FAKE])
+    app = create_app(state)
+    with TestClient(app) as c:
+        status = c.get("/system/status").json()
+        assert status["config_error"] is not None
+        assert "reportflow.toml" in status["config_error"]
+        assert status["job_count"] == 0  # fell back to the default config
+
+        backups = list(cfg_file.parent.glob("reportflow.toml.invalid-*"))
+        assert backups, "the broken config was not backed up"
+        assert "broken" in backups[0].read_text(encoding="utf-8")
+
+        # Saving valid settings rewrites the file and clears the error.
+        resp = c.put("/settings", json={"smtp": {"host": "smtp.x.com", "username": ""}})
+        assert resp.status_code == 200
+        assert c.get("/system/status").json()["config_error"] is None
+
+
 def test_settings_update_persists(client):
     c, _ = client
     resp = c.put(

@@ -41,6 +41,11 @@ Name: "{commonappdata}\ReportFlow\logs\service"; Permissions: users-modify
 Name: "{commonappdata}\ReportFlow\state";        Permissions: users-modify
 Name: "{commonappdata}\ReportFlow\runs";         Permissions: users-modify
 Name: "{commonappdata}\ReportFlow\templates";    Permissions: users-modify
+; Excel COM automation under LocalSystem (how the service runs) fails until these
+; systemprofile Desktop folders exist — a long-standing Office/session-0 quirk.
+Name: "{win}\System32\config\systemprofile\Desktop"; Check: IsWin64
+Name: "{win}\SysWOW64\config\systemprofile\Desktop"; Check: IsWin64
+Name: "{win}\System32\config\systemprofile\Desktop"; Check: not IsWin64
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
