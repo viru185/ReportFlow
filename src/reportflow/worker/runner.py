@@ -46,7 +46,7 @@ def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) ->
     try:
         with run:
             book = run.open_workbook(request.input_excel_path, request.sheet_names)
-            run.refresh_and_wait(book, request.post_refresh_wait_seconds)
+            run.refresh_and_wait(book, request.post_refresh_wait_seconds, request.sheet_names)
             if request.freeze_values:
                 run.freeze_sheets(book, request.sheet_names)
             if request.fail_if_sheet_empty:

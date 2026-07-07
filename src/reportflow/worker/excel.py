@@ -307,40 +307,64 @@ class ExcelRun:
         self._release_startup_lock()
         return book
 
-    def refresh_and_wait(self, book: xw.Book, post_refresh_wait_seconds: int = 0) -> None:
-        """Force a synchronous refresh of connections/Power Query, then wait for calc."""
-        # Make every query synchronous so RefreshAll blocks instead of returning early.
-        try:
-            for conn in book.api.Connections:
-                for sub in ("OLEDBConnection", "ODBCConnection"):
-                    try:
-                        getattr(conn, sub).BackgroundQuery = False
-                    except Exception:  # noqa: BLE001 — connection type may lack this sub-object
-                        pass
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Could not enumerate workbook connections: {}", e)
+    def refresh_and_wait(
+        self,
+        book: xw.Book,
+        post_refresh_wait_seconds: int = 0,
+        sheet_names: list[str] | None = None,
+    ) -> None:
+        """Refresh external data and keep retrying until the selected sheets are populated."""
+        max_attempts = 3 if sheet_names else 1
 
-        logger.info("Refreshing external data / Power Query…")
-        # Let any COM error propagate unwrapped so the runner can classify it as transient
-        # (retryable) vs. deterministic.
-        book.api.RefreshAll()
+        for attempt in range(1, max_attempts + 1):
+            # Make every query synchronous so RefreshAll blocks instead of returning early.
+            try:
+                for conn in book.api.Connections:
+                    for sub in ("OLEDBConnection", "ODBCConnection"):
+                        try:
+                            getattr(conn, sub).BackgroundQuery = False
+                        except Exception:  # noqa: BLE001 — connection type may lack this sub-object
+                            pass
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Could not enumerate workbook connections: {}", e)
 
-        assert self.app is not None
-        try:
-            self.app.api.CalculateUntilAsyncQueriesDone()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("CalculateUntilAsyncQueriesDone unavailable: {}", e)
+            logger.info("Refreshing external data / Power Query (attempt {}/{})…", attempt, max_attempts)
+            # Let any COM error propagate unwrapped so the runner can classify it as transient
+            # (retryable) vs. deterministic.
+            book.api.RefreshAll()
 
-        # Full rebuild forces re-evaluation of EVERY formula — essential for add-in
-        # functions (PI DataLink & co.) whose add-in was only just connected and whose
-        # cached results are stale or empty.
-        try:
-            self.app.api.CalculateFullRebuild()
-            logger.info("CalculateFullRebuild issued")
-        except Exception as e:  # noqa: BLE001
-            logger.debug("CalculateFullRebuild unavailable ({}); using normal calculate", e)
-            self.app.calculate()
-        self._wait_for_calc()
+            assert self.app is not None
+            try:
+                self.app.api.CalculateUntilAsyncQueriesDone()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("CalculateUntilAsyncQueriesDone unavailable: {}", e)
+
+            # Full rebuild forces re-evaluation of EVERY formula — essential for add-in
+            # functions (PI DataLink & co.) whose add-in was only just connected and whose
+            # cached results are stale or empty.
+            try:
+                self.app.api.CalculateFullRebuild()
+                logger.info("CalculateFullRebuild issued")
+            except Exception as e:  # noqa: BLE001
+                logger.debug("CalculateFullRebuild unavailable ({}); using normal calculate", e)
+                self.app.calculate()
+            self._wait_for_calc()
+
+            if sheet_names and self._sheets_have_content(book, sheet_names):
+                logger.info("Selected sheets populated after {} refresh attempt(s)", attempt)
+                break
+
+            if attempt < max_attempts:
+                retry_wait = max(1.0, min(5.0, post_refresh_wait_seconds / 2.0 if post_refresh_wait_seconds > 0 else 1.0))
+                logger.warning(
+                    "Selected sheets still empty after attempt {}/{}; waiting {:.1f}s before retrying",
+                    attempt,
+                    max_attempts,
+                    retry_wait,
+                )
+                self._check_deadline("waiting for data refresh")
+                time.sleep(retry_wait)
+                continue
 
         if post_refresh_wait_seconds > 0:
             logger.info("Extra settle wait for slow add-ins: {}s", post_refresh_wait_seconds)
@@ -353,6 +377,31 @@ class ExcelRun:
             # The add-in may have filled cells asynchronously — settle the calc chain.
             self.app.calculate()
             self._wait_for_calc()
+
+    @staticmethod
+    def _sheet_has_content(sheet: xw.Sheet) -> bool:
+        used = sheet.used_range
+        values = used.value
+        if values is None:
+            return False
+
+        flattened: list[object] = []
+        if isinstance(values, (list, tuple)):
+            for item in values:
+                if isinstance(item, (list, tuple)):
+                    flattened.extend(cell for cell in item if cell is not None)
+                elif item is not None:
+                    flattened.append(item)
+        elif values is not None:
+            flattened.append(values)
+        return bool(flattened)
+
+    def _sheets_have_content(self, book: xw.Book, sheet_names: list[str]) -> bool:
+        for name in sheet_names:
+            self._check_deadline(f"checking sheet {name}")
+            if not self._sheet_has_content(book.sheets[name]):
+                return False
+        return True
 
     def _wait_for_calc(self) -> None:
         assert self.app is not None
@@ -370,6 +419,17 @@ class ExcelRun:
             iterations += 1
             time.sleep(_CALC_POLL_SECONDS)
 
+    @staticmethod
+    def _refresh_sheet_charts(sheet: xw.Sheet) -> None:
+        try:
+            for chart_object in sheet.api.ChartObjects():
+                try:
+                    chart_object.Chart.Refresh()
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("Chart refresh failed for sheet {}: {}", sheet.name, e)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not enumerate charts for sheet {}: {}", sheet.name, e)
+
     def freeze_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
         """Convert formulas to static values on the SELECTED sheets only."""
         for name in sheet_names:
@@ -379,6 +439,11 @@ class ExcelRun:
             used.Copy()
             used.PasteSpecial(Paste=-4163)
             self.app.api.CutCopyMode = False
+            try:
+                sheet.api.Calculate()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Sheet calculation failed for {}: {}", name, e)
+            self._refresh_sheet_charts(sheet)
             logger.info("Froze formulas to values on sheet: {}", name)
 
     def ensure_sheets_not_empty(self, book: xw.Book, sheet_names: list[str]) -> None:
