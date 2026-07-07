@@ -190,10 +190,19 @@ class MainWindow(QMainWindow):
         self.card_active[1].setText(str(len(status.get("active_runs", []))))
         self.card_failures[1].setText(str(failures))
 
-        self.statusBar().showMessage(
-            f"Connected · v{status.get('version')} · "
-            f"{len(status.get('scheduled_jobs', []))} trigger(s) scheduled"
-        )
+        config_error = status.get("config_error")
+        if config_error:
+            message = (
+                "⚠ The configuration file is invalid — jobs are NOT loaded until it is "
+                f"fixed or re-saved from Settings. ({config_error})"
+            )
+            self.statusBar().showMessage(message)
+            self.conn_label.setToolTip(message)
+        else:
+            self.statusBar().showMessage(
+                f"Connected · v{status.get('version')} · "
+                f"{len(status.get('scheduled_jobs', []))} trigger(s) scheduled"
+            )
         self._populate(jobs)
 
     def _populate(self, jobs: list[dict]) -> None:

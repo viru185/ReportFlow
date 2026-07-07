@@ -39,25 +39,44 @@ class ServiceState:
 
     def __init__(self, worker_command: list[str] | None = None) -> None:
         seed_data_files()
+        self.config_error: str | None = None
         self.config: AppConfig = self._load_or_default()
         self.run_store = RunStore()
         self.launcher = Launcher(self.run_store, lambda: self.config, worker_command=worker_command)
         self.scheduler = SchedulerService(self.launcher)
         self._lock = threading.Lock()
 
-    @staticmethod
-    def _load_or_default() -> AppConfig:
+    def _load_or_default(self) -> AppConfig:
         try:
-            return load_config()
+            config = load_config()
+            self.config_error = None
+            return config
         except ConfigError as e:
             logger.error("Config invalid at startup; API stays up, scheduling disabled: {}", e)
+            self.config_error = str(e)
+            self._backup_invalid_config()
             from reportflow.core.config.defaults import default_config
 
             return default_config()
 
+    @staticmethod
+    def _backup_invalid_config() -> None:
+        """Preserve the broken file — a later Settings save would silently overwrite it."""
+        src = paths.config_file()
+        if not src.exists():
+            return
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = src.with_name(f"{src.name}.invalid-{stamp}")
+        try:
+            backup.write_bytes(src.read_bytes())
+            logger.warning("Backed up the invalid config to {}", backup)
+        except OSError as e:
+            logger.error("Could not back up the invalid config: {}", e)
+
     def reload(self) -> None:
         with self._lock:
             self.config = load_config()
+            self.config_error = None
             self.scheduler.rebuild(self.config)
 
     def save_jobs(self, jobs: list[JobConfig]) -> None:
@@ -68,6 +87,7 @@ class ServiceState:
             new_config = AppConfig.model_validate(data)
             save_config(new_config)
             self.config = new_config
+            self.config_error = None
             self.scheduler.rebuild(new_config)
 
     def save_settings(self, sections: dict[str, Any]) -> None:
@@ -84,6 +104,7 @@ class ServiceState:
             new_config = AppConfig.model_validate(data)
             save_config(new_config)
             self.config = new_config
+            self.config_error = None
             self.scheduler.rebuild(new_config)
 
 
@@ -183,6 +204,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             "active_runs": svc().launcher.active_run_ids(),
             "scheduled_jobs": svc().scheduler.scheduled_job_names(),
             "job_count": len(svc().config.jobs),
+            "config_error": svc().config_error,
         }
 
     @app.get("/config")

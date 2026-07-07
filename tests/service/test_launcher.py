@@ -18,7 +18,11 @@ from reportflow.core.config.models import (
 )
 from reportflow.core.ipc.contract import RunStatus
 from reportflow.core.state import RunStore, RunTrigger
-from reportflow.service.launcher import Launcher, resolve_output_paths
+from reportflow.service.launcher import (
+    Launcher,
+    default_worker_command,
+    resolve_output_paths,
+)
 
 FAKE = str(Path(__file__).parent / "fake_worker.py")
 
@@ -67,6 +71,67 @@ class _Capture:
     async def handle_DATA(self, server, session, envelope):
         self.envelopes.append(list(envelope.rcpt_tos))
         return "250 OK"
+
+
+def _freeze(monkeypatch, service_exe):
+    """Simulate a frozen service exe at the given path."""
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    monkeypatch.setattr(_sys, "executable", str(service_exe))
+    monkeypatch.delenv("REPORTFLOW_WORKER_CMD", raising=False)
+
+
+def test_frozen_worker_resolves_installer_layout(tmp_path, monkeypatch):
+    # {app}\service\reportflow-service.exe + {app}\worker\reportflow-worker.exe (siblings)
+    (tmp_path / "service").mkdir()
+    (tmp_path / "worker").mkdir()
+    service_exe = tmp_path / "service" / "reportflow-service.exe"
+    service_exe.write_bytes(b"x")
+    worker_exe = tmp_path / "worker" / "reportflow-worker.exe"
+    worker_exe.write_bytes(b"x")
+
+    _freeze(monkeypatch, service_exe)
+    assert default_worker_command() == [str(worker_exe)]
+
+
+def test_frozen_worker_resolves_beside_service(tmp_path, monkeypatch):
+    service_exe = tmp_path / "reportflow-service.exe"
+    service_exe.write_bytes(b"x")
+    worker_exe = tmp_path / "reportflow-worker.exe"
+    worker_exe.write_bytes(b"x")
+
+    _freeze(monkeypatch, service_exe)
+    assert default_worker_command() == [str(worker_exe)]
+
+
+def test_frozen_worker_missing_raises_with_all_paths(tmp_path, monkeypatch):
+    (tmp_path / "service").mkdir()
+    service_exe = tmp_path / "service" / "reportflow-service.exe"
+    service_exe.write_bytes(b"x")
+
+    _freeze(monkeypatch, service_exe)
+    import pytest as _pytest
+
+    with _pytest.raises(FileNotFoundError) as exc:
+        default_worker_command()
+    message = str(exc.value)
+    assert "worker executable not found" in message
+    assert str(tmp_path / "worker" / "reportflow-worker.exe") in message
+    assert "Reinstall" in message
+
+
+def test_missing_worker_records_actionable_error(tmp_path, monkeypatch):
+    launcher = Launcher(
+        RunStore(tmp_path / "runs.db"),
+        lambda: _config(_job(tmp_path)),
+        worker_command=[str(tmp_path / "does-not-exist.exe")],
+    )
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+
+    assert rec.status is RunStatus.CRASHED
+    assert "worker executable not found" in (rec.error_summary or "")
+    assert "does-not-exist.exe" in (rec.error_summary or "")
 
 
 def test_resolve_output_paths_with_folder_and_stem(tmp_path):

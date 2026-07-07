@@ -34,15 +34,38 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
+def _frozen_worker_candidates() -> list[Path]:
+    """Possible worker exe locations relative to the frozen service exe.
+
+    The installer lays out ``{app}\\service\\reportflow-service.exe`` and
+    ``{app}\\worker\\reportflow-worker.exe`` as SIBLING folders, so the primary candidate
+    is one level up from the service's own directory (``install_dir()`` is the exe's own
+    folder when frozen — using it directly was the v0.3.0 field bug, WinError 2).
+    """
+    exe_dir = paths.install_dir()
+    return [
+        exe_dir.parent / "worker" / "reportflow-worker.exe",  # installer layout
+        exe_dir / "worker" / "reportflow-worker.exe",  # flat/alternative layouts
+        exe_dir / "reportflow-worker.exe",  # worker beside the service exe
+    ]
+
+
 def default_worker_command() -> list[str]:
-    """The command to invoke the worker: the sibling exe when frozen, else the module."""
+    """The command to invoke the worker: the installed exe when frozen, else the module."""
     override = os.environ.get("REPORTFLOW_WORKER_CMD")
     if override:
         import json
 
         return json.loads(override)
     if getattr(sys, "frozen", False):
-        return [str(paths.install_dir() / "worker" / "reportflow-worker.exe")]
+        candidates = _frozen_worker_candidates()
+        for candidate in candidates:
+            if candidate.exists():
+                return [str(candidate)]
+        tried = "; ".join(str(c) for c in candidates)
+        raise FileNotFoundError(
+            f"worker executable not found — tried: {tried}. Reinstall ReportFlow."
+        )
     return [sys.executable, "-m", "reportflow.worker"]
 
 
@@ -211,16 +234,31 @@ class Launcher:
     ) -> None:
         req_path = write_request(request, request.result_path.parent / "request.json")
         stdio_path = request.result_path.parent / "worker_stdio.log"
-        command = self._worker_command or default_worker_command()
 
         logger.info("Launching worker for run {} (job {!r})", request.run_id, job.name)
-        with open(stdio_path, "wb") as stdio:
-            proc = subprocess.Popen(
-                [*command, "--request", str(req_path)],
-                stdout=stdio,
-                stderr=subprocess.STDOUT,
-                creationflags=_CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP,
+        try:
+            command = self._worker_command or default_worker_command()
+            with open(stdio_path, "wb") as stdio:
+                proc = subprocess.Popen(
+                    [*command, "--request", str(req_path)],
+                    stdout=stdio,
+                    stderr=subprocess.STDOUT,
+                    creationflags=_CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP,
+                )
+        except FileNotFoundError as e:
+            # The worker exe is missing/misplaced — record something actionable instead
+            # of a bare WinError 2 (the v0.3.0 field failure).
+            detail = (
+                str(e)
+                if "worker executable" in str(e)
+                else (f"worker executable not found: {command[0]} — reinstall ReportFlow ({e})")
             )
+            logger.error("Run {}: {}", request.run_id, detail)
+            record.status = RunStatus.CRASHED
+            record.error_summary = detail[:500]
+            record.finished_at = datetime.now().isoformat(timespec="seconds")
+            self.run_store.upsert(record)
+            return
         with self._active_guard:
             self._active[request.run_id] = proc
 
