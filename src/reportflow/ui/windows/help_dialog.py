@@ -18,6 +18,8 @@ _HELP_HTML = f"""
 <a href="#runs">Running &amp; test runs</a> ·
 <a href="#logs">Logs &amp; history</a> ·
 <a href="#settings">Settings (SMTP &amp; more)</a> ·
+<a href="#transfer">Import &amp; export</a> ·
+<a href="#updates">Updates</a> ·
 <a href="#advanced">Advanced options</a>
 </p>
 
@@ -88,19 +90,43 @@ retried automatically — they stay visible in the history.</p>
 <li><b>Logs</b> on a job card — that job's run history with status, timings, output paths,
     error summaries, and the per-run worker log.</li>
 <li><b>File → Application logs</b> — the full rolling logs of the Service, Worker, and UI.</li>
-<li><b>File → Send developer logs</b> — emails a redacted diagnostic bundle (logs +
-    sanitized config) to the configured developer address.</li>
+<li><b>File → Send logs to support</b> — emails a diagnostic bundle (logs + sanitized
+    settings, never passwords) to the configured support email.</li>
+<li><b>File → Open data folder</b> — opens the folder holding config, logs, and outputs
+    metadata in Explorer.</li>
 </ul>
 
 <h2 id="settings">Settings (SMTP &amp; more)</h2>
 <p><b>File → Settings</b> configures:</p>
 <ul>
 <li><b>SMTP</b> — server host, port, TLS, from-address, username, and the password
-    (stored encrypted on this machine, never in plain text).</li>
+    (stored encrypted on this machine, never in plain text). The eye icon shows the
+    password while typing; <b>Test connection</b> verifies the settings against the
+    server without sending an email.</li>
 <li><b>Test recipients</b> — global fallback for test runs.</li>
-<li><b>Developer email</b> — where diagnostic log bundles are sent.</li>
-<li><b>Application</b> — max parallel runs, default timeout, log retention.</li>
+<li><b>Support email</b> — receives the diagnostic bundles from "Send logs to support".</li>
+<li><b>Application</b> — max parallel runs, default timeout, log retention, and the
+    check-for-updates-on-startup toggle.</li>
 </ul>
+
+<h2 id="transfer">Import &amp; export</h2>
+<ul>
+<li><b>File → Export jobs…</b> — tick the jobs to export (some or all) and save them as a
+    JSON file — handy for backups or moving jobs to another machine.</li>
+<li><b>File → Import jobs…</b> — open an export file, tick which jobs to bring in. If a
+    name already exists you choose per job: <i>Overwrite</i>, <i>Skip</i>, or <i>Import as
+    copy</i>.</li>
+<li><b>File → Export / Import settings…</b> — the same for application settings (SMTP,
+    recipients, app options). The SMTP password never travels — re-enter it after an
+    import.</li>
+</ul>
+
+<h2 id="updates">Updates</h2>
+<p>The app checks GitHub for a newer version at startup (only when the internet is
+reachable; toggle in Settings). You can also run <b>Help → Check for updates…</b> at any
+time. When an update exists you see the version and release notes — nothing installs until
+you click <b>Update now</b>; then the download shows its progress and the installer
+upgrades automatically, preserving all jobs, settings, and logs.</p>
 
 <h2 id="advanced">Advanced options</h2>
 <ul>

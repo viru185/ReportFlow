@@ -42,9 +42,13 @@ Name: "{commonappdata}\ReportFlow\state";        Permissions: users-modify
 Name: "{commonappdata}\ReportFlow\runs";         Permissions: users-modify
 Name: "{commonappdata}\ReportFlow\templates";    Permissions: users-modify
 
+[Tasks]
+Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
+
 [Icons]
 Name: "{group}\ReportFlow";           Filename: "{app}\ui\reportflow-ui.exe"
 Name: "{group}\Uninstall ReportFlow"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\ReportFlow";     Filename: "{app}\ui\reportflow-ui.exe"; Tasks: desktopicon
 
 [Run]
 ; Register (or reconfigure) the NSSM-hosted service, then start it.
@@ -85,14 +89,19 @@ var
   ResultCode: Integer;
   Nssm: String;
 begin
-  // Upgrade path: stop the running service (and any lingering workers) before we overwrite
-  // the executables, so files aren't locked. ProgramData is left untouched.
+  // Upgrade path: stop the running service before we overwrite the executables so files
+  // aren't locked. ProgramData is left untouched.
   Nssm := ExpandConstant('{app}\nssm\nssm.exe');
   if FileExists(Nssm) then
-  begin
     Exec(Nssm, 'stop {#MyServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM reportflow-worker.exe /T',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end;
+  // Kill ANY stray ReportFlow processes (old dev runs, zombies): a stray service exe
+  // holding port 8787 silently blocks the freshly installed service from binding, and a
+  // running UI locks its own files.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM reportflow-worker.exe /T',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM reportflow-service.exe /T',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM reportflow-ui.exe /T',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := '';
 end;

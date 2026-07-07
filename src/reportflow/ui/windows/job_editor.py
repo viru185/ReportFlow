@@ -1,7 +1,8 @@
-"""Job editor dialog — grouped sections (Input / Output / Schedule / Email / Advanced).
+"""Job editor dialog — compact tabs (General / Output / Schedule / Email / Advanced).
 
-Everything non-mandatory is optional. Outputs are a folder + optional filename stem; the
-schedule is built visually; the email body is authored in-app via EmailTemplateDialog.
+No scrolling: each tab is small and focused. Everything non-mandatory is optional.
+Outputs are a folder + optional filename stem; the schedule is built visually; the email
+body is authored in-app via EmailTemplateDialog.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -25,8 +25,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -54,7 +54,7 @@ class JobEditorDialog(QDialog):
         self._template_html: str | None = None  # authored in-app; caller saves it after job save
         self._existing_template_path: str | None = None
         self.setWindowTitle("Edit Job" if self._editing else "New Job")
-        self.resize(660, 760)
+        self.resize(620, 540)
         self._build()
         if job:
             self._load(job)
@@ -64,16 +64,11 @@ class JobEditorDialog(QDialog):
 
     def _build(self) -> None:
         outer = QVBoxLayout(self)
+        self.tabs = QTabWidget()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        scroll.setWidget(content)
-        page = QVBoxLayout(content)
-
-        # ---- Input ----
-        input_box = QGroupBox("Input")
-        input_form = QFormLayout(input_box)
+        # ---- General tab ----
+        general_tab = QWidget()
+        input_form = QFormLayout(general_tab)
 
         self.name = QLineEdit()
         self.name.setToolTip("A unique name for this job; it is also used in output filenames.")
@@ -98,16 +93,15 @@ class JobEditorDialog(QDialog):
 
         self.sheets = QListWidget()
         self.sheets.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self.sheets.setMaximumHeight(110)
         self.sheets.setToolTip("Tick the sheets this job should refresh, freeze, and export.")
 
         input_form.addRow("Job name", name_row)
         input_form.addRow("Input Excel file", wb_row)
         input_form.addRow("Sheets", self.sheets)
 
-        # ---- Output ----
-        output_box = QGroupBox("Output")
-        output_form = QFormLayout(output_box)
+        # ---- Output tab ----
+        output_tab = QWidget()
+        output_form = QFormLayout(output_tab)
 
         self.output_dir = QLineEdit()
         self.output_dir.setPlaceholderText("(same folder as the input file)")
@@ -156,15 +150,16 @@ class JobEditorDialog(QDialog):
         output_form.addRow("", self.output_example)
         output_form.addRow("", toggles_row)
 
-        # ---- Schedule ----
-        schedule_box = QGroupBox("Schedule")
-        schedule_lay = QVBoxLayout(schedule_box)
+        # ---- Schedule tab ----
+        schedule_tab = QWidget()
+        schedule_lay = QVBoxLayout(schedule_tab)
         self.schedule = ScheduleWidget()
         schedule_lay.addWidget(self.schedule)
+        schedule_lay.addStretch()
 
-        # ---- Email ----
-        email_box = QGroupBox("Email")
-        email_form = QFormLayout(email_box)
+        # ---- Email tab ----
+        email_tab = QWidget()
+        email_form = QFormLayout(email_tab)
 
         self.subject = QLineEdit()
         self.subject.setToolTip("Email subject; test runs are automatically prefixed [TEST].")
@@ -209,12 +204,12 @@ class JobEditorDialog(QDialog):
         email_form.addRow("Test: Bcc (optional)", self.test_bcc)
         email_form.addRow("Body", tpl_row)
 
-        # ---- Advanced (collapsible) ----
-        self.advanced_box = QGroupBox("Advanced")
-        self.advanced_box.setCheckable(True)
-        self.advanced_box.setChecked(False)
-        self.advanced_box.setToolTip("Optional tuning — most jobs don't need these.")
-        adv_form = QFormLayout(self.advanced_box)
+        # ---- Advanced tab ----
+        advanced_tab = QWidget()
+        adv_form = QFormLayout(advanced_tab)
+        adv_hint = QLabel("Optional tuning — most jobs don't need these.")
+        adv_hint.setProperty("muted", True)
+        adv_form.addRow(adv_hint)
 
         self.timeout = QSpinBox()
         self.timeout.setRange(0, 86400)
@@ -231,22 +226,17 @@ class JobEditorDialog(QDialog):
             "parallel behavior."
         )
         self.notes = QPlainTextEdit()
-        self.notes.setFixedHeight(56)
         self.notes.setToolTip("Free-form description of this job.")
 
         adv_form.addRow("Timeout", self.timeout)
         adv_form.addRow("Concurrency group", self.group)
         adv_form.addRow("Notes", self.notes)
-        self._adv_form = adv_form
-        self.advanced_box.toggled.connect(self._toggle_advanced)
-        self._toggle_advanced(False)
 
-        page.addWidget(input_box)
-        page.addWidget(output_box)
-        page.addWidget(schedule_box)
-        page.addWidget(email_box)
-        page.addWidget(self.advanced_box)
-        page.addStretch()
+        self.tabs.addTab(general_tab, "General")
+        self.tabs.addTab(output_tab, "Output")
+        self.tabs.addTab(schedule_tab, "Schedule")
+        self.tabs.addTab(email_tab, "Email")
+        self.tabs.addTab(advanced_tab, "Advanced")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -254,16 +244,8 @@ class JobEditorDialog(QDialog):
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
 
-        outer.addWidget(scroll)
+        outer.addWidget(self.tabs)
         outer.addWidget(buttons)
-
-    def _toggle_advanced(self, on: bool) -> None:
-        for row in range(self._adv_form.rowCount()):
-            for role in (QFormLayout.ItemRole.LabelRole, QFormLayout.ItemRole.FieldRole):
-                item = self._adv_form.itemAt(row, role)
-                widget = item.widget() if item is not None else None
-                if widget is not None:
-                    widget.setVisible(on)
 
     # -- actions -----------------------------------------------------------------
 
@@ -404,12 +386,9 @@ class JobEditorDialog(QDialog):
         self.freeze.setChecked(job.get("freeze_values", True))
         self.gen_pdf.setChecked(job.get("generate_pdf", True))
         self.schedule.load(job.get("schedule_crons") or [])
-        timeout = job.get("timeout_seconds") or 0
-        self.timeout.setValue(timeout)
+        self.timeout.setValue(job.get("timeout_seconds") or 0)
         self.group.setText(job.get("concurrency_group") or "")
         self.notes.setPlainText(job.get("notes", ""))
-        if timeout or job.get("concurrency_group") or job.get("notes"):
-            self.advanced_box.setChecked(True)
         self.subject.setText(job.get("subject") or "")
         self.send_email.setChecked(job.get("send_report_email", False))
         self._existing_template_path = job.get("email_template_path")

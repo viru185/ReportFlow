@@ -75,6 +75,43 @@ def build_report_message(
     return msg, recipients.all_addresses()
 
 
+def test_smtp_connection(smtp: SmtpConfig, password: str | None = None) -> None:
+    """Verify the SMTP settings: connect, EHLO, STARTTLS (if configured), and log in
+    when credentials are present. Raises with a readable message on any failure.
+
+    ``password=None`` falls back to the stored secret; an empty username skips login.
+    """
+    if not smtp.host:
+        raise ValueError("SMTP host is not set")
+    if password is None:
+        password = secrets.get_secret(SMTP_PASSWORD_KEY)
+
+    try:
+        if smtp.use_ssl:
+            server: smtplib.SMTP = smtplib.SMTP_SSL(smtp.host, smtp.port, timeout=10)
+        else:
+            server = smtplib.SMTP(smtp.host, smtp.port, timeout=10)
+    except (OSError, smtplib.SMTPException) as e:
+        raise ConnectionError(f"could not connect to {smtp.host}:{smtp.port} — {e}") from e
+    try:
+        server.ehlo()
+        if smtp.use_starttls and not smtp.use_ssl:
+            server.starttls()
+            server.ehlo()
+        if smtp.username:
+            if not password:
+                raise ValueError("username is set but no password is stored or provided")
+            try:
+                server.login(smtp.username, password)
+            except smtplib.SMTPAuthenticationError as e:
+                raise PermissionError(f"login rejected for {smtp.username!r} — {e}") from e
+    finally:
+        try:
+            server.quit()
+        except Exception:  # noqa: BLE001
+            server.close()
+
+
 def send_message(smtp: SmtpConfig, message: EmailMessage, envelope_to: list[str]) -> None:
     password = secrets.get_secret(SMTP_PASSWORD_KEY)
     sender = message["From"]

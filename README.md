@@ -55,7 +55,8 @@ Run **`ReportFlow-Setup-<version>.exe`** (requires administrator rights). The in
 - installs the three executables under `C:\Program Files\ReportFlow\`,
 - creates the data folder `C:\ProgramData\ReportFlow\` (config, logs, run history),
 - registers and starts the **ReportFlow** Windows service (auto-starts on boot),
-- adds a **ReportFlow** Start-menu shortcut for the UI.
+- adds **Start-menu and desktop shortcuts** for the UI (desktop optional at install time),
+- stops any stray ReportFlow processes so the service can bind its port cleanly.
 
 > **Requirement:** Microsoft Excel must be installed on the machine — the worker automates the
 > real Excel application.
@@ -133,18 +134,34 @@ retried automatically — it's recorded and visible in the history.
 - **Logs** on a job card — that job's run history: status, timings, output paths, error
   summary, and the worker log tail. It refreshes live while a run is in progress.
 - **File → Application logs** — the full rolling logs of the Service, Worker, and UI.
-- **File → Send developer logs** — emails a redacted diagnostic bundle (logs + sanitized
-  config + environment) to the configured developer email. Secrets are never included.
+- **File → Send logs to support** — emails a diagnostic bundle (logs + sanitized settings,
+  never passwords) to the configured support email.
+- **File → Open data folder** — opens `C:\ProgramData\ReportFlow` in Explorer.
 
-### Settings (SMTP, developer email, application)
+### Settings (SMTP, support email, application)
 
 **File → Settings** configures everything in-app:
 
 - **SMTP** — host, port, STARTTLS/SSL, from-address, username, and the **password** (stored
-  encrypted via Windows DPAPI, machine scope — never in the config file).
-- **Test & developer email** — global test-run fallback recipients and the developer address
+  encrypted via Windows DPAPI, machine scope — never in the config file). An eye icon shows
+  the password while typing, and **Test connection** verifies the settings against the mail
+  server without sending anything.
+- **Test & support email** — global test-run fallback recipients and the support address
   that receives diagnostic bundles.
-- **Application** — max parallel runs, default timeout, log retention.
+- **Application** — max parallel runs, default timeout, log retention, and the startup
+  update-check toggle.
+
+### Import, export & updates
+
+- **File → Export/Import jobs…** — back up or move jobs between machines as JSON. Pick
+  which jobs to include (some or all); on import, name clashes prompt per job:
+  Overwrite / Skip / Import as copy.
+- **File → Export/Import settings…** — the same for application settings. The SMTP
+  password never travels; re-enter it after importing.
+- **Updates** — the app checks GitHub for a newer release at startup (skipped when
+  offline; toggleable in Settings) and via **Help → Check for updates…**. Nothing installs
+  until you click **Update now**; the download shows progress and the installer upgrades
+  automatically, preserving jobs, settings, and logs.
 
 ### Where data lives
 
