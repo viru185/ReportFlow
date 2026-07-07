@@ -26,7 +26,10 @@ def default_base_url() -> str:
 class ApiClient:
     def __init__(self, base_url: str | None = None, *, timeout: float = 30.0) -> None:
         self.base_url = (base_url or default_base_url()).rstrip("/")
-        self._client = httpx.Client(timeout=timeout)
+        # trust_env=False: NEVER route localhost API calls through HTTP(S)_PROXY /
+        # corporate proxies — browsers bypass proxies for localhost but httpx does not,
+        # which made the UI get proxy 403s while the service was perfectly reachable.
+        self._client = httpx.Client(timeout=timeout, trust_env=False)
 
     def close(self) -> None:
         self._client.close()
@@ -35,7 +38,7 @@ class ApiClient:
         try:
             resp = self._client.request(method, f"{self.base_url}{path}", **kw)
         except httpx.HTTPError as e:
-            raise ApiError(f"service not reachable: {e}") from e
+            raise ApiError(f"service not reachable at {self.base_url}: {e}") from e
         if resp.status_code >= 400:
             detail = _safe_detail(resp)
             raise ApiError(detail, resp.status_code)
@@ -117,6 +120,9 @@ class ApiClient:
 
     def clear_smtp_password(self) -> dict:
         return self._request("DELETE", "/system/smtp-password")
+
+    def smtp_test(self, smtp: dict) -> dict:
+        return self._request("POST", "/system/smtp-test", json=smtp)
 
     def system_logs(self, process: str = "service", tail: int = 500) -> str:
         return self._request("GET", "/system/logs", params={"process": process, "tail": tail})[
