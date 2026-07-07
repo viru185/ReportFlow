@@ -22,7 +22,25 @@ def main(argv: list[str] | None = None) -> int:
 
     app = create_app(state)
     logger.info("Starting ReportFlow service API on http://{}:{}", host, port)
-    uvicorn.run(app, host=host, port=port, log_config=None)
+    try:
+        uvicorn.run(app, host=host, port=port, log_config=None)
+    except SystemExit:
+        # uvicorn exits via SystemExit when it cannot start (e.g. the port is taken).
+        logger.error(
+            "Service failed to start — port {} may already be in use. Is another "
+            "ReportFlow service (or a stray reportflow-service.exe) running?",
+            port,
+        )
+        return 1
+    except OSError as e:
+        if getattr(e, "winerror", None) == 10048 or "address already in use" in str(e).lower():
+            logger.error(
+                "Port {} is already in use — another ReportFlow service (or a stray "
+                "reportflow-service.exe) is running. Stop it and restart this service.",
+                port,
+            )
+            return 1
+        raise
     return 0
 
 
