@@ -96,6 +96,9 @@ class JobConfig(_Base):
     schedule_crons: list[str] = Field(default_factory=list)
     timeout_seconds: int | None = Field(default=None, gt=0)
     concurrency_group: str | None = None
+    # Extra settle time after calculation completes, for add-ins (e.g. PI DataLink) that
+    # fill cells asynchronously. 0 = none.
+    post_refresh_wait_seconds: int = Field(default=0, ge=0, le=3600)
 
     subject: str | None = None
     prod: Recipients

@@ -168,6 +168,11 @@ class JobEditorDialog(QDialog):
             "When ticked, successful REAL runs email the production recipients. Test runs "
             "always email the test recipients regardless."
         )
+        self.email_hint = QLabel("")
+        self.email_hint.setProperty("muted", True)
+        self.email_hint.setWordWrap(True)
+        self.send_email.toggled.connect(self._update_email_hint)
+        self._update_email_hint(self.send_email.isChecked())
 
         self.prod_to = QLineEdit()
         self.prod_to.setToolTip("Production To — required. Comma-separated addresses.")
@@ -196,6 +201,7 @@ class JobEditorDialog(QDialog):
 
         email_form.addRow("Subject", self.subject)
         email_form.addRow("", self.send_email)
+        email_form.addRow("", self.email_hint)
         email_form.addRow("Prod: To", self.prod_to)
         email_form.addRow("Prod: Cc (optional)", self.prod_cc)
         email_form.addRow("Prod: Bcc (optional)", self.prod_bcc)
@@ -225,11 +231,21 @@ class JobEditorDialog(QDialog):
             "useful when several jobs hit the same slow database. Leave empty for normal "
             "parallel behavior."
         )
+        self.post_refresh_wait = QSpinBox()
+        self.post_refresh_wait.setRange(0, 3600)
+        self.post_refresh_wait.setSuffix(" s")
+        self.post_refresh_wait.setSpecialValueText("(none)")
+        self.post_refresh_wait.setToolTip(
+            "Extra wait after the data refresh completes, before freezing/exporting. Use "
+            "this when the workbook relies on Excel add-ins that load data asynchronously "
+            "— e.g. PI DataLink — and the output would otherwise capture incomplete data."
+        )
         self.notes = QPlainTextEdit()
         self.notes.setToolTip("Free-form description of this job.")
 
         adv_form.addRow("Timeout", self.timeout)
         adv_form.addRow("Concurrency group", self.group)
+        adv_form.addRow("Extra wait after refresh", self.post_refresh_wait)
         adv_form.addRow("Notes", self.notes)
 
         self.tabs.addTab(general_tab, "General")
@@ -246,6 +262,17 @@ class JobEditorDialog(QDialog):
 
         outer.addWidget(self.tabs)
         outer.addWidget(buttons)
+
+    def _update_email_hint(self, checked: bool) -> None:
+        if checked:
+            self.email_hint.setText(
+                "Successful real && scheduled runs will email the production recipients."
+            )
+        else:
+            self.email_hint.setText(
+                "Real && scheduled runs will NOT send email — only Test runs email the "
+                "test recipients. Tick the box above to email production on real runs."
+            )
 
     # -- actions -----------------------------------------------------------------
 
@@ -353,6 +380,7 @@ class JobEditorDialog(QDialog):
             "schedule_crons": self.schedule.to_crons(),
             "timeout_seconds": self.timeout.value() or None,
             "concurrency_group": self.group.text().strip() or None,
+            "post_refresh_wait_seconds": self.post_refresh_wait.value(),
             "subject": self.subject.text().strip() or None,
             "send_report_email": self.send_email.isChecked(),
             "prod": {
@@ -388,6 +416,7 @@ class JobEditorDialog(QDialog):
         self.schedule.load(job.get("schedule_crons") or [])
         self.timeout.setValue(job.get("timeout_seconds") or 0)
         self.group.setText(job.get("concurrency_group") or "")
+        self.post_refresh_wait.setValue(job.get("post_refresh_wait_seconds") or 0)
         self.notes.setPlainText(job.get("notes", ""))
         self.subject.setText(job.get("subject") or "")
         self.send_email.setChecked(job.get("send_report_email", False))

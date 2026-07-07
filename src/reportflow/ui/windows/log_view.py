@@ -95,6 +95,7 @@ class RunHistoryDialog(QDialog):
             f"trigger: {r.get('trigger')} | test: {r.get('is_test')}<br>"
             f"started: {r.get('started_at')} | finished: {r.get('finished_at')}<br>"
             f"output: {r.get('output_xlsx') or '—'}<br>"
+            f"email: {r.get('email_note') or '—'}<br>"
             f"error: {r.get('error_summary') or '—'}"
         )
         try:

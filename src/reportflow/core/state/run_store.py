@@ -28,11 +28,17 @@ CREATE TABLE IF NOT EXISTS runs (
     pdf_paths       TEXT NOT NULL DEFAULT '[]',
     error_summary   TEXT,
     worker_log_path TEXT,
-    email_sent      INTEGER NOT NULL DEFAULT 0
+    email_sent      INTEGER NOT NULL DEFAULT 0,
+    email_note      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_job ON runs(job_name);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC);
 """
+
+# Columns added after the first release; applied to pre-existing databases on open.
+_MIGRATIONS = [
+    "ALTER TABLE runs ADD COLUMN email_note TEXT",
+]
 
 
 class RunStore:
@@ -51,6 +57,11 @@ class RunStore:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            for migration in _MIGRATIONS:
+                try:
+                    conn.execute(migration)
+                except sqlite3.OperationalError:
+                    pass  # column already exists (fresh schema or migrated earlier)
 
     def upsert(self, record: RunRecord) -> None:
         with self._connect() as conn:
@@ -58,10 +69,10 @@ class RunStore:
                 """
                 INSERT INTO runs (run_id, job_name, trigger, status, is_test, started_at,
                                   finished_at, exit_code, output_xlsx, pdf_paths, error_summary,
-                                  worker_log_path, email_sent)
+                                  worker_log_path, email_sent, email_note)
                 VALUES (:run_id, :job_name, :trigger, :status, :is_test, :started_at,
                         :finished_at, :exit_code, :output_xlsx, :pdf_paths, :error_summary,
-                        :worker_log_path, :email_sent)
+                        :worker_log_path, :email_sent, :email_note)
                 ON CONFLICT(run_id) DO UPDATE SET
                     status=excluded.status,
                     finished_at=excluded.finished_at,
@@ -70,7 +81,8 @@ class RunStore:
                     pdf_paths=excluded.pdf_paths,
                     error_summary=excluded.error_summary,
                     worker_log_path=excluded.worker_log_path,
-                    email_sent=excluded.email_sent
+                    email_sent=excluded.email_sent,
+                    email_note=excluded.email_note
                 """,
                 self._to_row(record),
             )
@@ -91,6 +103,7 @@ class RunStore:
             "error_summary": r.error_summary,
             "worker_log_path": r.worker_log_path,
             "email_sent": int(r.email_sent),
+            "email_note": r.email_note,
         }
 
     @staticmethod
@@ -109,6 +122,7 @@ class RunStore:
             error_summary=row["error_summary"],
             worker_log_path=row["worker_log_path"],
             email_sent=bool(row["email_sent"]),
+            email_note=row["email_note"],
         )
 
     def get(self, run_id: str) -> RunRecord | None:

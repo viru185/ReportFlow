@@ -20,7 +20,8 @@ _HELP_HTML = f"""
 <a href="#settings">Settings (SMTP &amp; more)</a> ·
 <a href="#transfer">Import &amp; export</a> ·
 <a href="#updates">Updates</a> ·
-<a href="#advanced">Advanced options</a>
+<a href="#advanced">Advanced options</a> ·
+<a href="#pidatalink">PI DataLink &amp; add-ins</a>
 </p>
 
 <h2 id="start">Getting started</h2>
@@ -73,6 +74,8 @@ required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses).</p>
 <li><b>Real runs</b> email production recipients only when <i>“Email report … on real
     runs”</i> is ticked. Failures never send email; check the logs instead.</li>
 <li>Emails attach the output Excel and all per-sheet PDFs.</li>
+<li>Every run's history entry shows an <b>email:</b> line — sent to how many recipients,
+    or exactly why nothing was sent.</li>
 </ul>
 <p>Click <b>Edit email template…</b> to author the email body in-app: <b>Simple</b> mode
 (plain text + placeholder buttons) or <b>HTML</b> mode (full control), with a live preview.
@@ -135,8 +138,26 @@ upgrades automatically, preserving all jobs, settings, and logs.</p>
 <li><b>Concurrency group</b> — jobs sharing the same group name run one-at-a-time instead
     of in parallel (useful when several jobs hit the same slow database). Leave empty for
     normal parallel behavior.</li>
+<li><b>Extra wait after refresh</b> — additional seconds to wait after the data refresh
+    before freezing/exporting. Set this (e.g. 30–120&nbsp;s) when the workbook loads data
+    through an Excel add-in such as <b>PI DataLink</b> that keeps filling cells after the
+    normal calculation finishes.</li>
 <li><b>Freeze formulas</b> — converts formulas to plain values on the selected sheets in
     the <i>output copy</i>, so recipients see numbers even without your data connections.</li>
+</ul>
+
+<h2 id="pidatalink">Workbooks using PI DataLink (or other Excel add-ins)</h2>
+<p>ReportFlow connects Excel COM add-ins automatically at the start of each run and forces
+a full recalculation so add-in functions (PI DataLink, etc.) fetch live data. Two things
+to check if the output still comes out empty:</p>
+<ul>
+<li>Open the run's <b>Logs</b> — the worker log lists every COM add-in it found and
+    whether it connected. If PI DataLink is <i>not in the list</i>, it is installed only
+    for a specific user: either reinstall it "for all users", or make the ReportFlow
+    service run as that user (Services app → ReportFlow → Log On, or
+    <code>nssm set ReportFlow ObjectName ...</code>).</li>
+<li>If the add-in appears but data is incomplete, increase <b>Extra wait after refresh</b>
+    in the job's Advanced tab.</li>
 </ul>
 """
 

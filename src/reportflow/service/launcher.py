@@ -223,6 +223,7 @@ class Launcher:
             sheet_names=job.sheet_names,
             freeze_values=job.freeze_values,
             generate_pdf=job.generate_pdf,
+            post_refresh_wait_seconds=job.post_refresh_wait_seconds,
             timeout_seconds=timeout,
             is_test=is_test,
             result_path=run_dir / "result.json",
@@ -317,21 +318,31 @@ class Launcher:
     def _maybe_email(
         self, config: AppConfig, job: JobConfig, record: RunRecord, request: WorkerRequest
     ) -> None:
+        """Send the report email when policy allows, and ALWAYS record why/why not.
+
+        Every path writes ``record.email_note`` so the run history answers "did it
+        email?" without digging through logs.
+        """
         if record.status is not RunStatus.SUCCESS:
-            return  # never email on failure
-        if not request.is_test and not job.send_report_email:
-            return  # real run, email not opted in
-        attachments: list[Path] = []
-        if record.output_xlsx:
-            attachments.append(Path(record.output_xlsx))
-        attachments.extend(Path(p) for p in record.pdf_paths)
-        context = self._email_context(job, record)
-        try:
-            send_report(config, job, context, attachments, is_test=request.is_test)
-            record.email_sent = True
-            self.run_store.upsert(record)
-        except Exception as e:  # noqa: BLE001 — email failure must not fail the run
-            logger.error("Emailing report for run {} failed: {}", record.run_id, e)
+            record.email_note = "not sent — run did not succeed"
+        elif not request.is_test and not job.send_report_email:
+            record.email_note = "not sent — the job's 'Email report on real runs' option is off"
+        else:
+            attachments: list[Path] = []
+            if record.output_xlsx:
+                attachments.append(Path(record.output_xlsx))
+            attachments.extend(Path(p) for p in record.pdf_paths)
+            context = self._email_context(job, record)
+            kind = "test" if request.is_test else "production"
+            try:
+                recipients = send_report(config, job, context, attachments, is_test=request.is_test)
+                record.email_sent = True
+                record.email_note = f"sent to {len(recipients)} {kind} recipient(s)"
+            except Exception as e:  # noqa: BLE001 — email failure must not fail the run
+                record.email_note = f"failed: {e}"
+                logger.error("Emailing report for run {} failed: {}", record.run_id, e)
+        logger.info("Run {} email: {}", record.run_id, record.email_note)
+        self.run_store.upsert(record)
 
     @staticmethod
     def _email_context(job: JobConfig, record: RunRecord) -> dict:
