@@ -63,9 +63,7 @@ def default_worker_command() -> list[str]:
             if candidate.exists():
                 return [str(candidate)]
         tried = "; ".join(str(c) for c in candidates)
-        raise FileNotFoundError(
-            f"worker executable not found — tried: {tried}. Reinstall ReportFlow."
-        )
+        raise FileNotFoundError(f"worker executable not found — tried: {tried}. Reinstall ReportFlow.")
     return [sys.executable, "-m", "reportflow.worker"]
 
 
@@ -90,9 +88,7 @@ def resolve_output_paths(job: JobConfig, *, run_id: str, now: datetime) -> tuple
     suffix; the ``{sheet}`` token is resolved by the worker.
     """
     base = Path(job.output_dir) if job.output_dir else Path(job.input_excel_path).parent
-    stem = _substitute_tokens(
-        job.output_name or DEFAULT_OUTPUT_STEM, job_name=job.name, run_id=run_id, now=now
-    )
+    stem = _substitute_tokens(job.output_name or DEFAULT_OUTPUT_STEM, job_name=job.name, run_id=run_id, now=now)
     output_xlsx = base / f"{stem}.xlsx"
     output_pdf = base / f"{stem}_{{sheet}}.pdf" if job.generate_pdf else None
     return output_xlsx, output_pdf
@@ -109,9 +105,7 @@ class Launcher:
         self.run_store = run_store
         self.get_config = get_config
         self._worker_command = worker_command
-        self._global_sem = threading.BoundedSemaphore(
-            max(1, get_config().app.max_global_concurrency)
-        )
+        self._global_sem = threading.BoundedSemaphore(max(1, get_config().app.max_global_concurrency))
         self._group_locks: dict[str, threading.Lock] = {}
         self._group_guard = threading.Lock()
         self._active: dict[str, subprocess.Popen] = {}
@@ -155,9 +149,7 @@ class Launcher:
         with self._group_guard:
             return self._group_locks.setdefault(group, threading.Lock())
 
-    def run(
-        self, config: AppConfig, job: JobConfig, trigger: RunTrigger, *, is_test: bool
-    ) -> RunRecord:
+    def run(self, config: AppConfig, job: JobConfig, trigger: RunTrigger, *, is_test: bool) -> RunRecord:
         request, record = self._prepare(config, job, trigger, is_test=is_test)
         self._run_prepared(config, job, request, record)
         return record
@@ -183,9 +175,7 @@ class Launcher:
         self.run_store.upsert(record)
         return request, record
 
-    def _run_prepared(
-        self, config: AppConfig, job: JobConfig, request: WorkerRequest, record: RunRecord
-    ) -> None:
+    def _run_prepared(self, config: AppConfig, job: JobConfig, request: WorkerRequest, record: RunRecord) -> None:
         group_lock = self._group_lock(job.concurrency_group)
         if group_lock is not None:
             group_lock.acquire()
@@ -224,15 +214,15 @@ class Launcher:
             freeze_values=job.freeze_values,
             generate_pdf=job.generate_pdf,
             post_refresh_wait_seconds=job.post_refresh_wait_seconds,
+            fail_if_sheet_empty=job.fail_if_sheet_empty,
             timeout_seconds=timeout,
             is_test=is_test,
+            debug=config.app.debug_logging,
             result_path=run_dir / "result.json",
             log_path=run_dir / "worker.log",
         )
 
-    def _execute(
-        self, config: AppConfig, job: JobConfig, request: WorkerRequest, record: RunRecord
-    ) -> None:
+    def _execute(self, config: AppConfig, job: JobConfig, request: WorkerRequest, record: RunRecord) -> None:
         req_path = write_request(request, request.result_path.parent / "request.json")
         stdio_path = request.result_path.parent / "worker_stdio.log"
 
@@ -315,9 +305,7 @@ class Launcher:
 
         self._maybe_email(config, job, record, request)
 
-    def _maybe_email(
-        self, config: AppConfig, job: JobConfig, record: RunRecord, request: WorkerRequest
-    ) -> None:
+    def _maybe_email(self, config: AppConfig, job: JobConfig, record: RunRecord, request: WorkerRequest) -> None:
         """Send the report email when policy allows, and ALWAYS record why/why not.
 
         Every path writes ``record.email_note`` so the run history answers "did it

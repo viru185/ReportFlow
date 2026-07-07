@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
@@ -36,12 +37,7 @@ from reportflow.ui.windows.job_editor import JobEditorDialog
 from reportflow.ui.windows.log_view import RunHistoryDialog
 from reportflow.ui.windows.log_viewer_dialog import LogViewerDialog
 from reportflow.ui.windows.settings_dialog import SettingsDialog
-from reportflow.ui.windows.transfer_dialogs import (
-    export_jobs_flow,
-    export_settings_flow,
-    import_jobs_flow,
-    import_settings_flow,
-)
+from reportflow.ui.windows.transfer_dialogs import export_jobs_flow, export_settings_flow, import_jobs_flow, import_settings_flow
 from reportflow.ui.windows.update_dialog import UpdateDialog
 
 
@@ -183,9 +179,7 @@ class MainWindow(QMainWindow):
         self.conn_label.setText(connection_pill(True))
         self.conn_label.setToolTip("")
 
-        failures = sum(
-            1 for j in jobs if (j.get("last_status") or "") in ("failed", "timed_out", "crashed")
-        )
+        failures = sum(1 for j in jobs if (j.get("last_status") or "") in ("failed", "timed_out", "crashed"))
         self.card_jobs[1].setText(str(len(jobs)))
         self.card_active[1].setText(str(len(status.get("active_runs", []))))
         self.card_failures[1].setText(str(failures))
@@ -200,8 +194,7 @@ class MainWindow(QMainWindow):
             self.conn_label.setToolTip(message)
         else:
             self.statusBar().showMessage(
-                f"Connected · v{status.get('version')} · "
-                f"{len(status.get('scheduled_jobs', []))} trigger(s) scheduled"
+                f"Connected · v{status.get('version')} · " f"{len(status.get('scheduled_jobs', []))} trigger(s) scheduled"
             )
         self._populate(jobs)
 
@@ -304,13 +297,17 @@ class MainWindow(QMainWindow):
         payload = dlg.payload()
         try:
             if create:
+                logger.info("UI creating job {!r}", payload["name"])
                 self._api.create_job(payload)
             else:
+                logger.info("UI updating job {!r}", payload["name"])
                 self._api.update_job(payload["name"], payload)
             template = dlg.template_html()
             if template is not None:
+                logger.info("UI saving email template for job {!r}", payload["name"])
                 self._api.put_email_template(payload["name"], template)
         except ApiError as e:
+            logger.warning("UI job save failed for {!r}: {}", payload.get("name"), e)
             QMessageBox.warning(self, "Save failed", str(e))
             return
         self.refresh()
@@ -320,16 +317,20 @@ class MainWindow(QMainWindow):
         if confirm != QMessageBox.StandardButton.Yes:
             return
         try:
+            logger.info("UI deleting job {!r}", name)
             self._api.delete_job(name)
         except ApiError as e:
+            logger.warning("UI delete failed for {!r}: {}", name, e)
             QMessageBox.warning(self, "Delete failed", str(e))
             return
         self.refresh()
 
     def _trigger(self, name: str, *, test: bool) -> None:
         try:
+            logger.info("UI triggering {} for job {!r}", "test" if test else "run", name)
             resp = self._api.test_job(name) if test else self._api.run_job(name)
         except ApiError as e:
+            logger.warning("UI trigger failed for {!r}: {}", name, e)
             QMessageBox.warning(self, "Run failed", str(e))
             return
         kind = "Test run" if test else "Run"
@@ -365,9 +366,7 @@ class MainWindow(QMainWindow):
 
     def _send_support_logs(self) -> None:
         try:
-            recipients = ", ".join(
-                self._api.get_config().get("test", {}).get("developer_bundle_recipients", [])
-            )
+            recipients = ", ".join(self._api.get_config().get("test", {}).get("developer_bundle_recipients", []))
         except ApiError:
             recipients = "the configured support email"
         confirm = QMessageBox.question(
@@ -383,9 +382,7 @@ class MainWindow(QMainWindow):
         except ApiError as e:
             QMessageBox.warning(self, "Send failed", str(e))
             return
-        QMessageBox.information(
-            self, "Sent", f"Diagnostic bundle sent to: {', '.join(resp.get('recipients', []))}"
-        )
+        QMessageBox.information(self, "Sent", f"Diagnostic bundle sent to: {', '.join(resp.get('recipients', []))}")
 
     # -- help menu actions ----------------------------------------------------------
 
@@ -399,9 +396,7 @@ class MainWindow(QMainWindow):
 
     def _startup_update_check(self) -> None:
         try:
-            enabled = bool(
-                self._api.get_config().get("ui", {}).get("check_updates_on_startup", True)
-            )
+            enabled = bool(self._api.get_config().get("ui", {}).get("check_updates_on_startup", True))
         except ApiError:
             enabled = True  # config unavailable — the check itself fails silently offline
         if not enabled:
@@ -424,9 +419,7 @@ class MainWindow(QMainWindow):
     def _notify_up_to_date(self, thread: _UpdateCheckThread) -> None:
         # Manual check with no newer version found -> tell the user explicitly.
         if not getattr(thread, "_reported", False):
-            QMessageBox.information(
-                self, "Check for updates", f"You are running the latest version ({about.VERSION})."
-            )
+            QMessageBox.information(self, "Check for updates", f"You are running the latest version ({about.VERSION}).")
 
     def _on_update_found(self, info: UpdateInfo) -> None:
         if self._update_thread is not None:

@@ -1,3 +1,10 @@
 """ReportFlow — Windows Excel reporting automation (UI + Service + Worker)."""
 
-__version__ = "0.4.1"
+from __future__ import annotations
+
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("reportflow")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"

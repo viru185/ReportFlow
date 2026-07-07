@@ -9,6 +9,8 @@ Reliability is the whole point of this module:
   so one failing step cannot skip the others. This is what prevents ghost ``EXCEL.EXE``.
 * The workbook template owns all print layout — we never touch PageSetup; PDF export goes
   through ``sheet.to_pdf`` which honors the sheet's stored print settings.
+* We leave Excel's automation defaults in place so macro/event-driven refresh logic can run
+  the way the proven PI workflow expects.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ from loguru import logger
 
 # Excel COM constants (avoid importing the type library).
 _XL_CALC_DONE = 0  # xlDone
-_MSO_AUTOMATION_FORCE_DISABLE = 3  # msoAutomationSecurityForceDisable
 _CALC_POLL_SECONDS = 0.15
 
 # Launching several Excel instances at the exact same moment races the COM/DCOM
@@ -74,11 +75,7 @@ def is_transient_com_error(exc: BaseException) -> bool:
     if hresult and isinstance(hresult[0], int) and hresult[0] in _TRANSIENT_HRESULTS:
         return True
     text = str(exc).lower()
-    return (
-        "rpc server is unavailable" in text
-        or "server execution failed" in text
-        or ("remote procedure call failed" in text)
-    )
+    return "rpc server is unavailable" in text or "server execution failed" in text or ("remote procedure call failed" in text)
 
 
 def _sanitize_for_filename(name: str) -> str:
@@ -191,18 +188,14 @@ class ExcelRun:
                 return app
             except Exception as e:  # noqa: BLE001 — transient COM/RPC startup failure
                 last_error = e
-                logger.warning(
-                    "Excel startup attempt {}/{} failed: {}", attempt, _APP_START_ATTEMPTS, e
-                )
+                logger.warning("Excel startup attempt {}/{} failed: {}", attempt, _APP_START_ATTEMPTS, e)
                 if app is not None:
                     try:
                         app.kill()
                     except Exception:  # noqa: BLE001
                         pass
                 time.sleep(_APP_START_BACKOFF_SECONDS * attempt)
-        raise ExcelJobError(
-            f"could not start Excel after {_APP_START_ATTEMPTS} attempts: {last_error}"
-        )
+        raise ExcelJobError(f"could not start Excel after {_APP_START_ATTEMPTS} attempts: {last_error}")
 
     def __exit__(
         self,
@@ -220,9 +213,7 @@ class ExcelRun:
             ("DisplayAlerts", False),
             ("ScreenUpdating", False),
             ("AskToUpdateLinks", False),
-            ("EnableEvents", False),
             ("AlertBeforeOverwriting", False),
-            ("AutomationSecurity", _MSO_AUTOMATION_FORCE_DISABLE),
         ):
             try:
                 setattr(app.api, attr, value)
@@ -311,9 +302,7 @@ class ExcelRun:
         existing = [s.name for s in book.sheets]
         missing = [n for n in sheet_names if n not in existing]
         if missing:
-            raise ExcelJobError(
-                f"selected sheet(s) not found in workbook: {missing} (available: {existing})"
-            )
+            raise ExcelJobError(f"selected sheet(s) not found in workbook: {missing} (available: {existing})")
         # The fragile startup+open is done; let other worker processes start their Excel now.
         self._release_startup_lock()
         return book
@@ -325,7 +314,6 @@ class ExcelRun:
             for conn in book.api.Connections:
                 for sub in ("OLEDBConnection", "ODBCConnection"):
                     try:
-                        time.sleep(20)
                         getattr(conn, sub).BackgroundQuery = False
                     except Exception:  # noqa: BLE001 — connection type may lack this sub-object
                         pass
@@ -387,15 +375,43 @@ class ExcelRun:
         for name in sheet_names:
             self._check_deadline(f"freezing sheet {name}")
             sheet = book.sheets[name]
-            used = sheet.used_range
-            values = used.value
-            if values is not None:
-                used.value = values
+            used = sheet.api.UsedRange
+            used.Copy()
+            used.PasteSpecial(Paste=-4163)
+            self.app.api.CutCopyMode = False
             logger.info("Froze formulas to values on sheet: {}", name)
 
-    def export_pdfs(
-        self, book: xw.Book, sheet_names: list[str], output_pdf_path: Path
-    ) -> list[Path]:
+    def ensure_sheets_not_empty(self, book: xw.Book, sheet_names: list[str]) -> None:
+        """Fail if a selected sheet ended up fully empty after refresh/freeze."""
+        for name in sheet_names:
+            self._check_deadline(f"validating sheet {name}")
+            sheet = book.sheets[name]
+            used = sheet.used_range
+            values = used.value
+            if values is None:
+                raise ExcelJobError(
+                    f"sheet {name!r} came out empty — the data refresh produced nothing "
+                    "(check add-ins/PI access for the service account)"
+                )
+
+            flattened: list[object] = []
+            if isinstance(values, (list, tuple)):
+                for item in values:
+                    if isinstance(item, (list, tuple)):
+                        flattened.extend(cell for cell in item if cell is not None)
+                    elif item is not None:
+                        flattened.append(item)
+            elif values is not None:
+                flattened.append(values)
+
+            if not flattened:
+                raise ExcelJobError(
+                    f"sheet {name!r} came out empty — the data refresh produced nothing "
+                    "(check add-ins/PI access for the service account)"
+                )
+            logger.info("Validated non-empty sheet contents: {}", name)
+
+    def export_pdfs(self, book: xw.Book, sheet_names: list[str], output_pdf_path: Path) -> list[Path]:
         """One PDF per selected sheet, honoring each sheet's own PageSetup."""
         single = len(sheet_names) == 1
         produced: list[Path] = []

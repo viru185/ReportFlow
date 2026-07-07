@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-from reportflow.core.ipc import (
-    RunStatus,
-    WorkerRequest,
-    WorkerResult,
-    read_request,
-    read_result,
-    write_request,
-    write_result,
-)
+from reportflow.core.ipc import RunStatus, WorkerRequest, WorkerResult, read_request, read_result, write_request, write_result
 
 
 def _request(run_dir) -> WorkerRequest:
@@ -19,6 +11,8 @@ def _request(run_dir) -> WorkerRequest:
         output_xlsx_path=str(run_dir / "out.xlsx"),
         output_pdf_path=str(run_dir / "{sheet}.pdf"),
         sheet_names=["Summary", "Detail"],
+        post_refresh_wait_seconds=10,
+        fail_if_sheet_empty=True,
         timeout_seconds=600,
         is_test=True,
         result_path=str(run_dir / "result.json"),

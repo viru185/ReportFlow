@@ -107,13 +107,11 @@ class SettingsDialog(QDialog):
         rcpt_form = QFormLayout(rcpt_box)
         self.test_recipients = QLineEdit()
         self.test_recipients.setToolTip(
-            "Global fallback recipients for TEST runs when a job has no test recipients "
-            "of its own. Comma-separated."
+            "Global fallback recipients for TEST runs when a job has no test recipients " "of its own. Comma-separated."
         )
         self.dev_recipients = QLineEdit()
         self.dev_recipients.setToolTip(
-            "Receives the diagnostic log bundles sent from File → Send logs to support. "
-            "Comma-separated."
+            "Receives the diagnostic log bundles sent from File → Send logs to support. " "Comma-separated."
         )
         rcpt_form.addRow("Test recipients", self.test_recipients)
         rcpt_form.addRow("Support email", self.dev_recipients)
@@ -127,9 +125,7 @@ class SettingsDialog(QDialog):
         self.default_timeout = QSpinBox()
         self.default_timeout.setRange(30, 86400)
         self.default_timeout.setSuffix(" s")
-        self.default_timeout.setToolTip(
-            "Default per-run time limit; a hung run is killed when it exceeds this."
-        )
+        self.default_timeout.setToolTip("Default per-run time limit; a hung run is killed when it exceeds this.")
         self.log_retention = QSpinBox()
         self.log_retention.setRange(1, 365)
         self.log_retention.setSuffix(" days")
@@ -139,14 +135,15 @@ class SettingsDialog(QDialog):
             "Silently checks GitHub for a newer version on startup (skipped when offline). "
             "Updates are only ever installed when you click Update."
         )
+        self.debug_logging = QCheckBox("Enable debug logging (verbose)")
+        self.debug_logging.setToolTip("Write more detailed diagnostic logs for the service, UI, and worker.")
         app_form.addRow("Max parallel runs", self.max_concurrency)
         app_form.addRow("Default timeout", self.default_timeout)
         app_form.addRow("Log retention", self.log_retention)
         app_form.addRow("", self.check_updates)
+        app_form.addRow("", self.debug_logging)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
 
@@ -183,12 +180,11 @@ class SettingsDialog(QDialog):
 
         ui_cfg = cfg.get("ui", {})
         self.check_updates.setChecked(bool(ui_cfg.get("check_updates_on_startup", True)))
+        self.debug_logging.setChecked(bool(app_cfg.get("debug_logging", False)))
 
         self._app_section_base: dict[str, Any] = app_cfg
         self._ui_section_base: dict[str, Any] = ui_cfg
-        self.password_status.setText(
-            "A password is currently stored." if pw_set else "No password stored yet."
-        )
+        self.password_status.setText("A password is currently stored." if pw_set else "No password stored yet.")
 
     def _save(self) -> None:
         sections: dict[str, Any] = {
@@ -202,6 +198,7 @@ class SettingsDialog(QDialog):
                 "max_global_concurrency": self.max_concurrency.value(),
                 "default_timeout_seconds": self.default_timeout.value(),
                 "log_retention_days": self.log_retention.value(),
+                "debug_logging": self.debug_logging.isChecked(),
             },
             "ui": {
                 **getattr(self, "_ui_section_base", {}),
@@ -219,9 +216,7 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def _toggle_password_visible(self, show: bool) -> None:
-        self.smtp_password.setEchoMode(
-            QLineEdit.EchoMode.Normal if show else QLineEdit.EchoMode.Password
-        )
+        self.smtp_password.setEchoMode(QLineEdit.EchoMode.Normal if show else QLineEdit.EchoMode.Password)
 
     def _smtp_form_values(self) -> dict[str, Any]:
         return {
@@ -240,9 +235,7 @@ class SettingsDialog(QDialog):
         except ApiError as e:
             QMessageBox.warning(self, "SMTP test failed", str(e))
             return
-        QMessageBox.information(
-            self, "SMTP test", "Connection successful — the SMTP settings work."
-        )
+        QMessageBox.information(self, "SMTP test", "Connection successful — the SMTP settings work.")
 
     def _clear_password(self) -> None:
         confirm = QMessageBox.question(self, "Clear password", "Remove the stored SMTP password?")

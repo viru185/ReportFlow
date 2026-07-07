@@ -3,13 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from reportflow.core.config import (
-    AppConfig,
-    JobConfig,
-    Recipients,
-    load_config,
-    save_config,
-)
+from reportflow.core.config import AppConfig, JobConfig, Recipients, load_config, save_config
 from reportflow.core.config.defaults import default_config
 from reportflow.core.config.loader import ConfigError
 
@@ -84,16 +78,23 @@ def test_blank_cron_entries_dropped():
     assert job.schedule_crons == ["0 6 * * *"]
 
 
-def test_post_refresh_wait_defaults_to_zero_and_round_trips():
-    assert _sample_job().post_refresh_wait_seconds == 0
+def test_job_defaults_and_round_trips_for_refresh_and_empty_sheet():
+    job = _sample_job()
+    assert job.post_refresh_wait_seconds == 10
+    assert job.fail_if_sheet_empty is True
 
     cfg = default_config()
-    cfg.jobs.append(_sample_job(post_refresh_wait_seconds=90))
+    cfg.jobs.append(_sample_job(post_refresh_wait_seconds=90, fail_if_sheet_empty=False))
     save_config(cfg)
-    assert load_config().jobs[0].post_refresh_wait_seconds == 90
+    loaded = load_config().jobs[0]
+    assert loaded.post_refresh_wait_seconds == 90
+    assert loaded.fail_if_sheet_empty is False
 
     with pytest.raises(ValidationError):
         _sample_job(post_refresh_wait_seconds=-5)
+
+    with pytest.raises(ValidationError):
+        _sample_job(fail_if_sheet_empty="nope")
 
 
 def test_job_lookup_is_case_insensitive():

@@ -45,9 +45,7 @@ def _join_csv(items: list[str] | None) -> str:
 
 
 class JobEditorDialog(QDialog):
-    def __init__(
-        self, api: ApiClient, job: dict[str, Any] | None = None, parent: QWidget | None = None
-    ) -> None:
+    def __init__(self, api: ApiClient, job: dict[str, Any] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._api = api
         self._editing = job is not None
@@ -106,8 +104,7 @@ class JobEditorDialog(QDialog):
         self.output_dir = QLineEdit()
         self.output_dir.setPlaceholderText("(same folder as the input file)")
         self.output_dir.setToolTip(
-            "Folder where the output Excel and PDFs are saved. Leave empty to save next to "
-            "the input file."
+            "Folder where the output Excel and PDFs are saved. Leave empty to save next to " "the input file."
         )
         self.output_dir.textChanged.connect(self._update_output_example)
         browse_dir = QPushButton("Browse…")
@@ -136,9 +133,7 @@ class JobEditorDialog(QDialog):
         )
         self.gen_pdf = QCheckBox("Generate PDF (one per sheet)")
         self.gen_pdf.setChecked(True)
-        self.gen_pdf.setToolTip(
-            "Export each selected sheet to PDF using the workbook's own print layout."
-        )
+        self.gen_pdf.setToolTip("Export each selected sheet to PDF using the workbook's own print layout.")
         self.gen_pdf.toggled.connect(self._update_output_example)
         toggles_row = QHBoxLayout()
         toggles_row.addWidget(self.freeze)
@@ -188,9 +183,7 @@ class JobEditorDialog(QDialog):
         self.test_bcc.setToolTip("Test Bcc — optional.")
 
         edit_template = QPushButton("Edit email template…")
-        edit_template.setToolTip(
-            "Author the email body in-app (simple text or HTML) with a live preview."
-        )
+        edit_template.setToolTip("Author the email body in-app (simple text or HTML) with a live preview.")
         edit_template.clicked.connect(self._edit_template)
         self.template_status = QLabel("Using the default template.")
         self.template_status.setProperty("muted", True)
@@ -240,12 +233,19 @@ class JobEditorDialog(QDialog):
             "this when the workbook relies on Excel add-ins that load data asynchronously "
             "— e.g. PI DataLink — and the output would otherwise capture incomplete data."
         )
+        self.fail_if_sheet_empty = QCheckBox("Fail if a selected sheet ends up empty")
+        self.fail_if_sheet_empty.setChecked(True)
+        self.fail_if_sheet_empty.setToolTip(
+            "Stop the run if the selected sheet contains no values after refresh/freeze; "
+            "this prevents empty reports from being exported as if they were successful."
+        )
         self.notes = QPlainTextEdit()
         self.notes.setToolTip("Free-form description of this job.")
 
         adv_form.addRow("Timeout", self.timeout)
         adv_form.addRow("Concurrency group", self.group)
         adv_form.addRow("Extra wait after refresh", self.post_refresh_wait)
+        adv_form.addRow("", self.fail_if_sheet_empty)
         adv_form.addRow("Notes", self.notes)
 
         self.tabs.addTab(general_tab, "General")
@@ -254,9 +254,7 @@ class JobEditorDialog(QDialog):
         self.tabs.addTab(email_tab, "Email")
         self.tabs.addTab(advanced_tab, "Advanced")
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
 
@@ -265,9 +263,7 @@ class JobEditorDialog(QDialog):
 
     def _update_email_hint(self, checked: bool) -> None:
         if checked:
-            self.email_hint.setText(
-                "Successful real && scheduled runs will email the production recipients."
-            )
+            self.email_hint.setText("Successful real && scheduled runs will email the production recipients.")
         else:
             self.email_hint.setText(
                 "Real && scheduled runs will NOT send email — only Test runs email the "
@@ -277,9 +273,7 @@ class JobEditorDialog(QDialog):
     # -- actions -----------------------------------------------------------------
 
     def _pick_input_excel(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Excel file", "", "Excel (*.xlsx *.xlsm)"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Select Excel file", "", "Excel (*.xlsx *.xlsm)")
         if path:
             self.input_excel.setText(path)
             self._discover_sheets()
@@ -304,9 +298,7 @@ class JobEditorDialog(QDialog):
         for name in names:
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked if name in checked else Qt.CheckState.Unchecked
-            )
+            item.setCheckState(Qt.CheckState.Checked if name in checked else Qt.CheckState.Unchecked)
             self.sheets.addItem(item)
 
     def _update_output_example(self) -> None:
@@ -381,6 +373,7 @@ class JobEditorDialog(QDialog):
             "timeout_seconds": self.timeout.value() or None,
             "concurrency_group": self.group.text().strip() or None,
             "post_refresh_wait_seconds": self.post_refresh_wait.value(),
+            "fail_if_sheet_empty": self.fail_if_sheet_empty.isChecked(),
             "subject": self.subject.text().strip() or None,
             "send_report_email": self.send_email.isChecked(),
             "prod": {
@@ -416,7 +409,8 @@ class JobEditorDialog(QDialog):
         self.schedule.load(job.get("schedule_crons") or [])
         self.timeout.setValue(job.get("timeout_seconds") or 0)
         self.group.setText(job.get("concurrency_group") or "")
-        self.post_refresh_wait.setValue(job.get("post_refresh_wait_seconds") or 0)
+        self.post_refresh_wait.setValue(job.get("post_refresh_wait_seconds") or 10)
+        self.fail_if_sheet_empty.setChecked(job.get("fail_if_sheet_empty", True))
         self.notes.setPlainText(job.get("notes", ""))
         self.subject.setText(job.get("subject") or "")
         self.send_email.setChecked(job.get("send_report_email", False))
