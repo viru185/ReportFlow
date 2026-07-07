@@ -12,6 +12,7 @@ bad template, data error) is NOT retried and is reported as-is.
 
 from __future__ import annotations
 
+import os
 import time
 import traceback
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from loguru import logger
 
 from reportflow.core.ipc import RunStatus, WorkerRequest, WorkerResult, write_result
 from reportflow.core.logging_setup import add_run_log, remove_sink
-from reportflow.worker.excel import ExcelRun, is_transient_com_error
+from reportflow.worker.excel import ExcelJobError, ExcelRun, is_transient_com_error
 
 _MAX_COM_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 2.0
@@ -48,10 +49,10 @@ def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) ->
             run.refresh_and_wait(book, request.post_refresh_wait_seconds)
             if request.freeze_values:
                 run.freeze_sheets(book, request.sheet_names)
+            if request.fail_if_sheet_empty:
+                run.ensure_sheets_not_empty(book, request.sheet_names)
             if request.generate_pdf and request.output_pdf_path is not None:
-                outcome.pdf_paths = run.export_pdfs(
-                    book, request.sheet_names, request.output_pdf_path
-                )
+                outcome.pdf_paths = run.export_pdfs(book, request.sheet_names, request.output_pdf_path)
             outcome.output_xlsx = run.save_output(book, request.output_xlsx_path)
     finally:
         outcome.excel_pid = run.excel_pid
@@ -69,8 +70,15 @@ def run_job(request: WorkerRequest) -> WorkerResult:
     result_attempt = _Attempt(pdf_paths=[])
 
     logger.info(
-        "Run {} starting for job {!r} (test={})", request.run_id, request.job_name, request.is_test
+        "Run {} starting for job {!r} (test={}, debug={})",
+        request.run_id,
+        request.job_name,
+        request.is_test,
+        request.debug,
     )
+    user_domain = os.environ.get("USERDOMAIN") or os.environ.get("COMPUTERNAME") or "unknown"
+    user_name = os.environ.get("USERNAME") or os.environ.get("USER") or "unknown"
+    logger.info("Run {} executing as {}\\{}", request.run_id, user_domain, user_name)
     try:
         for attempt in range(1, _MAX_COM_ATTEMPTS + 1):
             deadline = time.monotonic() + request.timeout_seconds
@@ -84,6 +92,9 @@ def run_job(request: WorkerRequest) -> WorkerResult:
             except Exception as exc:  # noqa: BLE001 — classify then retry or fail
                 message = str(exc)
                 error_detail = traceback.format_exc()
+                if isinstance(exc, ExcelJobError):
+                    logger.error("Run {} failed deterministically: {}", request.run_id, message)
+                    break
                 if is_transient_com_error(exc) and attempt < _MAX_COM_ATTEMPTS:
                     logger.warning(
                         "Run {} hit transient COM error on attempt {}/{}: {} — retrying",

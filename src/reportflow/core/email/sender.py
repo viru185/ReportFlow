@@ -75,7 +75,7 @@ def build_report_message(
     return msg, recipients.all_addresses()
 
 
-def test_smtp_connection(smtp: SmtpConfig, password: str | None = None) -> None:
+def check_smtp_connection(smtp: SmtpConfig, password: str | None = None) -> None:
     """Verify the SMTP settings: connect, EHLO, STARTTLS (if configured), and log in
     when credentials are present. Raises with a readable message on any failure.
 
@@ -98,13 +98,13 @@ def test_smtp_connection(smtp: SmtpConfig, password: str | None = None) -> None:
         if smtp.use_starttls and not smtp.use_ssl:
             server.starttls()
             server.ehlo()
-        if smtp.username:
-            if not password:
-                raise ValueError("username is set but no password is stored or provided")
+        if smtp.username and password:
             try:
                 server.login(smtp.username, password)
             except smtplib.SMTPAuthenticationError as e:
                 raise PermissionError(f"login rejected for {smtp.username!r} — {e}") from e
+        elif smtp.username and not password:
+            logger.warning("SMTP username is set but no password was provided; skipping authentication")
     finally:
         try:
             server.quit()
@@ -165,10 +165,7 @@ def send_dev_log_bundle(config: AppConfig, bundle_path: Path, context: dict[str,
     msg["From"] = config.smtp.from_address or config.smtp.username or "reportflow@localhost"
     msg["Subject"] = f"[ReportFlow] Diagnostic bundle — {context.get('hostname', 'host')}"
     msg["To"] = ", ".join(to)
-    msg.set_content(
-        "Attached is the ReportFlow diagnostic bundle (logs + sanitized config). "
-        "Secrets have been redacted."
-    )
+    msg.set_content("Attached is the ReportFlow diagnostic bundle (logs + sanitized config). " "Secrets have been redacted.")
     _attach_file(msg, Path(bundle_path))
 
     send_message(config.smtp, msg, to)

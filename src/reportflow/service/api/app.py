@@ -26,6 +26,7 @@ from reportflow.core.email import (
     sample_context,
     send_dev_log_bundle,
 )
+from reportflow.core.logging_setup import reconfigure
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 from reportflow.core.state import RunStore, RunTrigger
 from reportflow.service.bootstrap import seed_data_files
@@ -78,6 +79,7 @@ class ServiceState:
             self.config = load_config()
             self.config_error = None
             self.scheduler.rebuild(self.config)
+            reconfigure("service", level="DEBUG" if self.config.app.debug_logging else "INFO")
 
     def save_jobs(self, jobs: list[JobConfig]) -> None:
         """Validate (uniqueness), persist, and re-schedule with the new job list."""
@@ -89,6 +91,7 @@ class ServiceState:
             self.config = new_config
             self.config_error = None
             self.scheduler.rebuild(new_config)
+            reconfigure("service", level="DEBUG" if new_config.app.debug_logging else "INFO")
 
     def save_settings(self, sections: dict[str, Any]) -> None:
         """Merge the given non-job sections (app/smtp/ui/email/test) into the config,
@@ -106,6 +109,7 @@ class ServiceState:
             self.config = new_config
             self.config_error = None
             self.scheduler.rebuild(new_config)
+            reconfigure("service", level="DEBUG" if new_config.app.debug_logging else "INFO")
 
 
 # --- request/response models ---------------------------------------------------
@@ -217,6 +221,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             svc().reload()
         except ConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        logger.info("Config reloaded; debug_logging={}", svc().config.app.debug_logging)
         return {"ok": True, "job_count": len(svc().config.jobs)}
 
     @app.put("/settings")
@@ -228,6 +233,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             svc().save_settings(sections)
         except Exception as e:  # noqa: BLE001 — validation / write error -> 400
             raise HTTPException(status_code=400, detail=str(e)) from e
+        logger.info("Settings saved: {}", sorted(sections))
         return {"ok": True, "sections": sorted(sections)}
 
     @app.get("/system/smtp-password")
@@ -249,11 +255,12 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
     @app.post("/system/smtp-test")
     def smtp_test(req: SmtpTestRequest) -> dict[str, Any]:
         from reportflow.core.config.models import SmtpConfig
-        from reportflow.core.email.sender import test_smtp_connection
+        from reportflow.core.email.sender import check_smtp_connection
 
         try:
             smtp = SmtpConfig.model_validate(req.model_dump(exclude={"password"}))
-            test_smtp_connection(smtp, req.password or None)
+            logger.info("SMTP test requested for {}:{}", smtp.host, smtp.port)
+            check_smtp_connection(smtp, req.password or None)
         except Exception as e:  # noqa: BLE001 — surface the reason to the UI
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True}
@@ -285,6 +292,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=f"job already exists: {job.name}")
         jobs = [*svc().config.jobs, job]
         _save_jobs_or_400(svc(), jobs)
+        logger.info("Job created: {}", job.name)
         return {"ok": True, "name": job.name}
 
     @app.put("/jobs/{name}")
@@ -292,6 +300,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         _require_job(name)
         jobs = [job if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
         _save_jobs_or_400(svc(), jobs)
+        logger.info("Job updated: {}", job.name)
         return {"ok": True, "name": job.name}
 
     @app.delete("/jobs/{name}")
@@ -299,18 +308,21 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         _require_job(name)
         jobs = [j for j in svc().config.jobs if j.name.casefold() != name.casefold()]
         _save_jobs_or_400(svc(), jobs)
+        logger.info("Job deleted: {}", name)
         return {"ok": True}
 
     @app.post("/jobs/{name}/run", response_model=RunResponse)
     def run_job(name: str) -> RunResponse:
         _require_job(name)
         run_id = svc().launcher.submit_job_by_name(name, RunTrigger.MANUAL, is_test=False)
+        logger.info("Manual run requested for job {} (run_id={})", name, run_id)
         return RunResponse(run_id=run_id)
 
     @app.post("/jobs/{name}/test", response_model=RunResponse)
     def test_job(name: str) -> RunResponse:
         _require_job(name)
         run_id = svc().launcher.submit_job_by_name(name, RunTrigger.TEST, is_test=True)
+        logger.info("Test run requested for job {} (run_id={})", name, run_id)
         return RunResponse(run_id=run_id)
 
     def _job_template_path(job: JobConfig) -> Path:
@@ -333,9 +345,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         path.write_text(update.content, encoding="utf-8")
         if job.email_template_path != path:
             updated = job.model_copy(update={"email_template_path": path})
-            jobs = [
-                updated if j.name.casefold() == name.casefold() else j for j in svc().config.jobs
-            ]
+            jobs = [updated if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
             _save_jobs_or_400(svc(), jobs)
         return {"ok": True, "path": str(path)}
 

@@ -12,6 +12,7 @@
 [Setup]
 AppId={{7F3C6A20-9B4E-4E2A-9C1D-REPORTFLOW01}}
 AppName={#MyAppName}
+AppVerName={#MyAppName} {#MyAppVersion}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
@@ -24,6 +25,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 WizardStyle=modern
 SetupIconFile=..\..\assets\reportflow.ico
+UninstallDisplayName={#MyAppName} {#MyAppVersion}
 UninstallDisplayIcon={app}\ui\reportflow-ui.exe
 
 [Files]

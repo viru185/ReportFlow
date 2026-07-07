@@ -66,8 +66,9 @@ a = Analysis(
     datas=[
         (os.path.join(ROOT, "assets", "reportflow.png"), "assets"),
         (os.path.join(ROOT, "assets", "check.svg"), "assets"),
+        (os.path.join(ROOT, "src", "reportflow"), "reportflow"),
     ],
-    hiddenimports=["httpx", "win32crypt"],
+    hiddenimports=["httpx", "win32crypt", "importlib.metadata"],
     excludes=["xlwings", "tkinter", "matplotlib", *_QT_EXCLUDES],
     noarchive=False,
 )

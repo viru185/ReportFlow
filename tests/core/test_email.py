@@ -9,15 +9,10 @@ from email.message import Message
 import pytest
 from aiosmtpd.controller import Controller
 
-from reportflow.core.config.models import (
-    AppConfig,
-    JobConfig,
-    Recipients,
-    SmtpConfig,
-    TestSettings,
-)
+from reportflow.core.config.models import AppConfig, JobConfig, Recipients, SmtpConfig, TestSettings
 from reportflow.core.email import render_email, resolve_recipients, send_report
 from reportflow.core.email.render import html_to_text
+from reportflow.core.email.sender import check_smtp_connection
 
 
 class _Capture:
@@ -145,3 +140,28 @@ def test_prod_run_uses_prod_recipients(smtp_server, tmp_path):
     assert set(envelope) == {"boss@corp.example.com", "ops@corp.example.com"}
     msg = email.message_from_bytes(handler.envelopes[0][1])
     assert msg["Subject"] == "Daily Report"  # no [TEST] prefix
+
+
+def test_smtp_connection_allows_anonymous_relay_with_blank_or_username_only_credentials(
+    smtp_server,
+):
+    _, port = smtp_server
+    blank = SmtpConfig(
+        host="127.0.0.1",
+        port=port,
+        use_starttls=False,
+        use_ssl=False,
+        from_address="reportflow@corp.example.com",
+        username="",
+    )
+    username_only = SmtpConfig(
+        host="127.0.0.1",
+        port=port,
+        use_starttls=False,
+        use_ssl=False,
+        from_address="reportflow@corp.example.com",
+        username="relay-user",
+    )
+
+    check_smtp_connection(blank, None)
+    check_smtp_connection(username_only, None)

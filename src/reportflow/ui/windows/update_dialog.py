@@ -65,9 +65,7 @@ class UpdateDialog(QDialog):
         self.resize(520, 420)
 
         layout = QVBoxLayout(self)
-        headline = QLabel(
-            f"<b>{about.NAME} {info.version}</b> is available (you have {about.VERSION})."
-        )
+        headline = QLabel(f"<b>{about.NAME}</b> update: {about.VERSION} → {info.version}")
         headline.setWordWrap(True)
         layout.addWidget(headline)
 
@@ -106,7 +104,7 @@ class UpdateDialog(QDialog):
         assert self._info.installer_url is not None
         self.update_btn.setEnabled(False)
         self.progress.setVisible(True)
-        self.status.setText("Downloading update…")
+        self.status.setText(f"Updating from {about.VERSION} to {self._info.version}…")
 
         dest = Path(tempfile.gettempdir()) / f"ReportFlow-Setup-{self._info.version}.exe"
         thread = _DownloadThread(self._info.installer_url, dest, self)

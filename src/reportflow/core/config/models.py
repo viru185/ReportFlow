@@ -42,6 +42,7 @@ class AppSettings(_Base):
     max_global_concurrency: int = Field(default=4, ge=1)
     default_timeout_seconds: int = Field(default=900, gt=0)
     log_retention_days: int = Field(default=30, ge=1)
+    debug_logging: bool = False
 
 
 class SmtpConfig(_Base):
@@ -98,7 +99,8 @@ class JobConfig(_Base):
     concurrency_group: str | None = None
     # Extra settle time after calculation completes, for add-ins (e.g. PI DataLink) that
     # fill cells asynchronously. 0 = none.
-    post_refresh_wait_seconds: int = Field(default=0, ge=0, le=3600)
+    post_refresh_wait_seconds: int = Field(default=10, ge=0, le=3600)
+    fail_if_sheet_empty: bool = True
 
     subject: str | None = None
     prod: Recipients

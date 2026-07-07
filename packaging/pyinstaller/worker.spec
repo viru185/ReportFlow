@@ -19,6 +19,7 @@ for pkg in ("xlwings",):
     hiddenimports += h
 
 hiddenimports += [
+    "openpyxl",
     "win32com",
     "win32com.client",
     "pythoncom",
@@ -34,7 +35,7 @@ a = Analysis(
     [os.path.join(ROOT, "src", "reportflow", "worker", "__main__.py")],
     pathex=[os.path.join(ROOT, "src")],
     binaries=binaries,
-    datas=datas,
+    datas=datas + [(os.path.join(ROOT, "src", "reportflow"), "reportflow")],
     hiddenimports=hiddenimports,
     excludes=["PySide6", "shiboken6", "tkinter", "matplotlib"],
     noarchive=False,

@@ -31,7 +31,7 @@ a = Analysis(
     [os.path.join(ROOT, "src", "reportflow", "service", "__main__.py")],
     pathex=[os.path.join(ROOT, "src")],
     binaries=binaries,
-    datas=datas,
+    datas=datas + [(os.path.join(ROOT, "src", "reportflow"), "reportflow")],
     hiddenimports=hiddenimports,
     excludes=["PySide6", "shiboken6", "xlwings", "tkinter", "matplotlib"],
     noarchive=False,
