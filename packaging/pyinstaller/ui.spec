@@ -11,6 +11,8 @@ unused Qt modules so nothing drags them in. Validate the frozen build with:
 
 import os
 
+from PyInstaller.utils.hooks import copy_metadata
+
 ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 ICON = os.path.join(ROOT, "assets", "reportflow.ico")
 
@@ -66,6 +68,8 @@ a = Analysis(
     datas=[
         (os.path.join(ROOT, "assets", "reportflow.png"), "assets"),
         (os.path.join(ROOT, "assets", "check.svg"), "assets"),
+        # The version lives only in pyproject.toml; frozen exes read package metadata.
+        *copy_metadata("reportflow"),
     ],
     hiddenimports=["httpx", "win32crypt"],
     excludes=["xlwings", "tkinter", "matplotlib", *_QT_EXCLUDES],
