@@ -470,14 +470,14 @@ class ExcelRun:
         the sheets being deleted.
         """
         keep = set(sheet_names)
-        for sheet in list(book.sheets):
-            if sheet.name in keep:
-                continue
+        # Capture names FIRST: the COM object is unusable after delete().
+        doomed = [s.name for s in book.sheets if s.name not in keep]
+        for name in doomed:
             try:
-                sheet.delete()
-                logger.info("Deleted unselected sheet from output: {!r}", sheet.name)
+                book.sheets[name].delete()
+                logger.info("Deleted unselected sheet from output: {!r}", name)
             except Exception as e:  # noqa: BLE001 — a stubborn sheet must not fail the run
-                logger.warning("Could not delete sheet {!r}: {}", sheet.name, e)
+                logger.warning("Could not delete sheet {!r}: {}", name, e)
 
     def export_pdfs(
         self, book: xw.Book, sheet_names: list[str], output_pdf_path: Path

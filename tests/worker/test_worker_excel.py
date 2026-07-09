@@ -88,7 +88,13 @@ def test_success_freezes_and_exports(tmp_path):
 
     wb = openpyxl.load_workbook(result.output_xlsx)
     assert wb["Summary"]["B1"].value == 550  # frozen to a value, not a formula
-    assert str(wb["Data"]["D2"].value).startswith("=")  # non-selected sheet untouched
+    assert "Data" not in wb.sheetnames  # unselected sheets are removed from the OUTPUT
+    assert set(wb.sheetnames) == {"Summary", "Detail"}
+
+    # The SOURCE workbook is untouched: helper sheet still there, formulas intact.
+    src = openpyxl.load_workbook(tmp_path / "template.xlsx")
+    assert "Data" in src.sheetnames
+    assert str(src["Summary"]["B1"].value).startswith("=")
 
 
 def test_missing_sheet_fails_cleanly(tmp_path):
