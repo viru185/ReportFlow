@@ -144,6 +144,14 @@ upgrades automatically, preserving all jobs, settings, and logs.</p>
     normal calculation finishes.</li>
 <li><b>Freeze formulas</b> — converts formulas to plain values on the selected sheets in
     the <i>output copy</i>, so recipients see numbers even without your data connections.</li>
+<li><b>Fail if a sheet comes out empty</b> (default on) — a run whose selected sheet has
+    no data fails loudly instead of emailing a blank report.</li>
+<li><b>Output contains only the selected sheets</b> (default on) — helper/tag-list tabs
+    are removed from the output copy. The source workbook is never modified.</li>
+<li><b>Blank out values</b> — comma-separated junk strings (e.g. "Tag not found",
+    "#REF!") removed from the output after saving.</li>
+<li><b>Debug logging</b> (File → Settings → Application) — verbose logs for
+    troubleshooting; the run history and File → Application logs show far more detail.</li>
 </ul>
 
 <h2 id="pidatalink">Workbooks using PI DataLink (or other Excel add-ins)</h2>
