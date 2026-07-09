@@ -13,7 +13,9 @@ Reliability is the whole point of this module:
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 import time
 from pathlib import Path
 from types import TracebackType
@@ -28,7 +30,7 @@ from loguru import logger
 
 # Excel COM constants (avoid importing the type library).
 _XL_CALC_DONE = 0  # xlDone
-_MSO_AUTOMATION_FORCE_DISABLE = 3  # msoAutomationSecurityForceDisable
+_XL_PASTE_VALUES = -4163  # xlPasteValues
 _CALC_POLL_SECONDS = 0.15
 
 # Launching several Excel instances at the exact same moment races the COM/DCOM
@@ -79,6 +81,17 @@ def is_transient_com_error(exc: BaseException) -> bool:
         or "server execution failed" in text
         or ("remote procedure call failed" in text)
     )
+
+
+def _has_any_value(values: object) -> bool:
+    """True when a used-range payload contains at least one non-empty cell value."""
+    if values is None:
+        return False
+    if isinstance(values, list):
+        return any(_has_any_value(v) for v in values)
+    if isinstance(values, str):
+        return bool(values.strip())
+    return True  # numbers, datetimes, bools — real data
 
 
 def _sanitize_for_filename(name: str) -> str:
@@ -216,13 +229,16 @@ class ExcelRun:
     def _harden(self, app: xw.App) -> None:
         # Every set is best-effort and individually guarded: a transient COM hiccup on one
         # property must not abort the run or skip the others.
+        #
+        # DELIBERATELY NOT disabled: macros (AutomationSecurity) and EnableEvents. Data
+        # workbooks in the field (PI DataLink & co.) rely on macros/event hooks to
+        # populate their data; force-disabling them produced empty reports. Excel's
+        # automation default (macros allowed) matches the customer's proven legacy script.
         for attr, value in (
             ("DisplayAlerts", False),
             ("ScreenUpdating", False),
             ("AskToUpdateLinks", False),
-            ("EnableEvents", False),
             ("AlertBeforeOverwriting", False),
-            ("AutomationSecurity", _MSO_AUTOMATION_FORCE_DISABLE),
         ):
             try:
                 setattr(app.api, attr, value)
@@ -301,12 +317,38 @@ class ExcelRun:
         if self._deadline is not None and time.monotonic() > self._deadline:
             raise ExcelJobError(f"timed out before completing: {what}")
 
+    @staticmethod
+    def _clear_read_only_attribute(path: Path) -> None:
+        """Drop the filesystem read-only flag: Excel would open the file read-only and
+        add-ins like PI DataLink then refuse to refresh their data into it."""
+        try:
+            if path.stat().st_mode & stat.S_IWRITE:
+                return
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            logger.info("Cleared the read-only attribute on {}", path)
+        except OSError as e:
+            logger.warning("Could not clear read-only attribute on {}: {}", path, e)
+
     def open_workbook(self, template_path: Path, sheet_names: list[str]) -> xw.Book:
         assert self.app is not None
         if not template_path.exists():
             raise ExcelJobError(f"workbook template not found: {template_path}")
+        self._clear_read_only_attribute(template_path)
         logger.info("Opening workbook: {}", template_path)
-        book = self.app.books.open(str(template_path), update_links=False)
+        book = self.app.books.open(
+            str(template_path),
+            update_links=False,
+            read_only=False,
+            ignore_read_only_recommended=True,
+        )
+        try:
+            if bool(book.api.ReadOnly):
+                logger.warning(
+                    "Workbook opened READ-ONLY despite requesting write access — live "
+                    "data refresh may not work (is the file open elsewhere?)"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not query ReadOnly state: {}", e)
 
         existing = [s.name for s in book.sheets]
         missing = [n for n in sheet_names if n not in existing]
@@ -382,15 +424,60 @@ class ExcelRun:
             time.sleep(_CALC_POLL_SECONDS)
 
     def freeze_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
-        """Convert formulas to static values on the SELECTED sheets only."""
+        """Convert formulas to static values on the SELECTED sheets only.
+
+        Uses COM ``Copy`` -> ``PasteSpecial(xlPasteValues)`` — the same mechanism as the
+        customer's proven legacy script. It preserves formatting exactly and avoids
+        round-tripping large ranges through Python.
+        """
+        assert self.app is not None
         for name in sheet_names:
             self._check_deadline(f"freezing sheet {name}")
             sheet = book.sheets[name]
-            used = sheet.used_range
-            values = used.value
-            if values is not None:
-                used.value = values
-            logger.info("Froze formulas to values on sheet: {}", name)
+            used = sheet.api.UsedRange
+            cell_count = int(used.Cells.Count)
+            used.Copy()
+            used.PasteSpecial(Paste=_XL_PASTE_VALUES)
+            try:
+                self.app.api.CutCopyMode = False
+            except Exception as e:  # noqa: BLE001 — cosmetic (clears the marching ants)
+                logger.debug("Could not reset CutCopyMode: {}", e)
+            logger.info("Froze formulas to values on sheet {!r} ({} cells)", name, cell_count)
+
+    def validate_sheets_not_empty(self, book: xw.Book, sheet_names: list[str]) -> None:
+        """Fail loudly when a selected sheet produced no data at all.
+
+        An all-empty used range means the refresh silently yielded nothing (add-in not
+        loaded, no data access for this account, …) — shipping a blank report as
+        "success" is the one outcome the user must never see.
+        """
+        for name in sheet_names:
+            self._check_deadline(f"validating sheet {name}")
+            sheet = book.sheets[name]
+            values = sheet.used_range.value
+            if _has_any_value(values):
+                continue
+            raise ExcelJobError(
+                f"sheet {name!r} came out EMPTY after refresh — the data source produced "
+                "nothing. Check the worker log's COM add-in list and whether the service "
+                "account has access to the data source (e.g. PI)."
+            )
+
+    def delete_unselected_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
+        """Remove every sheet that is not part of the report before saving the output.
+
+        Runs AFTER freeze, so selected sheets hold static values and no longer reference
+        the sheets being deleted.
+        """
+        keep = set(sheet_names)
+        for sheet in list(book.sheets):
+            if sheet.name in keep:
+                continue
+            try:
+                sheet.delete()
+                logger.info("Deleted unselected sheet from output: {!r}", sheet.name)
+            except Exception as e:  # noqa: BLE001 — a stubborn sheet must not fail the run
+                logger.warning("Could not delete sheet {!r}: {}", sheet.name, e)
 
     def export_pdfs(
         self, book: xw.Book, sheet_names: list[str], output_pdf_path: Path
@@ -408,6 +495,17 @@ class ExcelRun:
         return produced
 
     def save_output(self, book: xw.Book, output_xlsx_path: Path) -> Path:
+        """Save-as to the output path. The SOURCE file is never written.
+
+        Hard guard: refuse to save onto the input file even if a job misconfiguration
+        resolves the output to the same path.
+        """
+        source = Path(str(book.api.FullName))
+        if output_xlsx_path.resolve() == source.resolve():
+            raise ExcelJobError(
+                f"output path equals the input workbook ({source}) — refusing to "
+                "overwrite the source file. Choose a different output folder/filename."
+            )
         output_xlsx_path.parent.mkdir(parents=True, exist_ok=True)
         book.save(str(output_xlsx_path))
         logger.info("Saved output workbook: {}", output_xlsx_path)

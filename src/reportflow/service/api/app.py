@@ -106,6 +106,12 @@ class ServiceState:
             self.config = new_config
             self.config_error = None
             self.scheduler.rebuild(new_config)
+        self._apply_log_level()
+
+    def _apply_log_level(self) -> None:
+        from reportflow.core.logging_setup import reconfigure
+
+        reconfigure("service", level="DEBUG" if self.config.app.debug_logging else "INFO")
 
 
 # --- request/response models ---------------------------------------------------
@@ -222,6 +228,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
     @app.put("/settings")
     def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         sections = {k: v for k, v in update.model_dump().items() if v is not None}
+        logger.info("API: settings update for section(s) {}", sorted(sections))
         if not sections:
             raise HTTPException(status_code=400, detail="no settings sections provided")
         try:
@@ -281,6 +288,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.post("/jobs", status_code=201)
     def create_job(job: JobConfig) -> dict[str, Any]:
+        logger.info("API: create job {!r}", job.name)
         if svc().config.job(job.name) is not None:
             raise HTTPException(status_code=409, detail=f"job already exists: {job.name}")
         jobs = [*svc().config.jobs, job]
@@ -289,6 +297,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.put("/jobs/{name}")
     def update_job(name: str, job: JobConfig) -> dict[str, Any]:
+        logger.info("API: update job {!r}", name)
         _require_job(name)
         jobs = [job if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
         _save_jobs_or_400(svc(), jobs)
@@ -296,6 +305,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.delete("/jobs/{name}")
     def delete_job(name: str) -> dict[str, Any]:
+        logger.info("API: delete job {!r}", name)
         _require_job(name)
         jobs = [j for j in svc().config.jobs if j.name.casefold() != name.casefold()]
         _save_jobs_or_400(svc(), jobs)
@@ -303,12 +313,14 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.post("/jobs/{name}/run", response_model=RunResponse)
     def run_job(name: str) -> RunResponse:
+        logger.info("API: manual run requested for {!r}", name)
         _require_job(name)
         run_id = svc().launcher.submit_job_by_name(name, RunTrigger.MANUAL, is_test=False)
         return RunResponse(run_id=run_id)
 
     @app.post("/jobs/{name}/test", response_model=RunResponse)
     def test_job(name: str) -> RunResponse:
+        logger.info("API: test run requested for {!r}", name)
         _require_job(name)
         run_id = svc().launcher.submit_job_by_name(name, RunTrigger.TEST, is_test=True)
         return RunResponse(run_id=run_id)

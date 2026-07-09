@@ -12,6 +12,7 @@ bad template, data error) is NOT retried and is reported as-is.
 
 from __future__ import annotations
 
+import os
 import time
 import traceback
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from loguru import logger
 
 from reportflow.core.ipc import RunStatus, WorkerRequest, WorkerResult, write_result
 from reportflow.core.logging_setup import add_run_log, remove_sink
+from reportflow.worker.cleanup import blank_out_values
 from reportflow.worker.excel import ExcelRun, is_transient_com_error
 
 _MAX_COM_ATTEMPTS = 3
@@ -48,11 +50,17 @@ def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) ->
             run.refresh_and_wait(book, request.post_refresh_wait_seconds)
             if request.freeze_values:
                 run.freeze_sheets(book, request.sheet_names)
+            if request.fail_if_sheet_empty:
+                run.validate_sheets_not_empty(book, request.sheet_names)
+            if request.keep_only_selected_sheets:
+                run.delete_unselected_sheets(book, request.sheet_names)
             if request.generate_pdf and request.output_pdf_path is not None:
                 outcome.pdf_paths = run.export_pdfs(
                     book, request.sheet_names, request.output_pdf_path
                 )
             outcome.output_xlsx = run.save_output(book, request.output_xlsx_path)
+        if outcome.output_xlsx is not None and request.blank_out_values:
+            blank_out_values(outcome.output_xlsx, request.blank_out_values)
     finally:
         outcome.excel_pid = run.excel_pid
         outcome.excel_pid_reaped = run.excel_pid_reaped
@@ -60,7 +68,7 @@ def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) ->
 
 def run_job(request: WorkerRequest) -> WorkerResult:
     """Execute a single run (with transient-COM retry) and write the result file."""
-    sink_id = add_run_log(request.log_path)
+    sink_id = add_run_log(request.log_path, level="DEBUG" if request.debug else "INFO")
     started = datetime.now()
 
     status = RunStatus.FAILED
@@ -70,6 +78,12 @@ def run_job(request: WorkerRequest) -> WorkerResult:
 
     logger.info(
         "Run {} starting for job {!r} (test={})", request.run_id, request.job_name, request.is_test
+    )
+    # PI & friends use Windows-integrated security: WHO ran Excel decides data access.
+    logger.info(
+        "Executing as {}\\{}",
+        os.environ.get("USERDOMAIN", "?"),
+        os.environ.get("USERNAME", "?"),
     )
     try:
         for attempt in range(1, _MAX_COM_ATTEMPTS + 1):

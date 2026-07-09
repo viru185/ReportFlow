@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+from loguru import logger
 
 
 class ApiError(Exception):
@@ -38,10 +39,13 @@ class ApiClient:
         try:
             resp = self._client.request(method, f"{self.base_url}{path}", **kw)
         except httpx.HTTPError as e:
+            logger.warning("API {} {} unreachable: {}", method, path, e)
             raise ApiError(f"service not reachable at {self.base_url}: {e}") from e
         if resp.status_code >= 400:
             detail = _safe_detail(resp)
+            logger.warning("API {} {} -> {}: {}", method, path, resp.status_code, detail)
             raise ApiError(detail, resp.status_code)
+        logger.debug("API {} {} -> {}", method, path, resp.status_code)
         if resp.headers.get("content-type", "").startswith("application/json"):
             return resp.json()
         return resp.text

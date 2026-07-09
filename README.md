@@ -235,6 +235,58 @@ Set **`REPORTFLOW_DATA_DIR`** to redirect the data root (config/logs/state) away
 $env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
 ```
 
+### Test the full app locally — no build, no installer
+
+Goal: exercise the real service + UI + worker against a real workbook (e.g. a PI DataLink
+file) on your dev machine before pushing anything.
+
+```powershell
+# 1) Isolated data dir so your real ProgramData isn't touched (per terminal!)
+$env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
+
+# 2) Start the service (terminal 1)
+uv run python -m reportflow.service
+
+# 3) Start the UI (terminal 2 — set REPORTFLOW_DATA_DIR here too)
+uv run python -m reportflow.ui
+```
+
+Create the job in the UI exactly as on the server (pick your workbook, tick the report
+sheets), hit **🧪 Test**, and inspect the run log + output files.
+
+**Fake the email sending** (nothing leaves your machine): in a third terminal run
+
+```powershell
+uv run python scripts/dev_smtp_server.py        # listens on 127.0.0.1:2525
+```
+
+then in the UI set Settings → SMTP to host `127.0.0.1`, port `2525`, no TLS, empty
+username/password. Every email ReportFlow "sends" is printed by that terminal and saved
+under `scripts\sample\outbox\*.eml` (double-click opens in Outlook). **Test connection**
+also works against it.
+
+Worker-only quick loop (no service/UI):
+
+```powershell
+uv run python scripts/dev_run_worker.py --template "D:\path\to\MyReport.xlsx" --sheets "Sheet A" "Sheet B"
+```
+
+### Build & test the executables locally
+
+```powershell
+uv run python packaging/build_all.py            # dist\worker, dist\service, dist\ui
+dist\ui\reportflow-ui.exe --selftest             # exit 0 => UI bundle OK
+
+# Run the FROZEN service + UI against the isolated data dir:
+$env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
+dist\service\reportflow-service.exe              # terminal 1
+dist\ui\reportflow-ui.exe                        # terminal 2 (same env var)
+```
+
+`dist\` mirrors the installed layout, so the frozen service finds the frozen worker the
+same way it does under `C:\Program Files\ReportFlow`. When this passes, push/tag with
+confidence — the CI installer wraps the very same artifacts.
+
 ### Testing
 
 Excel-dependent tests are marked `excel` and skipped by default (and in CI).

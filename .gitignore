@@ -22,5 +22,6 @@ packaging/nssm/nssm.exe
 *.log
 scripts/sample/output/
 scripts/sample/_data/
+scripts/sample/outbox/
 _ptmp/
 scripts/sample/Equipment_Sensor_Report_Template.xlsx

@@ -98,13 +98,16 @@ def test_smtp_connection(smtp: SmtpConfig, password: str | None = None) -> None:
         if smtp.use_starttls and not smtp.use_ssl:
             server.starttls()
             server.ehlo()
-        if smtp.username:
-            if not password:
-                raise ValueError("username is set but no password is stored or provided")
+        # Login only when BOTH a username and a password exist — anonymous relays
+        # (e.g. internal servers on port 25) need no credentials at all, and sending
+        # behaves the same way (see send_message).
+        if smtp.username and password:
             try:
                 server.login(smtp.username, password)
             except smtplib.SMTPAuthenticationError as e:
                 raise PermissionError(f"login rejected for {smtp.username!r} — {e}") from e
+        elif smtp.username:
+            logger.info("SMTP test: no password stored/provided — skipping login check")
     finally:
         try:
             server.quit()

@@ -84,8 +84,8 @@ def test_blank_cron_entries_dropped():
     assert job.schedule_crons == ["0 6 * * *"]
 
 
-def test_post_refresh_wait_defaults_to_zero_and_round_trips():
-    assert _sample_job().post_refresh_wait_seconds == 0
+def test_post_refresh_wait_defaults_to_ten_and_round_trips():
+    assert _sample_job().post_refresh_wait_seconds == 10  # proven field recipe default
 
     cfg = default_config()
     cfg.jobs.append(_sample_job(post_refresh_wait_seconds=90))
@@ -94,6 +94,35 @@ def test_post_refresh_wait_defaults_to_zero_and_round_trips():
 
     with pytest.raises(ValidationError):
         _sample_job(post_refresh_wait_seconds=-5)
+
+
+def test_new_output_safety_options_default_and_round_trip():
+    job = _sample_job()
+    assert job.fail_if_sheet_empty is True
+    assert job.keep_only_selected_sheets is True
+    assert job.blank_out_values == []
+
+    cfg = default_config()
+    cfg.jobs.append(
+        _sample_job(
+            fail_if_sheet_empty=False,
+            keep_only_selected_sheets=False,
+            blank_out_values=["Tag not found", "#REF!"],
+        )
+    )
+    save_config(cfg)
+    loaded = load_config().jobs[0]
+    assert loaded.fail_if_sheet_empty is False
+    assert loaded.keep_only_selected_sheets is False
+    assert loaded.blank_out_values == ["Tag not found", "#REF!"]
+
+
+def test_debug_logging_setting_round_trips():
+    cfg = default_config()
+    assert cfg.app.debug_logging is False
+    cfg.app.debug_logging = True
+    save_config(cfg)
+    assert load_config().app.debug_logging is True
 
 
 def test_job_lookup_is_case_insensitive():

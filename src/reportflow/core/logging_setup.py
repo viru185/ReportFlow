@@ -43,7 +43,18 @@ def configure_logging(process_name: str, *, level: str = "INFO", to_console: boo
     """Configure loguru for a process. Idempotent per ``process_name``."""
     if process_name in _configured:
         return
+    _apply(process_name, level=level, to_console=to_console)
+    _configured.add(process_name)
 
+
+def reconfigure(process_name: str, *, level: str, to_console: bool = True) -> None:
+    """Re-apply the process sinks at a new level (e.g. debug toggle changed at runtime)."""
+    _apply(process_name, level=level, to_console=to_console)
+    _configured.add(process_name)
+    logger.info("Log level set to {}", level)
+
+
+def _apply(process_name: str, *, level: str, to_console: bool) -> None:
     logger.remove()
     logger.configure(patcher=_patch)
 
@@ -62,7 +73,6 @@ def configure_logging(process_name: str, *, level: str = "INFO", to_console: boo
         diagnose=False,
         encoding="utf-8",
     )
-    _configured.add(process_name)
 
 
 def add_run_log(run_log_path: Path, *, level: str = "DEBUG") -> int:

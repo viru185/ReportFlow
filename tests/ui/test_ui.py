@@ -339,6 +339,56 @@ def test_editor_email_hint_and_refresh_wait(qtbot):
     assert dlg.payload()["post_refresh_wait_seconds"] == 120
 
 
+def test_editor_advanced_output_safety_fields(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi())
+    qtbot.addWidget(dlg)
+    dlg.name.setText("j")
+    dlg.input_excel.setText("C:/t.xlsx")
+    dlg._discover_sheets()
+    _check_all(dlg)
+    dlg.prod_to.setText("a@x.com")
+    dlg.test_to.setText("b@x.com")
+
+    # Defaults: safety on, only-selected on, wait 10s, no blank-out list.
+    payload = dlg.payload()
+    assert payload["fail_if_sheet_empty"] is True
+    assert payload["keep_only_selected_sheets"] is True
+    assert payload["post_refresh_wait_seconds"] == 10
+    assert payload["blank_out_values"] == []
+
+    dlg.blank_values.setText("Tag not found, #REF!")
+    dlg.fail_if_empty.setChecked(False)
+    payload = dlg.payload()
+    assert payload["blank_out_values"] == ["Tag not found", "#REF!"]
+    assert payload["fail_if_sheet_empty"] is False
+
+
+def test_settings_debug_toggle_saves(qtbot):
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    api = FakeApi()
+    dlg = SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    assert dlg.debug_logging.isChecked() is False
+    dlg.debug_logging.setChecked(True)
+    dlg._save()
+    assert api.saved_settings["app"]["debug_logging"] is True
+
+
+def test_update_dialog_shows_from_and_to_versions(qtbot):
+    from reportflow import __about__ as about
+    from reportflow.ui.updater import UpdateInfo
+    from reportflow.ui.windows.update_dialog import UpdateDialog
+
+    info = UpdateInfo(version="9.9.9", notes="", installer_url="https://x/s.exe", size=1)
+    dlg = UpdateDialog(info)
+    qtbot.addWidget(dlg)
+    assert about.VERSION in dlg.windowTitle()
+    assert "9.9.9" in dlg.windowTitle()
+
+
 def test_editor_is_tabbed_not_scrollable(qtbot):
     from PySide6.QtWidgets import QScrollArea, QTabWidget
 

@@ -17,6 +17,10 @@ from reportflow.service.api import ServiceState, create_app
 def main(argv: list[str] | None = None) -> int:
     configure_logging("service")
     state = ServiceState()
+    if state.config.app.debug_logging:
+        from reportflow.core.logging_setup import reconfigure
+
+        reconfigure("service", level="DEBUG")
     host = state.config.app.api_host
     port = state.config.app.api_port
 

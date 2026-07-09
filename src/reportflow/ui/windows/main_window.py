@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
@@ -302,6 +303,7 @@ class MainWindow(QMainWindow):
 
     def _save(self, dlg: JobEditorDialog, *, create: bool) -> None:
         payload = dlg.payload()
+        logger.info("{} job {!r}", "Creating" if create else "Updating", payload.get("name"))
         try:
             if create:
                 self._api.create_job(payload)
@@ -319,6 +321,7 @@ class MainWindow(QMainWindow):
         confirm = QMessageBox.question(self, "Delete", f"Delete job {name!r}?")
         if confirm != QMessageBox.StandardButton.Yes:
             return
+        logger.info("Deleting job {!r}", name)
         try:
             self._api.delete_job(name)
         except ApiError as e:
@@ -333,6 +336,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Run failed", str(e))
             return
         kind = "Test run" if test else "Run"
+        logger.info("{} started for {!r}: run {}", kind, name, resp.get("run_id"))
         self.statusBar().showMessage(f"{kind} started for {name} (run {resp['run_id']})")
         RunHistoryDialog(self._api, name, self).exec()
 
@@ -429,6 +433,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_update_found(self, info: UpdateInfo) -> None:
+        logger.info("Update available: v{} (current v{})", info.version, about.VERSION)
         if self._update_thread is not None:
             self._update_thread._reported = True  # type: ignore[attr-defined]
         UpdateDialog(info, self).exec()
