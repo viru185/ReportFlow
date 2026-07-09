@@ -325,7 +325,6 @@ class ExcelRun:
             for conn in book.api.Connections:
                 for sub in ("OLEDBConnection", "ODBCConnection"):
                     try:
-                        time.sleep(20)
                         getattr(conn, sub).BackgroundQuery = False
                     except Exception:  # noqa: BLE001 — connection type may lack this sub-object
                         pass
