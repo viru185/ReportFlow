@@ -159,6 +159,39 @@ def test_smtp_test_failure_reports_reason(client):
     assert "could not connect" in resp.json()["detail"]
 
 
+def test_smtp_test_username_without_password_skips_login(client):
+    """Anonymous relays (port 25) must be testable even when a username is filled in
+    but no password exists — login is simply skipped."""
+    import socket
+
+    from aiosmtpd.controller import Controller
+
+    class _Ok:
+        async def handle_DATA(self, server, session, envelope):
+            return "250 OK"
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    controller = Controller(_Ok(), hostname="127.0.0.1", port=port)
+    controller.start()
+    try:
+        c, _ = client
+        resp = c.post(
+            "/system/smtp-test",
+            json={
+                "host": "127.0.0.1",
+                "port": port,
+                "use_starttls": False,
+                "username": "no-reply@corp.example.com",  # set, but no password anywhere
+            },
+        )
+        assert resp.status_code == 200 and resp.json()["ok"] is True
+    finally:
+        controller.stop()
+
+
 def test_smtp_test_requires_host(client):
     c, _ = client
     resp = c.post("/system/smtp-test", json={"host": "", "username": ""})

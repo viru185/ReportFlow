@@ -61,12 +61,13 @@ class UpdateDialog(QDialog):
         super().__init__(parent)
         self._info = info
         self._thread: _DownloadThread | None = None
-        self.setWindowTitle("Update available")
+        self.setWindowTitle(f"Update available — v{about.VERSION} → v{info.version}")
         self.resize(520, 420)
 
         layout = QVBoxLayout(self)
         headline = QLabel(
-            f"<b>{about.NAME} {info.version}</b> is available (you have {about.VERSION})."
+            f"<b>{about.NAME} update: v{about.VERSION} &nbsp;→&nbsp; v{info.version}</b><br>"
+            f"You are currently on version {about.VERSION}."
         )
         headline.setWordWrap(True)
         layout.addWidget(headline)
@@ -108,6 +109,9 @@ class UpdateDialog(QDialog):
         self.progress.setVisible(True)
         self.status.setText("Downloading update…")
 
+        self.status.setText(
+            f"Updating from v{about.VERSION} to v{self._info.version} — downloading…"
+        )
         dest = Path(tempfile.gettempdir()) / f"ReportFlow-Setup-{self._info.version}.exe"
         thread = _DownloadThread(self._info.installer_url, dest, self)
         thread.progress.connect(self._on_progress)

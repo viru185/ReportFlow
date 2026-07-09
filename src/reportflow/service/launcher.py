@@ -224,8 +224,12 @@ class Launcher:
             freeze_values=job.freeze_values,
             generate_pdf=job.generate_pdf,
             post_refresh_wait_seconds=job.post_refresh_wait_seconds,
+            fail_if_sheet_empty=job.fail_if_sheet_empty,
+            keep_only_selected_sheets=job.keep_only_selected_sheets,
+            blank_out_values=job.blank_out_values,
             timeout_seconds=timeout,
             is_test=is_test,
+            debug=config.app.debug_logging,
             result_path=run_dir / "result.json",
             log_path=run_dir / "worker.log",
         )

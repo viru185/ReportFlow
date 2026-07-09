@@ -57,7 +57,11 @@ class SettingsDialog(QDialog):
         self.smtp_from = QLineEdit()
         self.smtp_from.setToolTip("The From address report emails are sent as.")
         self.smtp_user = QLineEdit()
-        self.smtp_user.setToolTip("SMTP login username; leave empty if no authentication.")
+        self.smtp_user.setToolTip(
+            "SMTP login username — leave EMPTY for servers that accept mail without "
+            "login (e.g. internal relays on port 25). Login is only attempted when both "
+            "a username and a password are set."
+        )
 
         self.smtp_password = QLineEdit()
         self.smtp_password.setEchoMode(QLineEdit.EchoMode.Password)
@@ -139,10 +143,17 @@ class SettingsDialog(QDialog):
             "Silently checks GitHub for a newer version on startup (skipped when offline). "
             "Updates are only ever installed when you click Update."
         )
+        self.debug_logging = QCheckBox("Enable debug logging (verbose)")
+        self.debug_logging.setToolTip(
+            "Writes much more detail to the service, worker, and app log files — useful "
+            "when troubleshooting with support. Applies to the service immediately; the "
+            "app picks it up on next start."
+        )
         app_form.addRow("Max parallel runs", self.max_concurrency)
         app_form.addRow("Default timeout", self.default_timeout)
         app_form.addRow("Log retention", self.log_retention)
         app_form.addRow("", self.check_updates)
+        app_form.addRow("", self.debug_logging)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -183,6 +194,7 @@ class SettingsDialog(QDialog):
 
         ui_cfg = cfg.get("ui", {})
         self.check_updates.setChecked(bool(ui_cfg.get("check_updates_on_startup", True)))
+        self.debug_logging.setChecked(bool(app_cfg.get("debug_logging", False)))
 
         self._app_section_base: dict[str, Any] = app_cfg
         self._ui_section_base: dict[str, Any] = ui_cfg
@@ -202,6 +214,7 @@ class SettingsDialog(QDialog):
                 "max_global_concurrency": self.max_concurrency.value(),
                 "default_timeout_seconds": self.default_timeout.value(),
                 "log_retention_days": self.log_retention.value(),
+                "debug_logging": self.debug_logging.isChecked(),
             },
             "ui": {
                 **getattr(self, "_ui_section_base", {}),

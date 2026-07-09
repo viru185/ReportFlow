@@ -235,10 +235,29 @@ class JobEditorDialog(QDialog):
         self.post_refresh_wait.setRange(0, 3600)
         self.post_refresh_wait.setSuffix(" s")
         self.post_refresh_wait.setSpecialValueText("(none)")
+        self.post_refresh_wait.setValue(10)
         self.post_refresh_wait.setToolTip(
             "Extra wait after the data refresh completes, before freezing/exporting. Use "
             "this when the workbook relies on Excel add-ins that load data asynchronously "
             "— e.g. PI DataLink — and the output would otherwise capture incomplete data."
+        )
+        self.fail_if_empty = QCheckBox("Fail the run if a selected sheet comes out empty")
+        self.fail_if_empty.setChecked(True)
+        self.fail_if_empty.setToolTip(
+            "Safety net: if a selected sheet contains no data at all after refresh, the "
+            "run fails with a clear error instead of emailing a blank report."
+        )
+        self.keep_only_selected = QCheckBox("Output contains only the selected sheets")
+        self.keep_only_selected.setChecked(True)
+        self.keep_only_selected.setToolTip(
+            "Delete all non-selected sheets (helper/tag-list tabs) from the OUTPUT copy "
+            "before saving. The source workbook is never modified."
+        )
+        self.blank_values = QLineEdit()
+        self.blank_values.setPlaceholderText("Tag not found, No Data, #REF!, No events found.")
+        self.blank_values.setToolTip(
+            "Comma-separated cell values to blank out of the output after saving — "
+            "typically PI DataLink error strings. Leave empty to keep everything."
         )
         self.notes = QPlainTextEdit()
         self.notes.setToolTip("Free-form description of this job.")
@@ -246,6 +265,9 @@ class JobEditorDialog(QDialog):
         adv_form.addRow("Timeout", self.timeout)
         adv_form.addRow("Concurrency group", self.group)
         adv_form.addRow("Extra wait after refresh", self.post_refresh_wait)
+        adv_form.addRow("", self.fail_if_empty)
+        adv_form.addRow("", self.keep_only_selected)
+        adv_form.addRow("Blank out values", self.blank_values)
         adv_form.addRow("Notes", self.notes)
 
         self.tabs.addTab(general_tab, "General")
@@ -381,6 +403,9 @@ class JobEditorDialog(QDialog):
             "timeout_seconds": self.timeout.value() or None,
             "concurrency_group": self.group.text().strip() or None,
             "post_refresh_wait_seconds": self.post_refresh_wait.value(),
+            "fail_if_sheet_empty": self.fail_if_empty.isChecked(),
+            "keep_only_selected_sheets": self.keep_only_selected.isChecked(),
+            "blank_out_values": _split_csv(self.blank_values.text()),
             "subject": self.subject.text().strip() or None,
             "send_report_email": self.send_email.isChecked(),
             "prod": {
@@ -417,6 +442,9 @@ class JobEditorDialog(QDialog):
         self.timeout.setValue(job.get("timeout_seconds") or 0)
         self.group.setText(job.get("concurrency_group") or "")
         self.post_refresh_wait.setValue(job.get("post_refresh_wait_seconds") or 0)
+        self.fail_if_empty.setChecked(job.get("fail_if_sheet_empty", True))
+        self.keep_only_selected.setChecked(job.get("keep_only_selected_sheets", True))
+        self.blank_values.setText(_join_csv(job.get("blank_out_values")))
         self.notes.setPlainText(job.get("notes", ""))
         self.subject.setText(job.get("subject") or "")
         self.send_email.setChecked(job.get("send_report_email", False))

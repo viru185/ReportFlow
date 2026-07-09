@@ -42,6 +42,8 @@ class AppSettings(_Base):
     max_global_concurrency: int = Field(default=4, ge=1)
     default_timeout_seconds: int = Field(default=900, gt=0)
     log_retention_days: int = Field(default=30, ge=1)
+    # Verbose (DEBUG-level) logging for service, workers, and UI.
+    debug_logging: bool = False
 
 
 class SmtpConfig(_Base):
@@ -97,8 +99,16 @@ class JobConfig(_Base):
     timeout_seconds: int | None = Field(default=None, gt=0)
     concurrency_group: str | None = None
     # Extra settle time after calculation completes, for add-ins (e.g. PI DataLink) that
-    # fill cells asynchronously. 0 = none.
-    post_refresh_wait_seconds: int = Field(default=0, ge=0, le=3600)
+    # fill cells asynchronously. Default 10s matches the proven field recipe.
+    post_refresh_wait_seconds: int = Field(default=10, ge=0, le=3600)
+    # Fail the run when a selected sheet's used range is entirely empty after refresh —
+    # an empty report must never masquerade as success.
+    fail_if_sheet_empty: bool = True
+    # Only the selected sheets remain in the output workbook (source is never touched).
+    keep_only_selected_sheets: bool = True
+    # Cell values blanked out of the OUTPUT after saving (e.g. PI DataLink error strings
+    # like "Tag not found", "No Data", "#REF!").
+    blank_out_values: list[str] = Field(default_factory=list)
 
     subject: str | None = None
     prod: Recipients

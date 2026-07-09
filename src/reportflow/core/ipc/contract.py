@@ -36,10 +36,14 @@ class WorkerRequest(_IpcBase):
     sheet_names: list[str] = Field(min_length=1)
     freeze_values: bool = True
     generate_pdf: bool = True
-    post_refresh_wait_seconds: int = Field(default=0, ge=0)
+    post_refresh_wait_seconds: int = Field(default=10, ge=0)
+    fail_if_sheet_empty: bool = True
+    keep_only_selected_sheets: bool = True
+    blank_out_values: list[str] = Field(default_factory=list)
 
     timeout_seconds: int = Field(gt=0)
     is_test: bool = False
+    debug: bool = False  # verbose per-run worker logging
 
     # Where the worker must write its result and per-run log.
     result_path: Path
