@@ -38,6 +38,7 @@ class WorkerRequest(_IpcBase):
     generate_pdf: bool = True
     post_refresh_wait_seconds: int = Field(default=10, ge=0)
     fail_if_sheet_empty: bool = True
+    fail_if_sheet_has_errors: bool = True
     keep_only_selected_sheets: bool = True
     blank_out_values: list[str] = Field(default_factory=list)
 

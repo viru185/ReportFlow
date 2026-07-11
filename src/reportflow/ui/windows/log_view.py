@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -17,12 +18,15 @@ from PySide6.QtWidgets import (
 
 from reportflow.ui.api_client import ApiClient, ApiError
 
+_TERMINAL_STATUSES = frozenset({"success", "failed", "timed_out", "crashed"})
+
 
 class RunHistoryDialog(QDialog):
     def __init__(self, api: ApiClient, job_name: str | None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._api = api
         self._job = job_name
+        self._email_alerted: set[str] = set()  # run_ids we've already warned about
         self.setWindowTitle(f"Run history — {job_name}" if job_name else "Run history")
         self.resize(760, 520)
 
@@ -69,6 +73,13 @@ class RunHistoryDialog(QDialog):
         except ApiError as e:
             self.details.setText(f"Could not load runs: {e}")
             return
+        if not hasattr(self, "_seeded"):
+            # First load: don't pop email alerts for runs that already finished before this
+            # dialog opened — only warn about transitions we witness.
+            self._email_alerted = {
+                r["run_id"] for r in runs if r.get("status") in _TERMINAL_STATUSES
+            }
+            self._seeded = True
         current = self._current_run_id()
         self.runs.clear()
         for r in runs:
@@ -99,9 +110,33 @@ class RunHistoryDialog(QDialog):
             f"error: {r.get('error_summary') or '—'}"
         )
         try:
-            self.log.setPlainText(self._api.get_run_log(r["run_id"]).get("log", ""))
+            text = self._api.get_run_log(r["run_id"]).get("log", "")
         except ApiError as e:
-            self.log.setPlainText(f"(could not load log: {e})")
+            text = f"(could not load log: {e})"
+        # Only re-set when changed, and keep the view pinned to the newest lines while a run
+        # is live or the user is already reading the bottom (setPlainText resets to the top).
+        if text != self.log.toPlainText():
+            bar = self.log.verticalScrollBar()
+            at_bottom = bar.value() >= bar.maximum() - 4
+            self.log.setPlainText(text)
+            if at_bottom or r.get("status") == "running":
+                bar.setValue(bar.maximum())
+        self._maybe_alert_email(r)
+
+    def _maybe_alert_email(self, r: dict) -> None:
+        """Warn once when a finished run's report email failed (else it fails silently)."""
+        if r.get("status") not in _TERMINAL_STATUSES:
+            return
+        run_id = r.get("run_id", "")
+        note = r.get("email_note") or ""
+        if note.startswith("failed:") and run_id not in self._email_alerted:
+            self._email_alerted.add(run_id)
+            QMessageBox.warning(
+                self,
+                "Report email not sent",
+                f"Run {run_id} built its report, but sending the email failed:\n\n{note}\n\n"
+                "Check the SMTP settings (File → Settings) and the recipients.",
+            )
 
     def _poll(self) -> None:
         item = self.runs.currentItem()

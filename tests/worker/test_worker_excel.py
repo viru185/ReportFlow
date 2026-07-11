@@ -97,6 +97,27 @@ def test_success_freezes_and_exports(tmp_path):
     assert str(src["Summary"]["B1"].value).startswith("=")
 
 
+def test_name_error_cell_fails_with_pi_message(tmp_path):
+    """A #NAME? cell (here from an unknown function, exactly what a missing PI DataLink
+    add-in produces) must FAIL the run with the pointed message — never ship a broken report."""
+    before = _excel_pids()
+    wb_path = tmp_path / "broken.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Report"
+    ws["A1"] = "=THISFUNCTIONDOESNOTEXIST()"  # -> #NAME? once Excel recalculates
+    ws["A2"] = 123
+    ws.print_area = "A1:A2"
+    wb.save(wb_path)
+
+    result = run_job(_request(tmp_path, ["Report"], input_excel_path=wb_path))
+
+    assert result.status is RunStatus.FAILED
+    assert "#NAME?" in result.message
+    assert "error cells" in result.message.lower()
+    assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked"
+
+
 def test_missing_sheet_fails_cleanly(tmp_path):
     before = _excel_pids()
     result = run_job(_request(tmp_path, ["Summary", "DoesNotExist"]))

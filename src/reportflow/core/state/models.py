@@ -13,6 +13,7 @@ class RunTrigger(StrEnum):
     SCHEDULED = "scheduled"
     MANUAL = "manual"
     TEST = "test"
+    DRY_RUN = "dry_run"  # build + validate the report, never email (PI data check)
 
 
 class RunRecord(BaseModel):

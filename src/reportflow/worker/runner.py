@@ -30,6 +30,20 @@ _MAX_COM_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 2.0
 
 
+def _account() -> str:
+    """The Windows identity Excel runs under (PI & friends key data access off this)."""
+    return f"{os.environ.get('USERDOMAIN', '?')}\\{os.environ.get('USERNAME', '?')}"
+
+
+def _is_machine_account() -> bool:
+    """True when running as the machine account (LocalSystem shows as ``COMPUTERNAME$``).
+
+    VSTO add-ins such as PI DataLink cannot activate in that context (no user profile /
+    VSTO cache / integrated-auth identity), so their worksheet functions come out ``#NAME?``.
+    """
+    return os.environ.get("USERNAME", "").endswith("$")
+
+
 @dataclass
 class _Attempt:
     output_xlsx: Path | None = None
@@ -48,6 +62,10 @@ def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) ->
         with run:
             book = run.open_workbook(request.input_excel_path, request.sheet_names)
             run.refresh_and_wait(book, request.post_refresh_wait_seconds)
+            # Scan BEFORE freeze, while add-in formulas are still present: #NAME? here means
+            # the add-in (e.g. PI DataLink) never loaded and the report would ship broken.
+            if request.fail_if_sheet_has_errors:
+                run.validate_sheets_data(book, request.sheet_names, account=_account())
             if request.freeze_values:
                 run.freeze_sheets(book, request.sheet_names)
             if request.fail_if_sheet_empty:
@@ -80,11 +98,15 @@ def run_job(request: WorkerRequest) -> WorkerResult:
         "Run {} starting for job {!r} (test={})", request.run_id, request.job_name, request.is_test
     )
     # PI & friends use Windows-integrated security: WHO ran Excel decides data access.
-    logger.info(
-        "Executing as {}\\{}",
-        os.environ.get("USERDOMAIN", "?"),
-        os.environ.get("USERNAME", "?"),
-    )
+    logger.info("Executing as {}", _account())
+    if _is_machine_account():
+        logger.warning(
+            "Running as the machine account ({}). VSTO add-ins such as PI DataLink cannot "
+            "load in this context, so their cells will be #NAME?. Configure the ReportFlow "
+            "service to log on as a user with the add-in installed and data access "
+            "(scripts/set-service-account.ps1 or the installer's service-account page).",
+            _account(),
+        )
     try:
         for attempt in range(1, _MAX_COM_ATTEMPTS + 1):
             deadline = time.monotonic() + request.timeout_seconds
@@ -92,7 +114,11 @@ def run_job(request: WorkerRequest) -> WorkerResult:
             try:
                 _execute_once(request, deadline, result_attempt)
                 status = RunStatus.SUCCESS
-                message = "completed"
+                message = (
+                    "completed — no error cells; live data present"
+                    if request.fail_if_sheet_has_errors
+                    else "completed"
+                )
                 logger.info("Run {} succeeded (attempt {})", request.run_id, attempt)
                 break
             except Exception as exc:  # noqa: BLE001 — classify then retry or fail
