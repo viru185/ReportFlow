@@ -117,14 +117,17 @@ def test_new_output_safety_options_default_and_round_trip():
     assert loaded.blank_out_values == ["Tag not found", "#REF!"]
 
 
-def test_fail_if_sheet_has_errors_defaults_and_round_trips():
+def test_error_and_unselected_mode_defaults_and_round_trip():
     job = _sample_job()
-    assert job.fail_if_sheet_has_errors is True  # meaningful check for PI workbooks
+    assert job.fail_if_sheet_has_errors is False  # deliver by default; strict is opt-in
+    assert job.unselected_sheets_mode == "remove"
 
     cfg = default_config()
-    cfg.jobs.append(_sample_job(fail_if_sheet_has_errors=False))
+    cfg.jobs.append(_sample_job(fail_if_sheet_has_errors=True, unselected_sheets_mode="hide"))
     save_config(cfg)
-    assert load_config().jobs[0].fail_if_sheet_has_errors is False
+    loaded = load_config().jobs[0]
+    assert loaded.fail_if_sheet_has_errors is True
+    assert loaded.unselected_sheets_mode == "hide"
 
 
 def test_debug_logging_setting_round_trips():

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from reportflow.worker.excel import format_error_cell_message
+from reportflow.worker.excel import (
+    _count_values,
+    format_error_cell_message,
+    format_error_cell_warnings,
+)
 from reportflow.worker.runner import _account, _is_machine_account
 
 
@@ -24,6 +28,24 @@ def test_name_error_adds_addin_and_account_hint():
     assert "PI DataLink" in msg
     assert "WORKGROUP\\VIREN-BOOK$" in msg
     assert "run as a Windows user" in msg
+
+
+def test_warnings_are_deliver_anyway_notes():
+    warns = format_error_cell_warnings({"Detailed report": (12, ["#REF!"])})
+    assert len(warns) == 1
+    assert "'Detailed report'" in warns[0]
+    assert "12 error cell(s)" in warns[0]
+    assert "#REF!" in warns[0]
+    assert "delivered anyway" in warns[0]
+    assert format_error_cell_warnings({}) == []
+
+
+def test_count_values_counts_only_non_empty():
+    # A 2x3 grid: numbers + a string count, blanks/None do not.
+    grid = [[1, "", None], [0, "x", "  "]]
+    assert _count_values(grid) == 3  # 1, 0, and "x"
+    assert _count_values(None) == 0
+    assert _count_values([[None, None]]) == 0
 
 
 def test_machine_account_detection(monkeypatch):

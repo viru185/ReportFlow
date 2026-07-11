@@ -24,7 +24,13 @@ from loguru import logger
 from reportflow.core.ipc import RunStatus, WorkerRequest, WorkerResult, write_result
 from reportflow.core.logging_setup import add_run_log, remove_sink
 from reportflow.worker.cleanup import blank_out_values
-from reportflow.worker.excel import ExcelRun, is_transient_com_error
+from reportflow.worker.excel import (
+    ExcelJobError,
+    ExcelRun,
+    format_error_cell_message,
+    format_error_cell_warnings,
+    is_transient_com_error,
+)
 
 _MAX_COM_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 2.0
@@ -48,6 +54,7 @@ def _is_machine_account() -> bool:
 class _Attempt:
     output_xlsx: Path | None = None
     pdf_paths: list[Path] | None = None
+    warnings: list[str] | None = None
     excel_pid: int | None = None
     excel_pid_reaped: bool = False
 
@@ -61,17 +68,25 @@ def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) ->
     try:
         with run:
             book = run.open_workbook(request.input_excel_path, request.sheet_names)
-            run.refresh_and_wait(book, request.post_refresh_wait_seconds)
-            # Scan BEFORE freeze, while add-in formulas are still present: #NAME? here means
-            # the add-in (e.g. PI DataLink) never loaded and the report would ship broken.
-            if request.fail_if_sheet_has_errors:
-                run.validate_sheets_data(book, request.sheet_names, account=_account())
+            run.refresh_and_wait(book, request.sheet_names, request.post_refresh_wait_seconds)
+            # Scan BEFORE freeze, while add-in formulas are still present. By default we
+            # DELIVER the report and just warn about error cells; strict mode fails instead.
+            # #NAME? still gets the pointed add-in/account hint in the strict message.
+            findings = run.scan_error_cells(book, request.sheet_names)
+            if findings and request.fail_if_sheet_has_errors:
+                raise ExcelJobError(
+                    format_error_cell_message(findings, run.failed_addins, _account())
+                )
+            if findings:
+                outcome.warnings = format_error_cell_warnings(findings)
             if request.freeze_values:
                 run.freeze_sheets(book, request.sheet_names)
             if request.fail_if_sheet_empty:
                 run.validate_sheets_not_empty(book, request.sheet_names)
             if request.keep_only_selected_sheets:
-                run.delete_unselected_sheets(book, request.sheet_names)
+                run.drop_unselected_sheets(
+                    book, request.sheet_names, mode=request.unselected_sheets_mode
+                )
             if request.generate_pdf and request.output_pdf_path is not None:
                 outcome.pdf_paths = run.export_pdfs(
                     book, request.sheet_names, request.output_pdf_path
@@ -114,11 +129,8 @@ def run_job(request: WorkerRequest) -> WorkerResult:
             try:
                 _execute_once(request, deadline, result_attempt)
                 status = RunStatus.SUCCESS
-                message = (
-                    "completed — no error cells; live data present"
-                    if request.fail_if_sheet_has_errors
-                    else "completed"
-                )
+                warns = result_attempt.warnings or []
+                message = f"completed with {len(warns)} warning(s)" if warns else "completed"
                 logger.info("Run {} succeeded (attempt {})", request.run_id, attempt)
                 break
             except Exception as exc:  # noqa: BLE001 — classify then retry or fail
@@ -145,6 +157,7 @@ def run_job(request: WorkerRequest) -> WorkerResult:
             message=message,
             output_xlsx=result_attempt.output_xlsx,
             pdf_paths=result_attempt.pdf_paths or [],
+            warnings=result_attempt.warnings or [],
             started_at=started.isoformat(timespec="seconds"),
             finished_at=finished.isoformat(timespec="seconds"),
             duration_seconds=round((finished - started).total_seconds(), 3),

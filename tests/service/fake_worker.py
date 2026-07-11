@@ -46,13 +46,15 @@ def main() -> int:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(b"%PDF-1.4 fake")
             pdfs.append(p)
+    warnings = ["sheet 'Detailed report': 12 error cell(s) (#REF!) — delivered anyway"]
     write_result(
         WorkerResult(
             run_id=request.run_id,
             status=RunStatus.SUCCESS,
-            message="completed",
+            message="completed with 1 warning(s)" if mode == "warn" else "completed",
             output_xlsx=request.output_xlsx_path,
             pdf_paths=pdfs,
+            warnings=warnings if mode == "warn" else [],
             excel_pid_reaped=True,
         ),
         request.result_path,

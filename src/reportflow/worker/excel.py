@@ -40,6 +40,12 @@ _XL_ERRORS = 16  # xlErrors
 _NO_CELLS_FOUND_HRESULT = -2146827284  # 0x800A03EC — SpecialCells matched nothing
 _ERROR_SAMPLE_LIMIT = 200  # cap cells scanned when collecting distinct error texts
 
+_XL_SHEET_VERY_HIDDEN = 2  # xlSheetVeryHidden
+
+# Adaptive settle: keep recalculating until the populated-cell count stops growing.
+_SETTLE_STEP_SECONDS = 4.0
+_SETTLE_STABLE_ROUNDS = 2
+
 # Substring that marks a VSTO add-in that refused to activate (e.g. PI DataLink under a
 # service/LocalSystem context). Captured so the runner can name it in the failure message.
 _VSTO_INSTALL_FAILURE = "the add-in could not be installed"
@@ -105,6 +111,29 @@ def _has_any_value(values: object) -> bool:
     return True  # numbers, datetimes, bools — real data
 
 
+def _count_values(values: object) -> int:
+    """Count non-empty cells in a used-range payload — the 'populated' signature used to
+    detect when async add-in data (PI DataLink) has stopped arriving."""
+    if values is None:
+        return 0
+    if isinstance(values, list):
+        return sum(_count_values(v) for v in values)
+    if isinstance(values, str):
+        return 1 if values.strip() else 0
+    return 1  # numbers, datetimes, bools — real data
+
+
+def _count_values_across(book: xw.Book, sheet_names: list[str]) -> int:
+    """Total populated cells across the selected sheets (best-effort; COM errors count 0)."""
+    total = 0
+    for name in sheet_names:
+        try:
+            total += _count_values(book.sheets[name].used_range.value)
+        except Exception as e:  # noqa: BLE001 — a transient read must not abort settling
+            logger.debug("Could not read used range of {!r} for settle signature: {}", name, e)
+    return total
+
+
 def format_error_cell_message(
     findings: dict[str, tuple[int, list[str]]], failed_addins: list[str], account: str
 ) -> str:
@@ -132,6 +161,15 @@ def format_error_cell_message(
         f"selected sheet(s) contain Excel error cells: {'; '.join(parts)}.{hint} "
         "See Help → PI DataLink."
     )
+
+
+def format_error_cell_warnings(findings: dict[str, tuple[int, list[str]]]) -> list[str]:
+    """One 'delivered anyway' warning per sheet with error cells (non-strict mode)."""
+    warnings: list[str] = []
+    for name, (count, texts) in findings.items():
+        listed = ", ".join(texts) if texts else "errors"
+        warnings.append(f"sheet {name!r}: {count} error cell(s) ({listed}) — delivered anyway")
+    return warnings
 
 
 def _sanitize_for_filename(name: str) -> str:
@@ -409,7 +447,9 @@ class ExcelRun:
         self._release_startup_lock()
         return book
 
-    def refresh_and_wait(self, book: xw.Book, post_refresh_wait_seconds: int = 0) -> None:
+    def refresh_and_wait(
+        self, book: xw.Book, sheet_names: list[str], post_refresh_wait_seconds: int = 0
+    ) -> None:
         """Force a synchronous refresh of connections/Power Query, then wait for calc."""
         # Make every query synchronous so RefreshAll blocks instead of returning early.
         try:
@@ -445,16 +485,56 @@ class ExcelRun:
         self._wait_for_calc()
 
         if post_refresh_wait_seconds > 0:
-            logger.info("Extra settle wait for slow add-ins: {}s", post_refresh_wait_seconds)
-            waited = 0.0
-            while waited < post_refresh_wait_seconds:
-                self._check_deadline("post-refresh wait")
-                step = min(1.0, post_refresh_wait_seconds - waited)
-                time.sleep(step)
-                waited += step
-            # The add-in may have filled cells asynchronously — settle the calc chain.
-            self.app.calculate()
+            self._adaptive_settle(book, sheet_names, post_refresh_wait_seconds)
+
+    def _adaptive_settle(self, book: xw.Book, sheet_names: list[str], budget_seconds: int) -> None:
+        """Wait for asynchronous add-in data (PI DataLink & co.) to finish arriving.
+
+        PI cells keep filling AFTER Excel reports calculation done, and different sheets
+        resolve at different rates (a smaller sheet can lag a larger one). Instead of a fixed
+        sleep, keep recalculating within ``budget_seconds`` and stop as soon as the count of
+        populated cells stops growing for a couple of rounds. Fast workbooks finish early;
+        slow ones use the whole budget.
+        """
+        assert self.app is not None
+        logger.info("Settling async add-in data (budget {}s)…", budget_seconds)
+        deadline = time.monotonic() + budget_seconds
+        prev = _count_values_across(book, sheet_names)
+        stable = 0
+        rounds = 0
+        while True:
+            self._check_deadline("adaptive settle")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(_SETTLE_STEP_SECONDS, remaining))
+            # Nudge the add-in to pull any late data, then let the calc chain settle.
+            try:
+                self.app.api.CalculateFullRebuild()
+            except Exception:  # noqa: BLE001
+                self.app.calculate()
+            try:
+                self.app.api.CalculateUntilAsyncQueriesDone()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("CalculateUntilAsyncQueriesDone unavailable: {}", e)
             self._wait_for_calc()
+
+            sig = _count_values_across(book, sheet_names)
+            rounds += 1
+            if sig <= prev:
+                stable += 1
+                if stable >= _SETTLE_STABLE_ROUNDS:
+                    logger.info("Data settled after {} round(s) ({} populated cells)", rounds, sig)
+                    return
+            else:
+                stable = 0
+            prev = max(prev, sig)
+        logger.warning(
+            "Data still changing when the {}s settle budget elapsed ({} populated cells) — "
+            "output may be incomplete; raise 'Extra wait after refresh' if a sheet is sparse.",
+            budget_seconds,
+            prev,
+        )
 
     def _wait_for_calc(self) -> None:
         assert self.app is not None
@@ -568,32 +648,75 @@ class ExcelRun:
                 logger.debug("Enumerating error cells failed: {}", e)
         return total, list(texts)
 
-    def validate_sheets_data(self, book: xw.Book, sheet_names: list[str], *, account: str) -> None:
-        """Fail the run when a selected sheet contains Excel error cells.
+    def drop_unselected_sheets(
+        self, book: xw.Book, sheet_names: list[str], *, mode: str = "remove"
+    ) -> None:
+        """Make the output contain only the selected sheets.
 
-        This is the meaningful check for add-in workbooks (PI DataLink & co.): the empty
-        check never trips because non-data cells always hold values, yet the live-data
-        region can come out as ``#NAME?`` when the add-in did not load.
-        """
-        findings = self.scan_error_cells(book, sheet_names)
-        if findings:
-            raise ExcelJobError(format_error_cell_message(findings, self.failed_addins, account))
+        ``mode="remove"`` deletes the others (smaller file) then purges broken ``#REF!``
+        defined names they orphaned — otherwise Office File Validation can refuse to open the
+        output. ``mode="hide"`` makes them very-hidden instead: references stay intact so the
+        file always opens, at the cost of the raw data remaining inside it.
 
-    def delete_unselected_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
-        """Remove every sheet that is not part of the report before saving the output.
-
-        Runs AFTER freeze, so selected sheets hold static values and no longer reference
-        the sheets being deleted.
+        Runs AFTER freeze, so selected sheets hold static values.
         """
         keep = set(sheet_names)
         # Capture names FIRST: the COM object is unusable after delete().
         doomed = [s.name for s in book.sheets if s.name not in keep]
+        if mode == "hide":
+            for name in doomed:
+                try:
+                    book.sheets[name].api.Visible = _XL_SHEET_VERY_HIDDEN
+                    logger.info("Hid unselected sheet in output: {!r}", name)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Could not hide sheet {!r}: {}", name, e)
+            return
+
+        self._log_name_references(book, doomed)
         for name in doomed:
             try:
                 book.sheets[name].delete()
                 logger.info("Deleted unselected sheet from output: {!r}", name)
             except Exception as e:  # noqa: BLE001 — a stubborn sheet must not fail the run
                 logger.warning("Could not delete sheet {!r}: {}", name, e)
+        self._purge_broken_names(book)
+
+    @staticmethod
+    def _log_name_references(book: xw.Book, doomed: list[str]) -> None:
+        """DEBUG: record which defined names point at a soon-deleted sheet (proves the
+        cause of any 'cannot be opened' output)."""
+        if not doomed:
+            return
+        try:
+            for nm in book.api.Names:
+                refers = str(nm.RefersTo)
+                if any(d in refers for d in doomed):
+                    logger.debug("Defined name references a deleted sheet: {}", refers)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not enumerate defined names for diagnostics: {}", e)
+
+    @staticmethod
+    def _purge_broken_names(book: xw.Book) -> None:
+        """Delete defined names whose target became ``#REF!`` (the common Office File
+        Validation trigger that makes a saved workbook refuse to open)."""
+        try:
+            names = book.api.Names
+            count = int(names.Count)
+        except Exception as e:  # noqa: BLE001 — no Names collection: nothing to purge
+            logger.debug("No defined-names collection to purge: {}", e)
+            return
+        purged = 0
+        # Delete high -> low so indices don't shift under us.
+        for i in range(count, 0, -1):
+            try:
+                nm = names.Item(i)
+                if "#REF!" in str(nm.RefersTo):
+                    nm.Delete()
+                    purged += 1
+            except Exception as e:  # noqa: BLE001 — one stubborn name must not stop the rest
+                logger.debug("Could not delete a broken defined name: {}", e)
+        if purged:
+            logger.info("Purged {} broken (#REF!) defined name(s) from the output", purged)
 
     def export_pdfs(
         self, book: xw.Book, sheet_names: list[str], output_pdf_path: Path
