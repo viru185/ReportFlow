@@ -88,8 +88,8 @@ class UpdateDialog(QDialog):
         self.update_btn = QPushButton("Update now")
         self.update_btn.setProperty("accent", True)
         self.update_btn.setToolTip(
-            "Download the installer and upgrade automatically. The app will close; "
-            "your jobs, settings, and logs are preserved."
+            "Download the installer and upgrade automatically. The app closes and reopens "
+            "when the update finishes; your jobs, settings, and logs are preserved."
         )
         self.update_btn.clicked.connect(self._start)
         later = QPushButton("Later")
@@ -129,7 +129,7 @@ class UpdateDialog(QDialog):
             self.progress.setMaximum(0)  # busy indicator
 
     def _on_done(self, path: str) -> None:
-        self.status.setText("Download complete — starting the installer…")
+        self.status.setText("Download complete — updating and reopening ReportFlow…")
         # /SILENT: automatic upgrade with a progress window only (no wizard). The
         # installer stops the service, replaces files, preserves ProgramData, restarts.
         try:

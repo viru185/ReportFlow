@@ -31,6 +31,7 @@ from reportflow import __about__ as about
 from reportflow.core import paths
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import logo_pixmap
+from reportflow.ui.fs_util import save_start_path
 from reportflow.ui.schedule_compile import describe
 from reportflow.ui.style import TEXT_MUTED, card_frame, connection_pill, status_badge
 from reportflow.ui.updater import UpdateInfo, check_latest
@@ -81,24 +82,30 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         bar = self.menuBar()
 
+        # File — job actions, tidy Import/Export submenus, settings, exit.
         file_menu = bar.addMenu("&File")
+        file_menu.addAction("New Job…", self._new_job)
+        file_menu.addAction("Refresh", self.refresh)
+        file_menu.addSeparator()
+        import_menu = file_menu.addMenu("Import")
+        import_menu.addAction("Jobs…", self._import_jobs)
+        import_menu.addAction("Settings…", self._import_settings)
+        export_menu = file_menu.addMenu("Export")
+        export_menu.addAction("Jobs…", self._export_jobs)
+        export_menu.addAction("Settings…", self._export_settings)
+        file_menu.addSeparator()
         file_menu.addAction("Settings…", self._open_settings)
-        file_menu.addSeparator()
-        file_menu.addAction("Export jobs…", self._export_jobs)
-        file_menu.addAction("Import jobs…", self._import_jobs)
-        file_menu.addAction("Export settings…", self._export_settings)
-        file_menu.addAction("Import settings…", self._import_settings)
-        file_menu.addSeparator()
-        file_menu.addAction("Open data folder", self._open_data_folder)
-        file_menu.addAction("Application logs…", self._open_app_logs)
-        file_menu.addAction("Export logs to zip…", self._export_logs)
-        file_menu.addAction("Send logs to support…", self._send_support_logs)
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
-        jobs_menu = bar.addMenu("&Jobs")
-        jobs_menu.addAction("New job…", self._new_job)
-        jobs_menu.addAction("Refresh", self.refresh)
+        # Logs — everything diagnostics-related in one place.
+        logs_menu = bar.addMenu("&Logs")
+        logs_menu.addAction("Application logs…", self._open_app_logs)
+        logs_menu.addSeparator()
+        logs_menu.addAction("Export logs to zip…", self._export_logs)
+        logs_menu.addAction("Send logs to support…", self._send_support_logs)
+        logs_menu.addSeparator()
+        logs_menu.addAction("Open data folder", self._open_data_folder)
 
         help_menu = bar.addMenu("&Help")
         help_menu.addAction("Help guide", self._open_help)
@@ -422,10 +429,8 @@ class MainWindow(QMainWindow):
         if not source.exists():
             QMessageBox.warning(self, "Export failed", "The service did not produce a log bundle.")
             return
-        downloads = Path.home() / "Downloads"
-        default_dir = downloads if downloads.is_dir() else Path.home()
         dest, _ = QFileDialog.getSaveFileName(
-            self, "Save logs to zip", str(default_dir / source.name), "Zip archive (*.zip)"
+            self, "Save logs to zip", save_start_path(None, source.name), "Zip archive (*.zip)"
         )
         if not dest:
             return

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.log_format import LogHighlighter
 
 _TERMINAL_STATUSES = frozenset({"success", "failed", "timed_out", "crashed"})
 
@@ -36,6 +37,7 @@ class RunHistoryDialog(QDialog):
         self.details.setWordWrap(True)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
+        self._highlighter = LogHighlighter(self.log.document())
 
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.reload)
