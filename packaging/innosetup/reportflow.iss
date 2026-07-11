@@ -113,9 +113,9 @@ begin
   Old := GetOldVersion;
   if (Old <> '') and (Old <> '{#MyAppVersion}') then
     WizardForm.WelcomeLabel2.Caption :=
-      'This will update ' + '{#MyAppName}' + ' from version ' + Old + ' to {#MyAppVersion}.' +
-      #13#10#13#10 + 'Your jobs, settings, and logs are preserved.' +
-      #13#10#13#10 + WizardForm.WelcomeLabel2.Caption;
+      'This will update {#MyAppName} from version ' + Old + ' to {#MyAppVersion}.' +
+      ' Your jobs, settings, and logs are preserved.' + #13#10#13#10 +
+      WizardForm.WelcomeLabel2.Caption;
 
   // Optional service log-on account. VSTO / Windows-integrated add-ins such as PI DataLink
   // cannot load under LocalSystem, so offer to run the service as a real PI-enabled user.
@@ -135,9 +135,10 @@ begin
   Result := Trim(AccountPage.Values[0]) <> '';
 end;
 
-function NssmObjectNameArgs: String;
+function NssmObjectNameArgs(Param: String): String;
 begin
-  // Quote both fields so spaces/special characters survive; NSSM grants SeServiceLogonRight.
+  // {code:...} scripted constants must take one String param. Quote both fields so spaces/
+  // special characters survive; NSSM grants SeServiceLogonRight when setting ObjectName.
   Result := 'set {#MyServiceName} ObjectName "' + Trim(AccountPage.Values[0]) + '" "' +
     AccountPage.Values[1] + '"';
 end;
