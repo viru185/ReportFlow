@@ -35,6 +35,8 @@ Source: "..\..\dist\worker\*";  DestDir: "{app}\worker";  Flags: recursesubdirs 
 Source: "..\..\dist\service\*"; DestDir: "{app}\service"; Flags: recursesubdirs ignoreversion
 Source: "..\..\dist\ui\*";      DestDir: "{app}\ui";      Flags: recursesubdirs ignoreversion
 Source: "..\nssm\nssm.exe";     DestDir: "{app}\nssm";    Flags: ignoreversion
+; Admin helper to switch the service to a PI-enabled user account after install.
+Source: "..\..\scripts\set-service-account.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 ; ProgramData tree, writable by interactive users AND the LocalSystem service.
