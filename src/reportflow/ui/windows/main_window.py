@@ -7,12 +7,15 @@ ApiClient methods regardless of where they're triggered (menu, card button, …)
 from __future__ import annotations
 
 import os
+import shutil
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -88,6 +91,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("Open data folder", self._open_data_folder)
         file_menu.addAction("Application logs…", self._open_app_logs)
+        file_menu.addAction("Export logs to zip…", self._export_logs)
         file_menu.addAction("Send logs to support…", self._send_support_logs)
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
@@ -139,6 +143,26 @@ class MainWindow(QMainWindow):
         actions.addWidget(refresh_btn)
         root.addLayout(actions)
 
+        # Warning banner shown when the service runs as LocalSystem (VSTO/PI add-ins can't
+        # load there → reports come out #NAME?). Hidden until refresh() detects it.
+        self.system_banner = QFrame()
+        self.system_banner.setStyleSheet(
+            "QFrame { background: #5a1e1e; border: 1px solid #a33; border-radius: 4px; }"
+        )
+        banner_row = QHBoxLayout(self.system_banner)
+        banner_row.setContentsMargins(10, 4, 10, 4)
+        banner_label = QLabel(
+            "⚠ The ReportFlow service is running as LocalSystem — Excel add-ins such as "
+            "PI DataLink will not load, so reports show #NAME?."
+        )
+        banner_label.setWordWrap(True)
+        banner_fix = QPushButton("How to fix")
+        banner_fix.clicked.connect(self._open_help)
+        banner_row.addWidget(banner_label, 1)
+        banner_row.addWidget(banner_fix)
+        self.system_banner.setVisible(False)
+        root.addWidget(self.system_banner)
+
         # Job cards in a scroll area
         self.jobs_container = QWidget()
         self.jobs_layout = QVBoxLayout(self.jobs_container)
@@ -183,6 +207,7 @@ class MainWindow(QMainWindow):
         self._connected = True
         self.conn_label.setText(connection_pill(True))
         self.conn_label.setToolTip("")
+        self.system_banner.setVisible(bool(status.get("service_account_is_system")))
 
         failures = sum(
             1 for j in jobs if (j.get("last_status") or "") in ("failed", "timed_out", "crashed")
@@ -240,6 +265,13 @@ class MainWindow(QMainWindow):
             disabled.setProperty("muted", True)
             name_row.addWidget(disabled)
         name_row.addWidget(status_badge(job.get("last_status")))
+        if job.get("last_email_failed"):
+            email_warn = QLabel("✉ failed")
+            email_warn.setStyleSheet("color: #e06c6c; font-size: 11px;")
+            email_warn.setToolTip(
+                job.get("last_email_note") or "The last run's report email failed to send."
+            )
+            name_row.addWidget(email_warn)
         name_row.addStretch()
         info.addLayout(name_row)
 
@@ -263,14 +295,21 @@ class MainWindow(QMainWindow):
             _btn(
                 "▶ Run",
                 "Real run — emails production recipients if enabled.",
-                lambda *_: self._trigger(job_name, test=False),
+                lambda *_: self._trigger(job_name, mode="run"),
             )
         )
         lay.addWidget(
             _btn(
                 "🧪 Test",
                 "Test run — emails TEST recipients only.",
-                lambda *_: self._trigger(job_name, test=True),
+                lambda *_: self._trigger(job_name, mode="test"),
+            )
+        )
+        lay.addWidget(
+            _btn(
+                "🔍 Dry run",
+                "Build the report and verify PI DataLink data without sending any email.",
+                lambda *_: self._trigger(job_name, mode="dry"),
             )
         )
         lay.addWidget(_btn("✎ Edit", "Edit this job.", lambda *_: self._edit_job(job_name)))
@@ -329,13 +368,18 @@ class MainWindow(QMainWindow):
             return
         self.refresh()
 
-    def _trigger(self, name: str, *, test: bool) -> None:
+    def _trigger(self, name: str, *, mode: str = "run") -> None:
+        api_call = {
+            "run": self._api.run_job,
+            "test": self._api.test_job,
+            "dry": self._api.dry_run_job,
+        }[mode]
+        kind = {"run": "Run", "test": "Test run", "dry": "Dry run"}[mode]
         try:
-            resp = self._api.test_job(name) if test else self._api.run_job(name)
+            resp = api_call(name)
         except ApiError as e:
-            QMessageBox.warning(self, "Run failed", str(e))
+            QMessageBox.warning(self, f"{kind} failed", str(e))
             return
-        kind = "Test run" if test else "Run"
         logger.info("{} started for {!r}: run {}", kind, name, resp.get("run_id"))
         self.statusBar().showMessage(f"{kind} started for {name} (run {resp['run_id']})")
         RunHistoryDialog(self._api, name, self).exec()
@@ -366,6 +410,38 @@ class MainWindow(QMainWindow):
 
     def _import_settings(self) -> None:
         import_settings_flow(self._api, self)
+
+    def _export_logs(self) -> None:
+        """Build the diagnostic zip and let the user save it locally (email may be down)."""
+        try:
+            resp = self._api.export_logs()
+        except ApiError as e:
+            QMessageBox.warning(self, "Export failed", str(e))
+            return
+        source = Path(resp.get("bundle", ""))
+        if not source.exists():
+            QMessageBox.warning(self, "Export failed", "The service did not produce a log bundle.")
+            return
+        downloads = Path.home() / "Downloads"
+        default_dir = downloads if downloads.is_dir() else Path.home()
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Save logs to zip", str(default_dir / source.name), "Zip archive (*.zip)"
+        )
+        if not dest:
+            return
+        try:
+            shutil.copyfile(source, dest)
+        except OSError as e:
+            QMessageBox.warning(self, "Export failed", f"Could not save the zip: {e}")
+            return
+        logger.info("Exported diagnostic logs to {}", dest)
+        opened = QMessageBox.question(
+            self,
+            "Logs exported",
+            f"Saved the diagnostic bundle to:\n{dest}\n\nOpen the containing folder?",
+        )
+        if opened == QMessageBox.StandardButton.Yes:
+            os.startfile(str(Path(dest).parent))  # noqa: S606 — deliberate shell open
 
     def _send_support_logs(self) -> None:
         try:

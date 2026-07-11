@@ -247,6 +247,13 @@ class JobEditorDialog(QDialog):
             "Safety net: if a selected sheet contains no data at all after refresh, the "
             "run fails with a clear error instead of emailing a blank report."
         )
+        self.fail_if_errors = QCheckBox("Fail the run if a selected sheet has error cells")
+        self.fail_if_errors.setChecked(True)
+        self.fail_if_errors.setToolTip(
+            "Fail when a selected sheet contains Excel errors (#NAME?, #REF!, …) after "
+            "refresh. #NAME? means an add-in such as PI DataLink did not load — this is the "
+            "meaningful check for PI workbooks, where the empty check never trips."
+        )
         self.keep_only_selected = QCheckBox("Output contains only the selected sheets")
         self.keep_only_selected.setChecked(True)
         self.keep_only_selected.setToolTip(
@@ -266,6 +273,7 @@ class JobEditorDialog(QDialog):
         adv_form.addRow("Concurrency group", self.group)
         adv_form.addRow("Extra wait after refresh", self.post_refresh_wait)
         adv_form.addRow("", self.fail_if_empty)
+        adv_form.addRow("", self.fail_if_errors)
         adv_form.addRow("", self.keep_only_selected)
         adv_form.addRow("Blank out values", self.blank_values)
         adv_form.addRow("Notes", self.notes)
@@ -404,6 +412,7 @@ class JobEditorDialog(QDialog):
             "concurrency_group": self.group.text().strip() or None,
             "post_refresh_wait_seconds": self.post_refresh_wait.value(),
             "fail_if_sheet_empty": self.fail_if_empty.isChecked(),
+            "fail_if_sheet_has_errors": self.fail_if_errors.isChecked(),
             "keep_only_selected_sheets": self.keep_only_selected.isChecked(),
             "blank_out_values": _split_csv(self.blank_values.text()),
             "subject": self.subject.text().strip() or None,
@@ -443,6 +452,7 @@ class JobEditorDialog(QDialog):
         self.group.setText(job.get("concurrency_group") or "")
         self.post_refresh_wait.setValue(job.get("post_refresh_wait_seconds") or 0)
         self.fail_if_empty.setChecked(job.get("fail_if_sheet_empty", True))
+        self.fail_if_errors.setChecked(job.get("fail_if_sheet_has_errors", True))
         self.keep_only_selected.setChecked(job.get("keep_only_selected_sheets", True))
         self.blank_values.setText(_join_csv(job.get("blank_out_values")))
         self.notes.setPlainText(job.get("notes", ""))

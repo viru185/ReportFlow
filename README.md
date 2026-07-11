@@ -165,19 +165,39 @@ retried automatically — it's recorded and visible in the history.
 
 ### Workbooks using PI DataLink (or other Excel add-ins)
 
-ReportFlow connects Excel **COM add-ins** automatically at the start of every run (they do
-not load by themselves in an automated Excel session) and forces a full recalculation so
-add-in functions fetch live data. If the output is still empty or incomplete:
+**PI DataLink is a VSTO add-in that uses Windows-integrated security, and it cannot load
+when the service runs as LocalSystem** (the default). With no user profile / VSTO cache / PI
+identity, `.Connect` fails with *"the add-in could not be installed"*, its worksheet
+functions are unregistered, and every PI cell comes out as **`#NAME?`** — a broken report,
+not an empty one. The legacy Task Scheduler script worked only because it ran **as the
+desktop user**.
 
-- Check the run's worker log — it lists every COM add-in found and its connect state. If
-  the add-in (e.g. PI DataLink) is **not listed**, it is installed per-user only: reinstall
-  it "for all users", or run the ReportFlow service under that user account
-  (Services → ReportFlow → Log On, or `nssm set ReportFlow ObjectName`).
-- If the add-in loads but data lags, set **Extra wait after refresh** (job → Advanced) to
-  give it time (e.g. 30–120 s).
+**Fix — run the service as a PI-enabled Windows user** (one that has PI DataLink installed
+and PI access):
 
-Every run's history entry also shows an **email:** line — sent to how many recipients, or
-exactly why nothing was sent (e.g. the job's "Email report on real runs" option is off).
+- **Existing install, no reinstall:** in an **elevated** PowerShell run
+  `scripts\set-service-account.ps1 -User "DOMAIN\your_pi_user"`. It sets the service log-on
+  account (NSSM grants the log-on-as-a-service right), restarts the service, and prints the
+  resulting identity.
+- **Fresh install:** the installer asks for an optional **service account** — enter the
+  PI-enabled user there.
+- **Verify:** **File → Settings → Application → "Service runs as"** shows the account (and
+  warns in red if it is LocalSystem); the dashboard shows a warning banner too. Then click
+  **🔍 Dry run** on the job — the worker log should read `Executing as DOMAIN\your_pi_user`
+  (no trailing `$`) and `COM add-in 'PI DataLink': connected=True`, with real values.
+
+ReportFlow will not silently ship a broken report: a run **fails** when a selected sheet
+contains Excel error cells (`#NAME?`, `#REF!`, …). Toggle it per job in the Advanced tab
+(*"Fail the run if a selected sheet has error cells"*). If the add-in loads but data merely
+lags, raise **Extra wait after refresh** (job → Advanced, e.g. 30–120 s).
+
+**Dry run** (🔍 on each job card) builds the full report and runs the error-cell check but
+never emails — use it to confirm PI data before relying on scheduled delivery.
+
+**Email failures no longer pass silently:** when a run builds but the email cannot be sent,
+the app pops a warning, the card shows a **✉ failed** marker, and the run history's
+**email:** line gives the reason. When SMTP is down and you need to hand logs to support,
+use **File → Export logs to zip…** to save the diagnostic bundle locally.
 
 ### Where data lives
 

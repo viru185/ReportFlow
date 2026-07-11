@@ -149,11 +149,20 @@ class SettingsDialog(QDialog):
             "when troubleshooting with support. Applies to the service immediately; the "
             "app picks it up on next start."
         )
+        self.service_account = QLabel("")
+        self.service_account.setWordWrap(True)
+        self.service_account.setToolTip(
+            "The Windows account the ReportFlow service runs as. Excel add-ins such as PI "
+            "DataLink only load under a real user with the add-in installed — not LocalSystem. "
+            "Change it with scripts/set-service-account.ps1 or by reinstalling."
+        )
+
         app_form.addRow("Max parallel runs", self.max_concurrency)
         app_form.addRow("Default timeout", self.default_timeout)
         app_form.addRow("Log retention", self.log_retention)
         app_form.addRow("", self.check_updates)
         app_form.addRow("", self.debug_logging)
+        app_form.addRow("Service runs as", self.service_account)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -201,6 +210,21 @@ class SettingsDialog(QDialog):
         self.password_status.setText(
             "A password is currently stored." if pw_set else "No password stored yet."
         )
+
+        try:
+            status = self._api.system_status()
+        except ApiError:
+            status = {}
+        account = status.get("service_account") or "unknown"
+        if status.get("service_account_is_system"):
+            self.service_account.setText(
+                f"⚠ {account} (LocalSystem) — PI DataLink and other add-ins will NOT load. "
+                "Run scripts/set-service-account.ps1 as admin to switch to a PI-enabled user."
+            )
+            self.service_account.setStyleSheet("color: #e06c6c;")
+        else:
+            self.service_account.setText(account)
+            self.service_account.setStyleSheet("")
 
     def _save(self) -> None:
         sections: dict[str, Any] = {

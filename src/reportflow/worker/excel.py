@@ -19,7 +19,7 @@ import stat
 import time
 from pathlib import Path
 from types import TracebackType
-from typing import Literal
+from typing import Any, Literal
 
 import psutil
 import pythoncom
@@ -32,6 +32,17 @@ from loguru import logger
 _XL_CALC_DONE = 0  # xlDone
 _XL_PASTE_VALUES = -4163  # xlPasteValues
 _CALC_POLL_SECONDS = 0.15
+
+# Error-cell detection (Range.SpecialCells).
+_XL_CELLTYPE_CONSTANTS = 2  # xlCellTypeConstants
+_XL_CELLTYPE_FORMULAS = -4123  # xlCellTypeFormulas
+_XL_ERRORS = 16  # xlErrors
+_NO_CELLS_FOUND_HRESULT = -2146827284  # 0x800A03EC — SpecialCells matched nothing
+_ERROR_SAMPLE_LIMIT = 200  # cap cells scanned when collecting distinct error texts
+
+# Substring that marks a VSTO add-in that refused to activate (e.g. PI DataLink under a
+# service/LocalSystem context). Captured so the runner can name it in the failure message.
+_VSTO_INSTALL_FAILURE = "the add-in could not be installed"
 
 # Launching several Excel instances at the exact same moment races the COM/DCOM
 # registration and yields "RPC server is unavailable". We serialize only the brief
@@ -94,6 +105,35 @@ def _has_any_value(values: object) -> bool:
     return True  # numbers, datetimes, bools — real data
 
 
+def format_error_cell_message(
+    findings: dict[str, tuple[int, list[str]]], failed_addins: list[str], account: str
+) -> str:
+    """Build the failure message for sheets that contain Excel error cells.
+
+    Pure (no COM) so it is unit-testable. ``#NAME?`` gets the pointed add-in/account hint,
+    since it specifically means an add-in (e.g. PI DataLink) never loaded.
+    """
+    all_texts: dict[str, None] = {}
+    parts: list[str] = []
+    for name, (count, texts) in findings.items():
+        for text in texts:
+            all_texts.setdefault(text, None)
+        listed = ", ".join(texts) if texts else "errors"
+        parts.append(f"{name!r} ({count} cell(s): {listed})")
+    hint = ""
+    if "#NAME?" in all_texts:
+        addin = f" ({', '.join(failed_addins)})" if failed_addins else ""
+        hint = (
+            f" #NAME? means an add-in{addin} such as PI DataLink did not load — the "
+            "ReportFlow service must run as a Windows user that has the add-in installed "
+            f"and data access (currently running as {account})."
+        )
+    return (
+        f"selected sheet(s) contain Excel error cells: {'; '.join(parts)}.{hint} "
+        "See Help → PI DataLink."
+    )
+
+
 def _sanitize_for_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]+', "_", name).strip() or "sheet"
 
@@ -120,6 +160,9 @@ class ExcelRun:
         self.app: xw.App | None = None
         self.excel_pid: int | None = None
         self.excel_pid_reaped: bool = False
+        # Add-ins that failed to activate with the VSTO "could not be installed" signature
+        # (e.g. PI DataLink under a service account) — surfaced in the failure message.
+        self.failed_addins: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -139,8 +182,7 @@ class ExcelRun:
             raise
         return self
 
-    @staticmethod
-    def _connect_com_addins(app: xw.App) -> None:
+    def _connect_com_addins(self, app: xw.App) -> None:
         """Connect COM add-ins (e.g. PI DataLink) in this automation instance.
 
         Excel does NOT load COM add-ins when started via automation, so add-in worksheet
@@ -148,6 +190,11 @@ class ExcelRun:
         comes out empty. Best-effort: every failure is logged and skipped. The INFO log
         of names + states is deliberate — support bundles must show whether the add-in
         the workbook depends on actually loaded.
+
+        Add-ins that fail with the VSTO "could not be installed" signature (typical when a
+        VSTO add-in like PI DataLink is asked to activate under a service/LocalSystem
+        account with no user profile) are recorded in ``self.failed_addins`` so the runner
+        can name them in the failure message.
         """
         try:
             addins = app.api.COMAddIns
@@ -171,6 +218,8 @@ class ExcelRun:
                 logger.info("COM add-in {!r}: connected={}", name, bool(addin.Connect))
             except Exception as e:  # noqa: BLE001 — one bad add-in must not stop the rest
                 logger.warning("COM add-in {!r} could not be connected: {}", name, e)
+                if _VSTO_INSTALL_FAILURE in str(e).lower():
+                    self.failed_addins.append(name)
 
     def _acquire_startup_lock(self) -> None:
         try:
@@ -462,6 +511,73 @@ class ExcelRun:
                 "nothing. Check the worker log's COM add-in list and whether the service "
                 "account has access to the data source (e.g. PI)."
             )
+
+    def scan_error_cells(
+        self, book: xw.Book, sheet_names: list[str]
+    ) -> dict[str, tuple[int, list[str]]]:
+        """Return ``{sheet: (error_cell_count, distinct_error_texts)}`` for sheets that
+        contain Excel error cells (``#NAME?``, ``#REF!``, …).
+
+        ``#NAME?`` is the decisive signal that an add-in (e.g. PI DataLink) did not load:
+        its worksheet functions are unregistered, so every formula that calls them errors.
+        Run this while the formulas are still present (before freeze).
+        """
+        findings: dict[str, tuple[int, list[str]]] = {}
+        for name in sheet_names:
+            self._check_deadline(f"scanning {name} for error cells")
+            count, texts = self._sheet_error_cells(book.sheets[name].api)
+            if count:
+                findings[name] = (count, texts)
+                logger.warning("Sheet {!r} has {} error cell(s): {}", name, count, ", ".join(texts))
+        return findings
+
+    @staticmethod
+    def _sheet_error_cells(sheet_api: Any) -> tuple[int, list[str]]:
+        """Count error cells on a sheet and sample their distinct error strings."""
+        used = sheet_api.UsedRange
+        total = 0
+        texts: dict[str, None] = {}
+        for cell_type in (_XL_CELLTYPE_FORMULAS, _XL_CELLTYPE_CONSTANTS):
+            try:
+                rng = used.SpecialCells(cell_type, _XL_ERRORS)
+            except Exception as e:  # noqa: BLE001 — 0x800A03EC == none of that type; else skip
+                args = getattr(e, "args", [None])
+                if not (args and args[0] == _NO_CELLS_FOUND_HRESULT):
+                    logger.debug("SpecialCells({}, errors) failed: {}", cell_type, e)
+                continue
+            try:
+                total += int(rng.Count)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Could not count error cells: {}", e)
+            scanned = 0
+            try:
+                for area in rng.Areas:
+                    for cell in area.Cells:
+                        if scanned >= _ERROR_SAMPLE_LIMIT:
+                            break
+                        scanned += 1
+                        try:
+                            text = str(cell.Text).strip()
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if text.startswith("#"):
+                            texts.setdefault(text, None)
+                    if scanned >= _ERROR_SAMPLE_LIMIT:
+                        break
+            except Exception as e:  # noqa: BLE001 — sampling is best-effort
+                logger.debug("Enumerating error cells failed: {}", e)
+        return total, list(texts)
+
+    def validate_sheets_data(self, book: xw.Book, sheet_names: list[str], *, account: str) -> None:
+        """Fail the run when a selected sheet contains Excel error cells.
+
+        This is the meaningful check for add-in workbooks (PI DataLink & co.): the empty
+        check never trips because non-data cells always hold values, yet the live-data
+        region can come out as ``#NAME?`` when the add-in did not load.
+        """
+        findings = self.scan_error_cells(book, sheet_names)
+        if findings:
+            raise ExcelJobError(format_error_cell_message(findings, self.failed_addins, account))
 
     def delete_unselected_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
         """Remove every sheet that is not part of the report before saving the output.

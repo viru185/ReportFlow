@@ -30,6 +30,8 @@ from reportflow.core.email import send_report
 from reportflow.core.ipc import RunStatus, WorkerRequest, read_result, write_request
 from reportflow.core.state import RunRecord, RunStore, RunTrigger
 
+_DRY_RUN_NOTE = "not sent — dry run (build only)"
+
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
@@ -225,6 +227,7 @@ class Launcher:
             generate_pdf=job.generate_pdf,
             post_refresh_wait_seconds=job.post_refresh_wait_seconds,
             fail_if_sheet_empty=job.fail_if_sheet_empty,
+            fail_if_sheet_has_errors=job.fail_if_sheet_has_errors,
             keep_only_selected_sheets=job.keep_only_selected_sheets,
             blank_out_values=job.blank_out_values,
             timeout_seconds=timeout,
@@ -327,7 +330,9 @@ class Launcher:
         Every path writes ``record.email_note`` so the run history answers "did it
         email?" without digging through logs.
         """
-        if record.status is not RunStatus.SUCCESS:
+        if record.trigger is RunTrigger.DRY_RUN:
+            record.email_note = _DRY_RUN_NOTE
+        elif record.status is not RunStatus.SUCCESS:
             record.email_note = "not sent — run did not succeed"
         elif not request.is_test and not job.send_report_email:
             record.email_note = "not sent — the job's 'Email report on real runs' option is off"

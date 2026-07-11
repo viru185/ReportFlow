@@ -33,6 +33,13 @@ def test_request_round_trip(tmp_path):
     assert loaded == req
 
 
+def test_fail_if_sheet_has_errors_defaults_true_and_round_trips(tmp_path):
+    assert _request(tmp_path).fail_if_sheet_has_errors is True
+    req = _request(tmp_path).model_copy(update={"fail_if_sheet_has_errors": False})
+    loaded = read_request(write_request(req, tmp_path / "request.json"))
+    assert loaded.fail_if_sheet_has_errors is False
+
+
 def test_result_round_trip(tmp_path):
     result = WorkerResult(
         run_id="run-123",

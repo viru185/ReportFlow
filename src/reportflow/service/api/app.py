@@ -195,6 +195,8 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             "last_status": str(latest.status) if latest else None,
             "last_run_at": latest.started_at if latest else None,
             "last_failure_at": last_failure.started_at if last_failure else None,
+            "last_email_note": latest.email_note if latest else None,
+            "last_email_failed": bool(latest and (latest.email_note or "").startswith("failed:")),
         }
 
     # -- system ----------------------------------------------------------------
@@ -205,12 +207,18 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.get("/system/status")
     def system_status() -> dict[str, Any]:
+        username = os.environ.get("USERNAME", "")
         return {
             "version": __version__,
             "active_runs": svc().launcher.active_run_ids(),
             "scheduled_jobs": svc().scheduler.scheduled_job_names(),
             "job_count": len(svc().config.jobs),
             "config_error": svc().config_error,
+            # The Windows identity the service (and thus its Excel workers) runs as. A name
+            # ending in "$" is the machine account (LocalSystem), under which VSTO add-ins
+            # like PI DataLink cannot load — the UI warns about this.
+            "service_account": f"{os.environ.get('USERDOMAIN', '')}\\{username}".strip("\\"),
+            "service_account_is_system": username.endswith("$"),
         }
 
     @app.get("/config")
@@ -325,6 +333,14 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         run_id = svc().launcher.submit_job_by_name(name, RunTrigger.TEST, is_test=True)
         return RunResponse(run_id=run_id)
 
+    @app.post("/jobs/{name}/dry-run", response_model=RunResponse)
+    def dry_run_job(name: str) -> RunResponse:
+        # Build + validate the report (so the #NAME?/error-cell scan runs) but never email.
+        logger.info("API: dry run requested for {!r}", name)
+        _require_job(name)
+        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.DRY_RUN, is_test=True)
+        return RunResponse(run_id=run_id)
+
     def _job_template_path(job: JobConfig) -> Path:
         return paths.templates_dir() / "jobs" / f"{job.name}.html"
 
@@ -408,6 +424,22 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"failed to send: {e}") from e
         return {"ok": True, "recipients": recipients, "bundle": str(bundle)}
+
+    @app.post("/system/export-logs")
+    def export_logs() -> dict[str, Any]:
+        """Build the diagnostic zip on disk WITHOUT emailing it — for when SMTP is down and
+        the logs must be sent to the developer by hand."""
+        st = svc()
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bundle = paths.state_dir() / "bundles" / f"reportflow_logs_{stamp}.zip"
+        metadata = {
+            "hostname": os.environ.get("COMPUTERNAME", "host"),
+            "windows_user": os.environ.get("USERNAME", "unknown"),
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        build_log_bundle(bundle, st.config, metadata=metadata)
+        logger.info("API: exported diagnostic bundle to {}", bundle)
+        return {"ok": True, "bundle": str(bundle)}
 
     return app
 

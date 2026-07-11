@@ -110,6 +110,44 @@ def test_run_now_completes(client):
     assert c.get(f"/runs/{run_id}/log").status_code == 200
 
 
+def _wait_done(c, run_id: str) -> str:
+    for _ in range(50):
+        status = c.get(f"/runs/{run_id}").json()["status"]
+        if status != "running":
+            return status
+        time.sleep(0.2)
+    return "running"
+
+
+def test_dry_run_completes_without_email(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+
+    run_id = c.post("/jobs/daily/dry-run").json()["run_id"]
+    assert _wait_done(c, run_id) == "success"
+
+    rec = c.get(f"/runs/{run_id}").json()
+    assert rec["trigger"] == "dry_run"
+    assert rec["email_sent"] is False
+    assert rec["email_note"] == "not sent — dry run (build only)"
+
+
+def test_export_logs_writes_zip(client):
+    c, _ = client
+    resp = c.post("/system/export-logs")
+    assert resp.status_code == 200
+    bundle = Path(resp.json()["bundle"])
+    assert bundle.exists() and bundle.suffix == ".zip" and bundle.stat().st_size > 0
+
+
+def test_status_reports_service_account(client):
+    c, _ = client
+    status = c.get("/system/status").json()
+    assert "service_account" in status
+    assert isinstance(status["service_account_is_system"], bool)
+
+
 def test_email_preview(client):
     c, _ = client
     html = c.post("/email/preview", json={}).json()["html"]
