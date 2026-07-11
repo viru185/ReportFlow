@@ -363,6 +363,24 @@ def test_run_history_email_failure_alerts_once(qtbot, monkeypatch):
     assert len(calls) == 1
 
 
+def test_run_history_shows_warnings(qtbot):
+    from reportflow.ui.windows.log_view import RunHistoryDialog
+
+    runs = [
+        {
+            "run_id": "r1",
+            "status": "success",
+            "started_at": "t",
+            "warnings": ["sheet 'Detailed report': 12 error cell(s) (#REF!) — delivered anyway"],
+        }
+    ]
+    dlg = RunHistoryDialog(FakeApi(runs=runs), "daily")
+    qtbot.addWidget(dlg)
+    dlg._show_selected()
+    assert "warnings:" in dlg.details.text()
+    assert "#REF!" in dlg.details.text()
+
+
 def test_run_history_skips_resetting_unchanged_log(qtbot):
     """The live-log poll must not re-set identical text — that reset yanks the view to the
     top on every refresh (the auto-scroll bug)."""
@@ -532,13 +550,17 @@ def test_editor_advanced_output_safety_fields(qtbot):
     dlg.prod_to.setText("a@x.com")
     dlg.test_to.setText("b@x.com")
 
-    # Defaults: safety on, only-selected on, wait 10s, no blank-out list.
+    # Defaults: empty-check on, error-strict OFF (deliver), only-selected on + remove mode.
     payload = dlg.payload()
     assert payload["fail_if_sheet_empty"] is True
-    assert payload["fail_if_sheet_has_errors"] is True
+    assert payload["fail_if_sheet_has_errors"] is False
     assert payload["keep_only_selected_sheets"] is True
+    assert payload["unselected_sheets_mode"] == "remove"
     assert payload["post_refresh_wait_seconds"] == 10
     assert payload["blank_out_values"] == []
+
+    dlg.unselected_mode.setCurrentIndex(dlg.unselected_mode.findData("hide"))
+    assert dlg.payload()["unselected_sheets_mode"] == "hide"
 
     dlg.blank_values.setText("Tag not found, #REF!")
     dlg.fail_if_empty.setChecked(False)

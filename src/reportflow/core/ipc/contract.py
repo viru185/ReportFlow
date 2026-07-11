@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -38,8 +39,9 @@ class WorkerRequest(_IpcBase):
     generate_pdf: bool = True
     post_refresh_wait_seconds: int = Field(default=10, ge=0)
     fail_if_sheet_empty: bool = True
-    fail_if_sheet_has_errors: bool = True
+    fail_if_sheet_has_errors: bool = False
     keep_only_selected_sheets: bool = True
+    unselected_sheets_mode: Literal["remove", "hide"] = "remove"
     blank_out_values: list[str] = Field(default_factory=list)
 
     timeout_seconds: int = Field(gt=0)
@@ -62,6 +64,9 @@ class WorkerResult(_IpcBase):
     started_at: str | None = None  # ISO-8601
     finished_at: str | None = None  # ISO-8601
     duration_seconds: float | None = None
+
+    # Non-fatal notes the user should see even on success (e.g. "12 #REF! cells — delivered").
+    warnings: list[str] = Field(default_factory=list)
 
     error_detail: str | None = None
 

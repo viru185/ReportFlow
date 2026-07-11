@@ -11,6 +11,7 @@ Design rules encoded here:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -104,13 +105,17 @@ class JobConfig(_Base):
     # Fail the run when a selected sheet's used range is entirely empty after refresh —
     # an empty report must never masquerade as success.
     fail_if_sheet_empty: bool = True
-    # Fail the run when a selected sheet contains Excel error cells (#NAME?, #REF!, …) after
-    # refresh. #NAME? in particular means an add-in (e.g. PI DataLink) did not load, so the
-    # report would ship broken values. This is the meaningful check for PI workbooks, where
-    # non-data cells always hold values and the empty-check never trips.
-    fail_if_sheet_has_errors: bool = True
+    # STRICT (opt-in): fail the run when a selected sheet contains Excel error cells
+    # (#REF!, #NAME?, …). Off by default — error cells are reported as a warning and the
+    # report is delivered anyway; use "Blank out values" below to strip specific error
+    # strings from the output.
+    fail_if_sheet_has_errors: bool = False
     # Only the selected sheets remain in the output workbook (source is never touched).
     keep_only_selected_sheets: bool = True
+    # How to drop the non-selected sheets from the OUTPUT: "remove" deletes them (smaller
+    # file, but can break defined names/charts that referenced them → Office may refuse to
+    # open it); "hide" makes them very-hidden (references stay intact, always openable).
+    unselected_sheets_mode: Literal["remove", "hide"] = "remove"
     # Cell values blanked out of the OUTPUT after saving (e.g. PI DataLink error strings
     # like "Tag not found", "No Data", "#REF!").
     blank_out_values: list[str] = Field(default_factory=list)

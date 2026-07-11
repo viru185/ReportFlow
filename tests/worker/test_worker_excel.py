@@ -97,25 +97,91 @@ def test_success_freezes_and_exports(tmp_path):
     assert str(src["Summary"]["B1"].value).startswith("=")
 
 
-def test_name_error_cell_fails_with_pi_message(tmp_path):
-    """A #NAME? cell (here from an unknown function, exactly what a missing PI DataLink
-    add-in produces) must FAIL the run with the pointed message — never ship a broken report."""
-    before = _excel_pids()
-    wb_path = tmp_path / "broken.xlsx"
+def _make_broken_workbook(path: Path) -> None:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Report"
     ws["A1"] = "=THISFUNCTIONDOESNOTEXIST()"  # -> #NAME? once Excel recalculates
     ws["A2"] = 123
     ws.print_area = "A1:A2"
+    wb.save(path)
+
+
+def test_error_cells_deliver_by_default(tmp_path):
+    """Default policy: an error cell (#NAME? here) does NOT fail the run — the report is
+    delivered and the error is reported as a warning."""
+    before = _excel_pids()
+    wb_path = tmp_path / "broken.xlsx"
+    _make_broken_workbook(wb_path)
+
+    result = run_job(_request(tmp_path, ["Report"], input_excel_path=wb_path))
+
+    assert result.status is RunStatus.SUCCESS
+    assert Path(result.output_xlsx).exists()
+    assert result.warnings and "#NAME?" in result.warnings[0]
+    assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked"
+
+
+def test_error_cells_fail_in_strict_mode(tmp_path):
+    """Opt-in strict mode still fails on error cells with the pointed #NAME? message."""
+    before = _excel_pids()
+    wb_path = tmp_path / "broken.xlsx"
+    _make_broken_workbook(wb_path)
+
+    result = run_job(
+        _request(tmp_path, ["Report"], input_excel_path=wb_path, fail_if_sheet_has_errors=True)
+    )
+
+    assert result.status is RunStatus.FAILED
+    assert "#NAME?" in result.message
+    assert not (_excel_pids() - before)
+
+
+def test_broken_defined_names_purged_so_output_opens(tmp_path):
+    """Deleting a sheet referenced by a defined name would leave a #REF! name that Office
+    File Validation blocks. The output must load cleanly with no broken names."""
+    from openpyxl.workbook.defined_name import DefinedName
+
+    before = _excel_pids()
+    wb_path = tmp_path / "named.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Report"
+    ws["A1"] = 1
+    ws.print_area = "A1:A1"
+    wb.create_sheet("Data")["A1"] = 99
+    dn = DefinedName("LinkToData", attr_text="Data!$A$1")
+    try:
+        wb.defined_names.add(dn)
+    except AttributeError:  # older openpyxl API
+        wb.defined_names["LinkToData"] = dn
     wb.save(wb_path)
 
     result = run_job(_request(tmp_path, ["Report"], input_excel_path=wb_path))
 
-    assert result.status is RunStatus.FAILED
-    assert "#NAME?" in result.message
-    assert "error cells" in result.message.lower()
-    assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked"
+    assert result.status is RunStatus.SUCCESS
+    out = openpyxl.load_workbook(result.output_xlsx)  # must not raise
+    assert "Data" not in out.sheetnames
+    refs = []
+    try:
+        refs = [str(d.value) for d in out.defined_names.values()]
+    except AttributeError:
+        refs = [str(out.defined_names[k].value) for k in out.defined_names]
+    assert not any("#REF!" in r for r in refs), refs
+    assert not (_excel_pids() - before)
+
+
+def test_hide_mode_keeps_sheets_very_hidden(tmp_path):
+    """In 'hide' mode the unselected sheets stay in the file but very-hidden (never breaks
+    references), so the output always opens."""
+    before = _excel_pids()
+    result = run_job(_request(tmp_path, ["Summary"], unselected_sheets_mode="hide"))
+
+    assert result.status is RunStatus.SUCCESS
+    out = openpyxl.load_workbook(result.output_xlsx)
+    assert "Data" in out.sheetnames  # kept, not deleted
+    assert out["Data"].sheet_state == "veryHidden"
+    assert not (_excel_pids() - before)
 
 
 def test_missing_sheet_fails_cleanly(tmp_path):

@@ -151,10 +151,19 @@ upgrades automatically, preserving all jobs, settings, and logs.</p>
     the <i>output copy</i>, so recipients see numbers even without your data connections.</li>
 <li><b>Fail if a sheet comes out empty</b> (default on) — a run whose selected sheet has
     no data fails loudly instead of emailing a blank report.</li>
-<li><b>Output contains only the selected sheets</b> (default on) — helper/tag-list tabs
-    are removed from the output copy. The source workbook is never modified.</li>
-<li><b>Blank out values</b> — comma-separated junk strings (e.g. "Tag not found",
-    "#REF!") removed from the output after saving.</li>
+<li><b>Fail if a sheet has error cells (strict)</b> (default <i>off</i>) — by default a
+    report with Excel errors (<code>#REF!</code>, <code>#N/A</code>, …) is still
+    <b>delivered</b>, and the errors are listed as a <i>warning</i> on the run. Tick this only
+    if you want any error cell to fail the run instead.</li>
+<li><b>Output contains only the selected sheets</b> (default on) — the other tabs are dropped
+    from the output copy (the source is never modified). <b>Unselected sheets</b> chooses how:
+    <i>Remove</i> deletes them (smaller file, but can break defined names/charts that
+    referenced them, so Office may refuse to open the output); <i>Hide</i> makes them
+    very-hidden — references stay intact so the file always opens, but the raw data stays
+    inside it. If a delivered report "cannot be opened", switch that job to <i>Hide</i>.</li>
+<li><b>Blank out values</b> — comma-separated cell values removed from the output after
+    saving: error codes (<code>#REF!</code>, <code>#N/A</code>, <code>#NAME?</code>) or
+    add-in strings like "Tag not found".</li>
 <li><b>Debug logging</b> (File → Settings → Application) — verbose logs for
     troubleshooting; the run history and Logs → Application logs show far more detail.</li>
 </ul>
@@ -181,18 +190,25 @@ add-in's worksheet functions are unregistered and every PI cell comes out as
 The worker log should show <code>Executing as DOMAIN\\your_pi_user</code> (no trailing
 <code>$</code>) and <code>COM add-in 'PI DataLink': connected=True</code>, with real values
 instead of <code>#NAME?</code>.</p>
-<p>ReportFlow guards against silently shipping a broken report: a run <b>fails</b> when a
-selected sheet contains Excel error cells (<code>#NAME?</code>, <code>#REF!</code>, …). You
-can toggle this per job in the Advanced tab (<i>"Fail the run if a selected sheet has error
-cells"</i>). If the add-in loads but data is merely incomplete, increase <b>Extra wait after
-refresh</b>.</p>
+<p><b>Error cells &amp; incomplete data.</b> Pre-existing errors like <code>#REF!</code> no
+longer block delivery — the report is sent and the errors appear as a <i>warning</i> on the
+run (blank them out with the <b>Blank out values</b> list, or fail on them by ticking the
+strict option). If a sheet comes out only partly filled, the add-in's data was still arriving
+when ReportFlow froze it — raise <b>Extra wait after refresh</b> (ReportFlow already waits
+adaptively up to that budget and logs when data is still changing at the end).</p>
+<p><b>"Cannot be opened" report.</b> If a delivered report trips Office's
+"Office has detected a problem with this file", the sheet-removal step likely broke a chart or
+defined name that pointed at a removed tab. Switch that job's <b>Unselected sheets</b> to
+<i>Hide</i> (Advanced tab) — the file will always open. If the <i>input</i> file shows the
+same message when you open it by hand, it carries a Mark-of-the-Web from being downloaded:
+right-click → Properties → <b>Unblock</b> (or add its folder as a Trusted Location).
+ReportFlow still generates reports from it because the service opens files via automation.</p>
 
 <h2 id="dryrun">Dry run — check the report without emailing</h2>
 <p>Each job card has a <b>🔍 Dry run</b> button. It builds the full output workbook and runs
-the same error-cell check as a real run, but <b>never sends any email</b> — use it to verify
-that PI DataLink (or any data source) is producing real values before you rely on scheduled
-delivery. The result shows in the run history: <i>completed — no error cells; live data
-present</i> on success, or the exact error otherwise.</p>
+the same checks as a real run, but <b>never sends any email</b> — use it to verify that PI
+DataLink (or any data source) is producing real values before you rely on scheduled delivery.
+The result and any warnings show in the run history.</p>
 
 <h2 id="emailalerts">When a report email fails</h2>
 <p>If a run builds successfully but the email cannot be sent (wrong SMTP settings, server
