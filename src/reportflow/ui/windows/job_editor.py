@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.fs_util import open_start_dir
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 from reportflow.ui.windows.schedule_widget import ScheduleWidget
 
@@ -307,8 +308,10 @@ class JobEditorDialog(QDialog):
     # -- actions -----------------------------------------------------------------
 
     def _pick_input_excel(self) -> None:
+        # Reopen at the currently-selected file's folder, else the Downloads folder.
+        start = open_start_dir(self.input_excel.text().strip())
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select Excel file", "", "Excel (*.xlsx *.xlsm)"
+            self, "Select Excel file", start, "Excel (*.xlsx *.xlsm)"
         )
         if path:
             self.input_excel.setText(path)
@@ -316,7 +319,8 @@ class JobEditorDialog(QDialog):
             self._update_output_example()
 
     def _pick_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select output folder")
+        start = open_start_dir(self.output_dir.text().strip() or self.input_excel.text().strip())
+        path = QFileDialog.getExistingDirectory(self, "Select output folder", start)
         if path:
             self.output_dir.setText(path)
 

@@ -94,11 +94,13 @@ retried automatically — they stay visible in the history.</p>
 <h2 id="logs">Logs &amp; history</h2>
 <ul>
 <li><b>Logs</b> on a job card — that job's run history with status, timings, output paths,
-    error summaries, and the per-run worker log.</li>
-<li><b>File → Application logs</b> — the full rolling logs of the Service, Worker, and UI.</li>
-<li><b>File → Send logs to support</b> — emails a diagnostic bundle (logs + sanitized
+    error summaries, and the colour-coded per-run worker log.</li>
+<li><b>Logs → Application logs</b> — the full rolling logs of the Service, Worker, and UI.
+    Switch process with one click, filter by level, search the text, and read it colour-coded
+    by severity.</li>
+<li><b>Logs → Send logs to support</b> — emails a diagnostic bundle (logs + sanitized
     settings, never passwords) to the configured support email.</li>
-<li><b>File → Open data folder</b> — opens the folder holding config, logs, and outputs
+<li><b>Logs → Open data folder</b> — opens the folder holding config, logs, and outputs
     metadata in Explorer.</li>
 </ul>
 
@@ -154,7 +156,7 @@ upgrades automatically, preserving all jobs, settings, and logs.</p>
 <li><b>Blank out values</b> — comma-separated junk strings (e.g. "Tag not found",
     "#REF!") removed from the output after saving.</li>
 <li><b>Debug logging</b> (File → Settings → Application) — verbose logs for
-    troubleshooting; the run history and File → Application logs show far more detail.</li>
+    troubleshooting; the run history and Logs → Application logs show far more detail.</li>
 </ul>
 
 <h2 id="pidatalink">Workbooks using PI DataLink (or other Excel add-ins)</h2>
@@ -199,7 +201,7 @@ card also shows a small <b>✉ failed</b> marker, and the run history's <code>em
 line gives the reason. Fix the SMTP settings under File → Settings and re-run.</p>
 
 <h2 id="exportlogs">Exporting logs when email is down</h2>
-<p><b>File → Export logs to zip…</b> writes the full diagnostic bundle (logs + sanitized
+<p><b>Logs → Export logs to zip…</b> writes the full diagnostic bundle (logs + sanitized
 settings, never passwords) to a zip you choose — handy when the mail server is unreachable and
 you need to send the logs to support by hand. (<b>Send logs to support…</b> still emails the
 same bundle when SMTP works.)</p>

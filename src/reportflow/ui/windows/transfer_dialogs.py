@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.fs_util import open_start_dir, save_start_path
 from reportflow.ui.transfer import (
     TransferError,
     copy_name,
@@ -109,7 +110,7 @@ def export_jobs_flow(api: ApiClient, parent: QWidget) -> None:
     selected = dlg.selected()
 
     path, _ = QFileDialog.getSaveFileName(
-        parent, "Export jobs", "reportflow-jobs.json", "JSON (*.json)"
+        parent, "Export jobs", save_start_path(None, "reportflow-jobs.json"), "JSON (*.json)"
     )
     if not path:
         return
@@ -124,7 +125,9 @@ def export_jobs_flow(api: ApiClient, parent: QWidget) -> None:
 
 def import_jobs_flow(api: ApiClient, parent: QWidget) -> bool:
     """Returns True when at least one job was imported (caller refreshes)."""
-    path, _ = QFileDialog.getOpenFileName(parent, "Import jobs", "", "JSON (*.json)")
+    path, _ = QFileDialog.getOpenFileName(
+        parent, "Import jobs", open_start_dir(None), "JSON (*.json)"
+    )
     if not path:
         return False
     try:
@@ -208,7 +211,10 @@ def export_settings_flow(api: ApiClient, parent: QWidget) -> None:
         QMessageBox.warning(parent, "Export settings", str(e))
         return
     path, _ = QFileDialog.getSaveFileName(
-        parent, "Export settings", "reportflow-settings.json", "JSON (*.json)"
+        parent,
+        "Export settings",
+        save_start_path(None, "reportflow-settings.json"),
+        "JSON (*.json)",
     )
     if not path:
         return
@@ -226,7 +232,9 @@ def export_settings_flow(api: ApiClient, parent: QWidget) -> None:
 
 
 def import_settings_flow(api: ApiClient, parent: QWidget) -> None:
-    path, _ = QFileDialog.getOpenFileName(parent, "Import settings", "", "JSON (*.json)")
+    path, _ = QFileDialog.getOpenFileName(
+        parent, "Import settings", open_start_dir(None), "JSON (*.json)"
+    )
     if not path:
         return
     try:
