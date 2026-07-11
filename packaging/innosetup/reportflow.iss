@@ -19,6 +19,8 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; Show the welcome page so upgrades can state which version -> which version (see [Code]).
+DisableWelcomePage=no
 OutputBaseFilename=ReportFlow-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
@@ -70,6 +72,10 @@ Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} Start SERVICE
 ; user so VSTO/Windows-auth add-ins like PI DataLink load. NSSM also grants the logon right.
 Filename: "{app}\nssm\nssm.exe"; Parameters: "{code:NssmObjectNameArgs}"; Flags: runhidden; Check: HasServiceAccount
 Filename: "{app}\nssm\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden
+; Reopen the app after a silent update (the in-app updater closes it), and offer a
+; "Launch ReportFlow" checkbox after an interactive install.
+Filename: "{app}\ui\reportflow-ui.exe"; Flags: nowait skipifsilent postinstall; Description: "Launch {#MyAppName}"
+Filename: "{app}\ui\reportflow-ui.exe"; Flags: nowait; Check: WizardSilent
 
 [UninstallRun]
 Filename: "{app}\nssm\nssm.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden; RunOnceId: "StopSvc"
@@ -83,8 +89,34 @@ Type: filesandordirs; Name: "{app}"
 var
   AccountPage: TInputQueryWizardPage;
 
-procedure InitializeWizard;
+function GetOldVersion: String;
+var
+  v: String;
 begin
+  // DisplayVersion of the currently-installed build (Inno's uninstall key for this AppId).
+  Result := '';
+  if RegQueryStringValue(HKLM,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7F3C6A20-9B4E-4E2A-9C1D-REPORTFLOW01}_is1',
+    'DisplayVersion', v) then
+    Result := v
+  else if RegQueryStringValue(HKLM32,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7F3C6A20-9B4E-4E2A-9C1D-REPORTFLOW01}_is1',
+    'DisplayVersion', v) then
+    Result := v;
+end;
+
+procedure InitializeWizard;
+var
+  Old: String;
+begin
+  // On an upgrade, tell the user exactly which version -> which version on the welcome page.
+  Old := GetOldVersion;
+  if (Old <> '') and (Old <> '{#MyAppVersion}') then
+    WizardForm.WelcomeLabel2.Caption :=
+      'This will update ' + '{#MyAppName}' + ' from version ' + Old + ' to {#MyAppVersion}.' +
+      #13#10#13#10 + 'Your jobs, settings, and logs are preserved.' +
+      #13#10#13#10 + WizardForm.WelcomeLabel2.Caption;
+
   // Optional service log-on account. VSTO / Windows-integrated add-ins such as PI DataLink
   // cannot load under LocalSystem, so offer to run the service as a real PI-enabled user.
   AccountPage := CreateInputQueryPage(wpSelectTasks,

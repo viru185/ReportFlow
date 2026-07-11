@@ -54,6 +54,19 @@ def status_colors(status: str | None) -> tuple[str, str]:
     return STATUS_COLORS.get((status or "never").lower(), STATUS_COLORS["never"])
 
 
+# Foreground colour per loguru level, used to tint whole log lines. INFO keeps the default
+# text colour so ordinary lines aren't over-coloured; only notable levels stand out.
+LOG_LEVEL_COLORS: dict[str, str] = {
+    "TRACE": TEXT_MUTED,
+    "DEBUG": "#7f8896",
+    "INFO": TEXT,
+    "SUCCESS": "#4ade80",
+    "WARNING": "#fbbf24",
+    "ERROR": "#f87171",
+    "CRITICAL": "#f87171",
+}
+
+
 # -- app-wide stylesheet ------------------------------------------------------------
 
 _CHECK_URL = _check_svg_url()

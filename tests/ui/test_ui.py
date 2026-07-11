@@ -439,6 +439,43 @@ def test_log_viewer_loads(qtbot):
     assert "log line from service" in dlg.text.toPlainText()
 
 
+def test_log_viewer_one_click_process_switch(qtbot):
+    from reportflow.ui.windows.log_viewer_dialog import LogViewerDialog
+
+    dlg = LogViewerDialog(FakeApi())
+    qtbot.addWidget(dlg)
+    assert dlg._process == "service"
+    dlg._switch_process("worker")
+    assert dlg._process == "worker"
+    assert "log line from worker" in dlg.text.toPlainText()
+
+
+def test_log_viewer_level_filter_and_search(qtbot):
+    from reportflow.ui.windows.log_viewer_dialog import LogViewerDialog
+
+    dlg = LogViewerDialog(FakeApi())
+    qtbot.addWidget(dlg)
+    dlg._raw = "2026 | INFO     | m:f:1 - alpha\n2026 | ERROR    | m:f:2 - beta"
+
+    dlg.level.setCurrentText("Error")  # triggers _render
+    shown = dlg.text.toPlainText()
+    assert "beta" in shown and "alpha" not in shown
+
+    dlg.level.setCurrentText("All")
+    dlg.search.setText("alpha")
+    shown = dlg.text.toPlainText()
+    assert "alpha" in shown and "beta" not in shown
+
+
+def test_main_window_has_logs_menu(qtbot):
+    from reportflow.ui.windows.main_window import MainWindow
+
+    win = MainWindow(FakeApi(jobs=[]))
+    qtbot.addWidget(win)
+    titles = [a.text() for a in win.menuBar().actions()]
+    assert "&File" in titles and "&Logs" in titles and "&Help" in titles
+
+
 def test_about_dialog_shows_metadata(qtbot):
     from reportflow import __about__ as about
     from reportflow.ui.windows.about_dialog import AboutDialog
