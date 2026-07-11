@@ -8,12 +8,16 @@ from reportflow.ui.api_client import ApiError
 class FakeApi:
     base_url = "http://127.0.0.1:8787"
 
-    def __init__(self, *, jobs=None, sheets=None, connected=True):
+    def __init__(self, *, jobs=None, sheets=None, connected=True, is_system=False, runs=None):
         self._jobs = jobs or []
         self._sheets = sheets or ["Summary", "Detail"]
         self._connected = connected
+        self._is_system = is_system
+        self._runs = runs or []
         self.saved_settings = None
         self.saved_template = None
+        self.triggered = []
+        self.exported = False
 
     def _check(self):
         if not self._connected:
@@ -28,7 +32,31 @@ class FakeApi:
             "active_runs": ["r1"],
             "scheduled_jobs": ["a#0", "a#1"],
             "config_error": self.config_error,
+            "service_account": "WORKGROUP\\HOST$" if self._is_system else "CORP\\pi_reports",
+            "service_account_is_system": self._is_system,
         }
+
+    def run_job(self, name):
+        self.triggered.append(("run", name))
+        return {"run_id": "r-run"}
+
+    def test_job(self, name):
+        self.triggered.append(("test", name))
+        return {"run_id": "r-test"}
+
+    def dry_run_job(self, name):
+        self.triggered.append(("dry", name))
+        return {"run_id": "r-dry"}
+
+    def list_runs(self, job=None, limit=50):
+        return self._runs
+
+    def get_run_log(self, run_id):
+        return {"log": "line\n" * 200}
+
+    def export_logs(self):
+        self.exported = True
+        return {"bundle": self._bundle}
 
     def list_jobs(self):
         self._check()
@@ -243,6 +271,122 @@ def test_main_window_surfaces_config_error(qtbot):
     assert "Illegal character" in win.conn_label.toolTip()
 
 
+def test_main_window_has_dry_run_button(qtbot):
+    from PySide6.QtWidgets import QPushButton
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))
+    qtbot.addWidget(win)
+    labels = [b.text() for b in win.findChildren(QPushButton)]
+    assert any("Dry run" in t for t in labels)
+
+
+def test_main_window_dry_run_triggers_api(qtbot, monkeypatch):
+    from reportflow.ui.windows import main_window as mw
+
+    class _StubDialog:
+        def __init__(self, *a, **k):
+            pass
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(mw, "RunHistoryDialog", _StubDialog)
+    api = FakeApi(jobs=[_sample_job_dict()])
+    win = mw.MainWindow(api)
+    qtbot.addWidget(win)
+    win._trigger("daily", mode="dry")
+    assert ("dry", "daily") in api.triggered
+
+
+def test_main_window_system_banner_reflects_account(qtbot):
+    from reportflow.ui.windows.main_window import MainWindow
+
+    sys_win = MainWindow(FakeApi(jobs=[_sample_job_dict()], is_system=True))
+    qtbot.addWidget(sys_win)
+    assert sys_win.system_banner.isHidden() is False
+
+    ok_win = MainWindow(FakeApi(jobs=[_sample_job_dict()], is_system=False))
+    qtbot.addWidget(ok_win)
+    assert ok_win.system_banner.isHidden() is True
+
+
+def test_main_window_email_failed_badge(qtbot):
+    from reportflow.ui.windows.main_window import MainWindow
+
+    job = dict(_sample_job_dict(), last_email_failed=True, last_email_note="failed: refused")
+    win = MainWindow(FakeApi(jobs=[job]))
+    qtbot.addWidget(win)
+    from PySide6.QtWidgets import QLabel
+
+    assert any("✉ failed" in w.text() for w in win.findChildren(QLabel))
+
+
+def test_main_window_export_logs_saves_zip(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from reportflow.ui.windows import main_window as mw
+
+    src = tmp_path / "reportflow_logs_x.zip"
+    src.write_bytes(b"PK\x03\x04zip")
+    api = FakeApi(jobs=[])
+    api._bundle = str(src)
+    dest = tmp_path / "saved.zip"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "zip"))
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
+    )
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+
+    win = mw.MainWindow(api)
+    qtbot.addWidget(win)
+    win._export_logs()
+    assert api.exported and dest.exists()
+
+
+def test_run_history_email_failure_alerts_once(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.log_view import RunHistoryDialog
+
+    calls = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: calls.append(a)))
+    dlg = RunHistoryDialog(FakeApi(runs=[]), "daily")
+    qtbot.addWidget(dlg)
+
+    run = {"run_id": "rF", "status": "success", "email_note": "failed: connection refused"}
+    dlg._maybe_alert_email(run)
+    dlg._maybe_alert_email(run)  # already warned -> silent
+    assert len(calls) == 1
+
+
+def test_run_history_skips_resetting_unchanged_log(qtbot):
+    """The live-log poll must not re-set identical text — that reset yanks the view to the
+    top on every refresh (the auto-scroll bug)."""
+    from reportflow.ui.windows.log_view import RunHistoryDialog
+
+    runs = [{"run_id": "r1", "status": "success", "started_at": "t"}]
+    dlg = RunHistoryDialog(FakeApi(runs=runs), "daily")
+    qtbot.addWidget(dlg)
+
+    content = "\n".join(f"line {i}" for i in range(100))
+    dlg.log.setPlainText(content)
+    dlg._api.get_run_log = lambda rid: {"log": content}
+    calls = []
+    real = dlg.log.setPlainText
+    dlg.log.setPlainText = lambda t: calls.append(t) or real(t)
+
+    dlg._show_selected()
+    assert calls == []  # unchanged -> not re-set (scroll preserved)
+
+    dlg._api.get_run_log = lambda rid: {"log": content + "\nnew"}
+    dlg._show_selected()
+    assert calls  # changed -> re-set
+
+
 # -- dialogs ----------------------------------------------------------------------
 
 
@@ -354,6 +498,7 @@ def test_editor_advanced_output_safety_fields(qtbot):
     # Defaults: safety on, only-selected on, wait 10s, no blank-out list.
     payload = dlg.payload()
     assert payload["fail_if_sheet_empty"] is True
+    assert payload["fail_if_sheet_has_errors"] is True
     assert payload["keep_only_selected_sheets"] is True
     assert payload["post_refresh_wait_seconds"] == 10
     assert payload["blank_out_values"] == []

@@ -66,6 +66,9 @@ Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppStderr ""{
 Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateFiles 1"; Flags: runhidden
 Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 10485760"; Flags: runhidden
 Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} Start SERVICE_AUTO_START"; Flags: runhidden
+; When the admin supplied a service account, run the service (and its Excel workers) as that
+; user so VSTO/Windows-auth add-ins like PI DataLink load. NSSM also grants the logon right.
+Filename: "{app}\nssm\nssm.exe"; Parameters: "{code:NssmObjectNameArgs}"; Flags: runhidden; Check: HasServiceAccount
 Filename: "{app}\nssm\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden
 
 [UninstallRun]
@@ -77,6 +80,36 @@ Filename: "{app}\nssm\nssm.exe"; Parameters: "remove {#MyServiceName} confirm"; 
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+var
+  AccountPage: TInputQueryWizardPage;
+
+procedure InitializeWizard;
+begin
+  // Optional service log-on account. VSTO / Windows-integrated add-ins such as PI DataLink
+  // cannot load under LocalSystem, so offer to run the service as a real PI-enabled user.
+  AccountPage := CreateInputQueryPage(wpSelectTasks,
+    'Service account',
+    'Which Windows account should run ReportFlow?',
+    'PI DataLink and other Excel add-ins only load under a real user account that has the ' +
+    'add-in installed and data access — NOT LocalSystem. Enter such an account to run the ' +
+    'service as that user, or leave both fields blank to keep LocalSystem (add-ins that ' +
+    'need a user profile will not work).');
+  AccountPage.Add('User (DOMAIN\user or .\user):', False);
+  AccountPage.Add('Password:', True);
+end;
+
+function HasServiceAccount: Boolean;
+begin
+  Result := Trim(AccountPage.Values[0]) <> '';
+end;
+
+function NssmObjectNameArgs: String;
+begin
+  // Quote both fields so spaces/special characters survive; NSSM grants SeServiceLogonRight.
+  Result := 'set {#MyServiceName} ObjectName "' + Trim(AccountPage.Values[0]) + '" "' +
+    AccountPage.Values[1] + '"';
+end;
+
 function ServiceExists: Boolean;
 var
   ResultCode: Integer;

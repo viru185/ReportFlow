@@ -21,7 +21,10 @@ _HELP_HTML = f"""
 <a href="#transfer">Import &amp; export</a> ·
 <a href="#updates">Updates</a> ·
 <a href="#advanced">Advanced options</a> ·
-<a href="#pidatalink">PI DataLink &amp; add-ins</a>
+<a href="#pidatalink">PI DataLink &amp; add-ins</a> ·
+<a href="#dryrun">Dry run</a> ·
+<a href="#emailalerts">Email failures</a> ·
+<a href="#exportlogs">Export logs</a>
 </p>
 
 <h2 id="start">Getting started</h2>
@@ -155,18 +158,51 @@ upgrades automatically, preserving all jobs, settings, and logs.</p>
 </ul>
 
 <h2 id="pidatalink">Workbooks using PI DataLink (or other Excel add-ins)</h2>
-<p>ReportFlow connects Excel COM add-ins automatically at the start of each run and forces
-a full recalculation so add-in functions (PI DataLink, etc.) fetch live data. Two things
-to check if the output still comes out empty:</p>
+<p><b>The single most important rule:</b> PI DataLink is a <i>VSTO</i> add-in that uses
+Windows-integrated security. It <b>cannot load when the service runs as LocalSystem</b> (the
+default) — there is no user profile, no VSTO cache, and no PI identity. When that happens the
+add-in's worksheet functions are unregistered and every PI cell comes out as
+<code>#NAME?</code>. The report is broken, not empty.</p>
+<p><b>The fix — run the service as a PI-enabled Windows user:</b></p>
 <ul>
-<li>Open the run's <b>Logs</b> — the worker log lists every COM add-in it found and
-    whether it connected. If PI DataLink is <i>not in the list</i>, it is installed only
-    for a specific user: either reinstall it "for all users", or make the ReportFlow
-    service run as that user (Services app → ReportFlow → Log On, or
-    <code>nssm set ReportFlow ObjectName ...</code>).</li>
-<li>If the add-in appears but data is incomplete, increase <b>Extra wait after refresh</b>
-    in the job's Advanced tab.</li>
+<li><b>Right now, on this machine:</b> open an <b>Administrator</b> PowerShell and run
+    <code>scripts\\set-service-account.ps1 -User "DOMAIN\\your_pi_user"</code>. It switches the
+    ReportFlow service to that account (which must have PI DataLink installed and PI access),
+    grants it the log-on-as-a-service right, and restarts the service — no reinstall needed.</li>
+<li><b>On a fresh install:</b> the installer now asks for an optional <i>service account</i>
+    — enter the PI-enabled user there.</li>
+<li><b>File → Settings → Application → "Service runs as"</b> shows the current account. If it
+    reads <i>LocalSystem</i> (in red), add-ins will not load; the dashboard also shows a
+    warning banner.</li>
 </ul>
+<p>After switching the account, click <b>🔍 Dry run</b> on the job (see below) to confirm.
+The worker log should show <code>Executing as DOMAIN\\your_pi_user</code> (no trailing
+<code>$</code>) and <code>COM add-in 'PI DataLink': connected=True</code>, with real values
+instead of <code>#NAME?</code>.</p>
+<p>ReportFlow guards against silently shipping a broken report: a run <b>fails</b> when a
+selected sheet contains Excel error cells (<code>#NAME?</code>, <code>#REF!</code>, …). You
+can toggle this per job in the Advanced tab (<i>"Fail the run if a selected sheet has error
+cells"</i>). If the add-in loads but data is merely incomplete, increase <b>Extra wait after
+refresh</b>.</p>
+
+<h2 id="dryrun">Dry run — check the report without emailing</h2>
+<p>Each job card has a <b>🔍 Dry run</b> button. It builds the full output workbook and runs
+the same error-cell check as a real run, but <b>never sends any email</b> — use it to verify
+that PI DataLink (or any data source) is producing real values before you rely on scheduled
+delivery. The result shows in the run history: <i>completed — no error cells; live data
+present</i> on success, or the exact error otherwise.</p>
+
+<h2 id="emailalerts">When a report email fails</h2>
+<p>If a run builds successfully but the email cannot be sent (wrong SMTP settings, server
+unreachable), ReportFlow now <b>pops a warning</b> — it no longer fails silently. The job
+card also shows a small <b>✉ failed</b> marker, and the run history's <code>email:</code>
+line gives the reason. Fix the SMTP settings under File → Settings and re-run.</p>
+
+<h2 id="exportlogs">Exporting logs when email is down</h2>
+<p><b>File → Export logs to zip…</b> writes the full diagnostic bundle (logs + sanitized
+settings, never passwords) to a zip you choose — handy when the mail server is unreachable and
+you need to send the logs to support by hand. (<b>Send logs to support…</b> still emails the
+same bundle when SMTP works.)</p>
 """
 
 

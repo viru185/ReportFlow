@@ -104,6 +104,11 @@ class JobConfig(_Base):
     # Fail the run when a selected sheet's used range is entirely empty after refresh —
     # an empty report must never masquerade as success.
     fail_if_sheet_empty: bool = True
+    # Fail the run when a selected sheet contains Excel error cells (#NAME?, #REF!, …) after
+    # refresh. #NAME? in particular means an add-in (e.g. PI DataLink) did not load, so the
+    # report would ship broken values. This is the meaningful check for PI workbooks, where
+    # non-data cells always hold values and the empty-check never trips.
+    fail_if_sheet_has_errors: bool = True
     # Only the selected sheets remain in the output workbook (source is never touched).
     keep_only_selected_sheets: bool = True
     # Cell values blanked out of the OUTPUT after saving (e.g. PI DataLink error strings

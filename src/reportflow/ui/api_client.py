@@ -63,6 +63,9 @@ class ApiClient:
     def send_dev_logs(self) -> dict:
         return self._request("POST", "/system/send-dev-logs")
 
+    def export_logs(self) -> dict:
+        return self._request("POST", "/system/export-logs")
+
     # -- jobs --
     def list_jobs(self) -> list[dict]:
         return self._request("GET", "/jobs")
@@ -84,6 +87,9 @@ class ApiClient:
 
     def test_job(self, name: str) -> dict:
         return self._request("POST", f"/jobs/{name}/test")
+
+    def dry_run_job(self, name: str) -> dict:
+        return self._request("POST", f"/jobs/{name}/dry-run")
 
     # -- runs --
     def list_runs(self, job: str | None = None, limit: int = 50) -> list[dict]:
