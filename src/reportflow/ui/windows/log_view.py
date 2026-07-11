@@ -103,6 +103,12 @@ class RunHistoryDialog(QDialog):
         if item is None:
             return
         r = item.data(0x0100)
+        warnings = r.get("warnings") or []
+        warn_line = (
+            f"<br><span style='color:#fbbf24;'>warnings: {'; '.join(warnings)}</span>"
+            if warnings
+            else ""
+        )
         self.details.setText(
             f"<b>{r['run_id']}</b> — {r['status'].upper()}<br>"
             f"trigger: {r.get('trigger')} | test: {r.get('is_test')}<br>"
@@ -110,6 +116,7 @@ class RunHistoryDialog(QDialog):
             f"output: {r.get('output_xlsx') or '—'}<br>"
             f"email: {r.get('email_note') or '—'}<br>"
             f"error: {r.get('error_summary') or '—'}"
+            f"{warn_line}"
         )
         try:
             text = self._api.get_run_log(r["run_id"]).get("log", "")

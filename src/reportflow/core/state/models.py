@@ -33,6 +33,8 @@ class RunRecord(BaseModel):
     pdf_paths: list[str] = Field(default_factory=list)
 
     error_summary: str | None = None
+    # Non-fatal notes from the worker shown even on success (e.g. error cells delivered anyway).
+    warnings: list[str] = Field(default_factory=list)
     worker_log_path: str | None = None
     email_sent: bool = False
     # Human-readable email outcome: "sent to N recipient(s)", "not sent — …", "failed: …"

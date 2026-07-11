@@ -262,6 +262,20 @@ def test_test_run_sends_email_to_test_recipients(tmp_path, monkeypatch):
     assert handler.envelopes and set(handler.envelopes[0]) == {"dev@corp.example.com"}
 
 
+def test_warnings_surface_on_record_and_email_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "warn")
+    job = _job(tmp_path, send_report_email=False)
+    launcher = _launcher(tmp_path, _config(job))
+
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+
+    assert rec.status is RunStatus.SUCCESS  # delivered despite error cells
+    assert rec.warnings and "#REF!" in rec.warnings[0]
+    # The email template can render them too.
+    ctx = launcher._email_context(job, rec)
+    assert ctx["warnings"] == rec.warnings
+
+
 def test_run_history_persisted(tmp_path, monkeypatch):
     monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
     config = _config(_job(tmp_path))

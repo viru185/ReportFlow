@@ -229,6 +229,7 @@ class Launcher:
             fail_if_sheet_empty=job.fail_if_sheet_empty,
             fail_if_sheet_has_errors=job.fail_if_sheet_has_errors,
             keep_only_selected_sheets=job.keep_only_selected_sheets,
+            unselected_sheets_mode=job.unselected_sheets_mode,
             blank_out_values=job.blank_out_values,
             timeout_seconds=timeout,
             is_test=is_test,
@@ -314,6 +315,7 @@ class Launcher:
             record.status = result.status if exit_code == 0 else RunStatus.FAILED
             record.output_xlsx = str(result.output_xlsx) if result.output_xlsx else None
             record.pdf_paths = [str(p) for p in result.pdf_paths]
+            record.warnings = list(result.warnings)
             if not result.ok:
                 record.error_summary = (result.message or "run failed").strip()[:500]
 
@@ -366,6 +368,7 @@ class Launcher:
             "sheet_names": job.sheet_names,
             "hostname": os.environ.get("COMPUTERNAME", "host"),
             "is_test": record.is_test,
+            "warnings": list(record.warnings),
         }
 
     @staticmethod

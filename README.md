@@ -186,13 +186,23 @@ and PI access):
   **🔍 Dry run** on the job — the worker log should read `Executing as DOMAIN\your_pi_user`
   (no trailing `$`) and `COM add-in 'PI DataLink': connected=True`, with real values.
 
-ReportFlow will not silently ship a broken report: a run **fails** when a selected sheet
-contains Excel error cells (`#NAME?`, `#REF!`, …). Toggle it per job in the Advanced tab
-(*"Fail the run if a selected sheet has error cells"*). If the add-in loads but data merely
-lags, raise **Extra wait after refresh** (job → Advanced, e.g. 30–120 s).
+**Error cells are reported, not fatal.** Pre-existing errors like `#REF!` no longer block
+delivery — the report is sent and the errors show as a *warning* on the run. Strip them with
+the **Blank out values** list (e.g. `#REF!, #N/A`), or tick *"Fail the run if a sheet has
+error cells (strict)"* to fail instead. If a sheet is only partly filled, the add-in's data
+was still arriving at freeze time — raise **Extra wait after refresh** (ReportFlow waits
+adaptively up to that budget and logs when data is still changing at the end).
 
-**Dry run** (🔍 on each job card) builds the full report and runs the error-cell check but
-never emails — use it to confirm PI data before relying on scheduled delivery.
+**"Cannot be opened" output.** Removing unselected sheets can break a chart/defined name that
+referenced them, and Office File Validation then blocks the file. ReportFlow purges broken
+`#REF!` defined names automatically; if a report still won't open, set that job's **Unselected
+sheets** option (Advanced) to **Hide** — the others become very-hidden, references stay
+intact, and the file always opens. If the *input* file won't open by hand, it carries a
+Mark-of-the-Web: right-click → Properties → **Unblock** (or add its folder as a Trusted
+Location); reports still generate because the service opens files via automation.
+
+**Dry run** (🔍 on each job card) builds the full report and runs the checks but never emails
+— use it to confirm PI data before relying on scheduled delivery.
 
 **Email failures no longer pass silently:** when a run builds but the email cannot be sent,
 the app pops a warning, the card shows a **✉ failed** marker, and the run history's

@@ -33,11 +33,24 @@ def test_request_round_trip(tmp_path):
     assert loaded == req
 
 
-def test_fail_if_sheet_has_errors_defaults_true_and_round_trips(tmp_path):
-    assert _request(tmp_path).fail_if_sheet_has_errors is True
-    req = _request(tmp_path).model_copy(update={"fail_if_sheet_has_errors": False})
+def test_error_and_mode_defaults_and_round_trip(tmp_path):
+    req0 = _request(tmp_path)
+    assert req0.fail_if_sheet_has_errors is False  # deliver by default
+    assert req0.unselected_sheets_mode == "remove"
+    req = req0.model_copy(
+        update={"fail_if_sheet_has_errors": True, "unselected_sheets_mode": "hide"}
+    )
     loaded = read_request(write_request(req, tmp_path / "request.json"))
-    assert loaded.fail_if_sheet_has_errors is False
+    assert loaded.fail_if_sheet_has_errors is True
+    assert loaded.unselected_sheets_mode == "hide"
+
+
+def test_worker_result_warnings_round_trip(tmp_path):
+    result = WorkerResult(
+        run_id="r", status=RunStatus.SUCCESS, warnings=["sheet 'X': 3 error cell(s)"]
+    )
+    loaded = read_result(write_result(result, tmp_path / "result.json"))
+    assert loaded.warnings == ["sheet 'X': 3 error cell(s)"]
 
 
 def test_result_round_trip(tmp_path):
