@@ -54,8 +54,9 @@ def status_colors(status: str | None) -> tuple[str, str]:
     return STATUS_COLORS.get((status or "never").lower(), STATUS_COLORS["never"])
 
 
-# Foreground colour per loguru level, used to tint whole log lines. INFO keeps the default
-# text colour so ordinary lines aren't over-coloured; only notable levels stand out.
+# Foreground colour per loguru level, used to tint the level token (and whole lines when the
+# line can't be parsed into segments). INFO keeps the default text colour so ordinary lines
+# aren't over-coloured; only notable levels stand out.
 LOG_LEVEL_COLORS: dict[str, str] = {
     "TRACE": TEXT_MUTED,
     "DEBUG": "#7f8896",
@@ -65,6 +66,10 @@ LOG_LEVEL_COLORS: dict[str, str] = {
     "ERROR": "#f87171",
     "CRITICAL": "#f87171",
 }
+
+# Segment colours for the console-style per-token colouring (date | level | location | msg).
+LOG_TIME = "#6b8bd6"  # muted blue for the timestamp
+LOG_LOCATION = TEXT_MUTED  # module:function:line
 
 
 # -- app-wide stylesheet ------------------------------------------------------------

@@ -54,9 +54,24 @@ class FakeApi:
     def get_run_log(self, run_id):
         return {"log": "line\n" * 200}
 
-    def export_logs(self):
+    def export_logs(self, note=""):
         self.exported = True
+        self.export_note = note
         return {"bundle": self._bundle}
+
+    def send_dev_logs(self, note=""):
+        self.sent_note = note
+        return {"recipients": ["dev@x.com"]}
+
+    def get_service_account(self):
+        return {
+            "account": "WORKGROUP\\HOST$" if self._is_system else "CORP\\pi_reports",
+            "is_system": self._is_system,
+        }
+
+    def set_service_account(self, user, password):
+        self.applied_account = (user, password)
+        return {"ok": True, "account": user, "restarting": True}
 
     def list_jobs(self):
         self._check()
@@ -271,7 +286,7 @@ def test_main_window_surfaces_config_error(qtbot):
     assert "Illegal character" in win.conn_label.toolTip()
 
 
-def test_main_window_has_dry_run_button(qtbot):
+def test_main_window_run_actions_are_three_clear_buttons(qtbot):
     from PySide6.QtWidgets import QPushButton
 
     from reportflow.ui.windows.main_window import MainWindow
@@ -279,7 +294,11 @@ def test_main_window_has_dry_run_button(qtbot):
     win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))
     qtbot.addWidget(win)
     labels = [b.text() for b in win.findChildren(QPushButton)]
-    assert any("Dry run" in t for t in labels)
+    # Single-click actions, clearly named (no jargon "Dry run", no dropdowns).
+    assert any("Run" in t for t in labels)
+    assert any("Test email" in t for t in labels)
+    assert any("Build only" in t for t in labels)
+    assert not any("Dry run" in t for t in labels)
 
 
 def test_main_window_dry_run_triggers_api(qtbot, monkeypatch):
@@ -324,7 +343,7 @@ def test_main_window_email_failed_badge(qtbot):
 
 
 def test_main_window_export_logs_saves_zip(qtbot, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
     from reportflow.ui.windows import main_window as mw
 
@@ -333,6 +352,9 @@ def test_main_window_export_logs_saves_zip(qtbot, tmp_path, monkeypatch):
     api = FakeApi(jobs=[])
     api._bundle = str(src)
     dest = tmp_path / "saved.zip"
+    monkeypatch.setattr(
+        QInputDialog, "getMultiLineText", staticmethod(lambda *a, **k: ("MURI is empty", True))
+    )
     monkeypatch.setattr(
         QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(dest), "zip"))
     )
@@ -345,22 +367,38 @@ def test_main_window_export_logs_saves_zip(qtbot, tmp_path, monkeypatch):
     qtbot.addWidget(win)
     win._export_logs()
     assert api.exported and dest.exists()
+    assert api.export_note == "MURI is empty"  # the user's note rides along
 
 
-def test_run_history_email_failure_alerts_once(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
+def test_main_window_export_logs_cancel_aborts(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
 
+    from reportflow.ui.windows import main_window as mw
+
+    api = FakeApi(jobs=[])
+    monkeypatch.setattr(QInputDialog, "getMultiLineText", staticmethod(lambda *a, **k: ("", False)))
+    win = mw.MainWindow(api)
+    qtbot.addWidget(win)
+    win._export_logs()
+    assert api.exported is False  # cancelling the note prompt aborts the export
+
+
+def test_run_history_email_failure_shows_inline_banner(qtbot):
+    """A failed report email surfaces as an inline banner — never a modal that pops during
+    live polling."""
     from reportflow.ui.windows.log_view import RunHistoryDialog
 
-    calls = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: calls.append(a)))
     dlg = RunHistoryDialog(FakeApi(runs=[]), "daily")
     qtbot.addWidget(dlg)
 
-    run = {"run_id": "rF", "status": "success", "email_note": "failed: connection refused"}
-    dlg._maybe_alert_email(run)
-    dlg._maybe_alert_email(run)  # already warned -> silent
-    assert len(calls) == 1
+    failed = {"run_id": "rF", "status": "success", "email_note": "failed: connection refused"}
+    dlg._maybe_flag_email(failed)
+    assert dlg.email_banner.isHidden() is False
+    assert "failed" in dlg.email_banner.text()
+
+    ok = {"run_id": "rG", "status": "success", "email_note": "sent to 1 recipient(s)"}
+    dlg._maybe_flag_email(ok)
+    assert dlg.email_banner.isHidden() is True
 
 
 def test_run_history_shows_warnings(qtbot):
@@ -521,11 +559,11 @@ def test_editor_email_hint_and_refresh_wait(qtbot):
     dlg = JobEditorDialog(FakeApi())
     qtbot.addWidget(dlg)
 
-    # Opt-in unticked -> the hint warns that real runs won't email.
+    # Opt-in unticked -> the hint spells out that real/scheduled runs email no one.
     assert not dlg.send_email.isChecked()
-    assert "NOT send email" in dlg.email_hint.text()
+    assert "email NO ONE" in dlg.email_hint.text()
     dlg.send_email.setChecked(True)
-    assert "will email the production recipients" in dlg.email_hint.text()
+    assert "will email the Production recipients" in dlg.email_hint.text()
 
     # Extra wait plumbs into the payload.
     dlg.name.setText("j")
@@ -550,7 +588,7 @@ def test_editor_advanced_output_safety_fields(qtbot):
     dlg.prod_to.setText("a@x.com")
     dlg.test_to.setText("b@x.com")
 
-    # Defaults: empty-check on, error-strict OFF (deliver), only-selected on + remove mode.
+    # Defaults: empty-check on, error-strict OFF (deliver), Non-selected sheets -> Remove.
     payload = dlg.payload()
     assert payload["fail_if_sheet_empty"] is True
     assert payload["fail_if_sheet_has_errors"] is False
@@ -559,14 +597,38 @@ def test_editor_advanced_output_safety_fields(qtbot):
     assert payload["post_refresh_wait_seconds"] == 10
     assert payload["blank_out_values"] == []
 
-    dlg.unselected_mode.setCurrentIndex(dlg.unselected_mode.findData("hide"))
-    assert dlg.payload()["unselected_sheets_mode"] == "hide"
+    # The single dropdown maps to the two config fields for all three options.
+    dlg.nonselected_mode.setCurrentIndex(dlg.nonselected_mode.findData("hide"))
+    payload = dlg.payload()
+    assert payload["keep_only_selected_sheets"] is True
+    assert payload["unselected_sheets_mode"] == "hide"
+
+    dlg.nonselected_mode.setCurrentIndex(dlg.nonselected_mode.findData("keep"))
+    payload = dlg.payload()
+    assert payload["keep_only_selected_sheets"] is False  # keep-all -> don't prune
+    assert payload["unselected_sheets_mode"] == "remove"  # mode is moot but stays valid
 
     dlg.blank_values.setText("Tag not found, #REF!")
     dlg.fail_if_empty.setChecked(False)
     payload = dlg.payload()
     assert payload["blank_out_values"] == ["Tag not found", "#REF!"]
     assert payload["fail_if_sheet_empty"] is False
+
+
+def test_editor_nonselected_dropdown_round_trips_from_saved_fields(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    # keep_only_selected_sheets False -> "keep"
+    job = dict(_sample_job_dict(), keep_only_selected_sheets=False, unselected_sheets_mode="remove")
+    dlg = JobEditorDialog(FakeApi(), job)
+    qtbot.addWidget(dlg)
+    assert dlg.nonselected_mode.currentData() == "keep"
+
+    # keep_only True + hide -> "hide"
+    job2 = dict(_sample_job_dict(), keep_only_selected_sheets=True, unselected_sheets_mode="hide")
+    dlg2 = JobEditorDialog(FakeApi(), job2)
+    qtbot.addWidget(dlg2)
+    assert dlg2.nonselected_mode.currentData() == "hide"
 
 
 def test_settings_debug_toggle_saves(qtbot):
@@ -636,6 +698,48 @@ def test_settings_password_eye_toggle(qtbot):
     assert dlg.smtp_password.echoMode() == QLineEdit.EchoMode.Normal
     dlg._pw_toggle.setChecked(False)
     assert dlg.smtp_password.echoMode() == QLineEdit.EchoMode.Password
+
+
+def test_settings_service_account_prefill_and_apply(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    monkeypatch.setenv("USERDOMAIN", "CORP")
+    monkeypatch.setenv("USERNAME", "pi_user")
+
+    api = FakeApi()
+    dlg = SettingsDialog(api)
+    qtbot.addWidget(dlg)
+
+    dlg._fill_current_user()
+    assert dlg.account_user.text() == "CORP\\pi_user"
+
+    dlg.account_password.setText("pw")
+    dlg._apply_service_account()
+    assert api.applied_account == ("CORP\\pi_user", "pw")
+    assert dlg.account_password.text() == ""  # cleared after apply
+
+
+def test_settings_service_account_needs_both_fields(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a)))
+
+    api = FakeApi()
+    dlg = SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    dlg.account_user.setText("CORP\\pi_user")  # no password
+    dlg._apply_service_account()
+    assert warned and not hasattr(api, "applied_account")
 
 
 def test_settings_saves_update_toggle(qtbot):

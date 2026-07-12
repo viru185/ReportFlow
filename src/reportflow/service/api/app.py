@@ -137,6 +137,15 @@ class SmtpPasswordUpdate(BaseModel):
     password: str
 
 
+class ServiceAccountUpdate(BaseModel):
+    user: str
+    password: str
+
+
+class DevBundleRequest(BaseModel):
+    note: str = ""
+
+
 class SmtpTestRequest(BaseModel):
     host: str = ""
     port: int = 587
@@ -220,6 +229,28 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             "service_account": f"{os.environ.get('USERDOMAIN', '')}\\{username}".strip("\\"),
             "service_account_is_system": username.endswith("$"),
         }
+
+    @app.get("/system/service-account")
+    def get_service_account() -> dict[str, Any]:
+        from reportflow.service.service_account import current_account
+
+        return current_account()
+
+    @app.post("/system/service-account")
+    def set_service_account(update: ServiceAccountUpdate) -> dict[str, Any]:
+        from reportflow.service.service_account import (
+            ServiceAccountError,
+            apply_service_account,
+            validate_credentials,
+        )
+
+        logger.info("API: service-account change requested")  # never log the credentials
+        try:
+            validate_credentials(update.user, update.password)
+            account = apply_service_account(update.user, update.password)
+        except ServiceAccountError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "account": account, "restarting": True}
 
     @app.get("/config")
     def get_config() -> dict[str, Any]:
@@ -406,18 +437,24 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         html = render_email(resolve_template(job, svc().config), sample_context(job))
         return {"html": html}
 
+    def _bundle_metadata(note: str) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "hostname": os.environ.get("COMPUTERNAME", "host"),
+            "windows_user": os.environ.get("USERNAME", "unknown"),
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        if note.strip():
+            metadata["note"] = note.strip()
+        return metadata
+
     @app.post("/system/send-dev-logs")
-    def send_dev_logs() -> dict[str, Any]:
+    def send_dev_logs(req: DevBundleRequest | None = None) -> dict[str, Any]:
         st = svc()
         if not st.config.test.developer_bundle_recipients:
             raise HTTPException(status_code=400, detail="no developer_bundle_recipients configured")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         bundle = paths.state_dir() / "bundles" / f"reportflow_logs_{stamp}.zip"
-        metadata = {
-            "hostname": os.environ.get("COMPUTERNAME", "host"),
-            "windows_user": os.environ.get("USERNAME", "unknown"),
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        metadata = _bundle_metadata(req.note if req else "")
         build_log_bundle(bundle, st.config, metadata=metadata)
         try:
             recipients = send_dev_log_bundle(st.config, bundle, metadata)
@@ -426,17 +463,13 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         return {"ok": True, "recipients": recipients, "bundle": str(bundle)}
 
     @app.post("/system/export-logs")
-    def export_logs() -> dict[str, Any]:
+    def export_logs(req: DevBundleRequest | None = None) -> dict[str, Any]:
         """Build the diagnostic zip on disk WITHOUT emailing it — for when SMTP is down and
         the logs must be sent to the developer by hand."""
         st = svc()
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         bundle = paths.state_dir() / "bundles" / f"reportflow_logs_{stamp}.zip"
-        metadata = {
-            "hostname": os.environ.get("COMPUTERNAME", "host"),
-            "windows_user": os.environ.get("USERNAME", "unknown"),
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        metadata = _bundle_metadata(req.note if req else "")
         build_log_bundle(bundle, st.config, metadata=metadata)
         logger.info("API: exported diagnostic bundle to {}", bundle)
         return {"ok": True, "bundle": str(bundle)}

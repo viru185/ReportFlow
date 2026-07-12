@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from PySide6.QtWidgets import (
@@ -28,13 +29,21 @@ def _split_csv(text: str) -> list[str]:
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        api: ApiClient,
+        parent: QWidget | None = None,
+        *,
+        focus_service_account: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._api = api
         self.setWindowTitle("Settings")
         self.setMinimumWidth(520)
         self._build()
         self._load()
+        if focus_service_account:
+            self.account_user.setFocus()
 
     # -- construction ------------------------------------------------------------
 
@@ -149,20 +158,55 @@ class SettingsDialog(QDialog):
             "when troubleshooting with support. Applies to the service immediately; the "
             "app picks it up on next start."
         )
-        self.service_account = QLabel("")
-        self.service_account.setWordWrap(True)
-        self.service_account.setToolTip(
-            "The Windows account the ReportFlow service runs as. Excel add-ins such as PI "
-            "DataLink only load under a real user with the add-in installed — not LocalSystem. "
-            "Change it with scripts/set-service-account.ps1 or by reinstalling."
-        )
-
         app_form.addRow("Max parallel runs", self.max_concurrency)
         app_form.addRow("Default timeout", self.default_timeout)
         app_form.addRow("Log retention", self.log_retention)
         app_form.addRow("", self.check_updates)
         app_form.addRow("", self.debug_logging)
-        app_form.addRow("Service runs as", self.service_account)
+
+        # Service account — set the Windows user the service (and its Excel workers) run as.
+        # PI DataLink and other add-ins only load under a real user, never LocalSystem.
+        account_box = QGroupBox("Service account (PI DataLink)")
+        account_form = QFormLayout(account_box)
+        self.service_account = QLabel("")
+        self.service_account.setWordWrap(True)
+        self.service_account.setToolTip(
+            "The Windows account the ReportFlow service currently runs as."
+        )
+        self.account_user = QLineEdit()
+        self.account_user.setPlaceholderText("DOMAIN\\user or .\\user")
+        self.account_user.setToolTip(
+            "A Windows account that has PI DataLink installed and PI access. Use DOMAIN\\user "
+            "for a domain account, or .\\user for a local one."
+        )
+        use_current = QPushButton("Use current Windows user")
+        use_current.setToolTip("Fill in the account you are logged in as right now.")
+        use_current.clicked.connect(self._fill_current_user)
+        user_row = QHBoxLayout()
+        user_row.addWidget(self.account_user)
+        user_row.addWidget(use_current)
+
+        self.account_password = QLineEdit()
+        self.account_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.account_password.setToolTip(
+            "The account's Windows password. It is validated with Windows and passed straight "
+            "to the service configuration — never written to the config file."
+        )
+        apply_account = QPushButton("Validate && apply")
+        apply_account.setProperty("accent", True)
+        apply_account.setToolTip(
+            "Check the credentials with Windows, then reconfigure the service to run as this "
+            "account and restart it. No reinstall or admin prompt needed."
+        )
+        apply_account.clicked.connect(self._apply_service_account)
+        apply_row = QHBoxLayout()
+        apply_row.addStretch()
+        apply_row.addWidget(apply_account)
+
+        account_form.addRow("Runs as", self.service_account)
+        account_form.addRow("User", user_row)
+        account_form.addRow("Password", self.account_password)
+        account_form.addRow("", apply_row)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -173,6 +217,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(smtp_box)
         layout.addWidget(rcpt_box)
         layout.addWidget(app_box)
+        layout.addWidget(account_box)
         layout.addWidget(buttons)
 
     # -- data --------------------------------------------------------------------
@@ -225,6 +270,41 @@ class SettingsDialog(QDialog):
         else:
             self.service_account.setText(account)
             self.service_account.setStyleSheet("")
+
+    def _fill_current_user(self) -> None:
+        domain = os.environ.get("USERDOMAIN", "")
+        user = os.environ.get("USERNAME", "")
+        self.account_user.setText(f"{domain}\\{user}".strip("\\") if user else "")
+        self.account_password.setFocus()
+
+    def _apply_service_account(self) -> None:
+        user = self.account_user.text().strip()
+        password = self.account_password.text()
+        if not user or not password:
+            QMessageBox.warning(
+                self, "Service account", "Enter both the account (DOMAIN\\user) and its password."
+            )
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Set service account",
+            f"Validate {user!r} and reconfigure the ReportFlow service to run as it?\n\n"
+            "The service will restart, briefly interrupting any running job.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            resp = self._api.set_service_account(user, password)
+        except ApiError as e:
+            QMessageBox.warning(self, "Service account", str(e))
+            return
+        self.account_password.clear()
+        QMessageBox.information(
+            self,
+            "Service account",
+            f"Applied — the service is restarting as {resp.get('account', user)}.\n\n"
+            "Give it a few seconds, then run a Build only to confirm PI DataLink connects.",
+        )
 
     def _save(self) -> None:
         sections: dict[str, Any] = {

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import email
+import email.header
+import email.policy
 import socket
 from email.message import Message
 
@@ -145,3 +147,25 @@ def test_prod_run_uses_prod_recipients(smtp_server, tmp_path):
     assert set(envelope) == {"boss@corp.example.com", "ops@corp.example.com"}
     msg = email.message_from_bytes(handler.envelopes[0][1])
     assert msg["Subject"] == "Daily Report"  # no [TEST] prefix
+
+
+def test_dev_log_bundle_includes_operator_note(smtp_server, tmp_path):
+    from reportflow.core.config.models import TestSettings
+    from reportflow.core.email import send_dev_log_bundle
+
+    handler, port = smtp_server
+    cfg = _config(port).model_copy(
+        update={"test": TestSettings(developer_bundle_recipients=["dev@corp.example.com"])}
+    )
+    bundle = tmp_path / "logs.zip"
+    bundle.write_bytes(b"PK\x03\x04")
+    context = {"hostname": "SERVER1", "note": "MURI sheet came out empty"}
+
+    to = send_dev_log_bundle(cfg, bundle, context)
+
+    assert to == ["dev@corp.example.com"]
+    msg = email.message_from_bytes(handler.envelopes[0][1], policy=email.policy.default)
+    subject = str(email.header.make_header(email.header.decode_header(msg["Subject"])))
+    assert "MURI sheet came out empty" in subject
+    body = msg.get_body(preferencelist=("plain",)).get_content()
+    assert "MURI sheet came out empty" in body

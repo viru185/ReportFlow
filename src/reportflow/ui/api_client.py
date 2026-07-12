@@ -60,11 +60,19 @@ class ApiClient:
     def get_config(self) -> dict:
         return self._request("GET", "/config")
 
-    def send_dev_logs(self) -> dict:
-        return self._request("POST", "/system/send-dev-logs")
+    def send_dev_logs(self, note: str = "") -> dict:
+        return self._request("POST", "/system/send-dev-logs", json={"note": note})
 
-    def export_logs(self) -> dict:
-        return self._request("POST", "/system/export-logs")
+    def export_logs(self, note: str = "") -> dict:
+        return self._request("POST", "/system/export-logs", json={"note": note})
+
+    def get_service_account(self) -> dict:
+        return self._request("GET", "/system/service-account")
+
+    def set_service_account(self, user: str, password: str) -> dict:
+        return self._request(
+            "POST", "/system/service-account", json={"user": user, "password": password}
+        )
 
     # -- jobs --
     def list_jobs(self) -> list[dict]:

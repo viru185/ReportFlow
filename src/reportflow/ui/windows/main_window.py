@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -159,12 +160,13 @@ class MainWindow(QMainWindow):
         banner_row = QHBoxLayout(self.system_banner)
         banner_row.setContentsMargins(10, 4, 10, 4)
         banner_label = QLabel(
-            "⚠ The ReportFlow service is running as LocalSystem — Excel add-ins such as "
-            "PI DataLink will not load, so reports show #NAME?."
+            "⚠ ReportFlow is running as LocalSystem — PI DataLink can't load. "
+            "Set a Windows account to fix it."
         )
         banner_label.setWordWrap(True)
-        banner_fix = QPushButton("How to fix")
-        banner_fix.clicked.connect(self._open_help)
+        banner_fix = QPushButton("Set account…")
+        banner_fix.setProperty("accent", True)
+        banner_fix.clicked.connect(self._open_service_account)
         banner_row.addWidget(banner_label, 1)
         banner_row.addWidget(banner_fix)
         self.system_banner.setVisible(False)
@@ -290,35 +292,46 @@ class MainWindow(QMainWindow):
         info.addWidget(detail)
         lay.addLayout(info, 1)
 
-        def _btn(label: str, tip: str, slot) -> QPushButton:
+        def _btn(label: str, tip: str, slot, *, accent: bool = False) -> QPushButton:
             b = QPushButton(label)
             b.setToolTip(tip)
-            b.setStyleSheet("padding: 3px 10px;")
+            if accent:
+                b.setProperty("accent", True)
+            else:
+                b.setStyleSheet("padding: 3px 10px;")
             b.clicked.connect(slot)
             return b
 
         job_name = job.get("name", "")
-        lay.addWidget(
+        # Three single-click run actions, grouped tight so they read as one action set.
+        # Run is the accent (real run); the other two are clearly-labelled non-prod actions:
+        # "Test email" emails only the test recipients, "Build only" emails no one.
+        run_group = QHBoxLayout()
+        run_group.setSpacing(2)
+        run_group.addWidget(
             _btn(
                 "▶ Run",
-                "Real run — emails production recipients if enabled.",
+                "Real run — builds the report and, if enabled, emails the Production recipients.",
                 lambda *_: self._trigger(job_name, mode="run"),
+                accent=True,
             )
         )
-        lay.addWidget(
+        run_group.addWidget(
             _btn(
-                "🧪 Test",
-                "Test run — emails TEST recipients only.",
+                "🧪 Test email",
+                "Builds the report and emails only the Test recipients.",
                 lambda *_: self._trigger(job_name, mode="test"),
             )
         )
-        lay.addWidget(
+        run_group.addWidget(
             _btn(
-                "🔍 Dry run",
-                "Build the report and verify PI DataLink data without sending any email.",
+                "👁 Build only",
+                "Builds and verifies the report (checks PI DataLink data) without emailing anyone.",
                 lambda *_: self._trigger(job_name, mode="dry"),
             )
         )
+        lay.addLayout(run_group)
+        lay.addSpacing(10)
         lay.addWidget(_btn("✎ Edit", "Edit this job.", lambda *_: self._edit_job(job_name)))
         lay.addWidget(
             _btn(
@@ -381,7 +394,7 @@ class MainWindow(QMainWindow):
             "test": self._api.test_job,
             "dry": self._api.dry_run_job,
         }[mode]
-        kind = {"run": "Run", "test": "Test run", "dry": "Dry run"}[mode]
+        kind = {"run": "Run", "test": "Test email", "dry": "Build only"}[mode]
         try:
             resp = api_call(name)
         except ApiError as e:
@@ -398,6 +411,11 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         SettingsDialog(self._api, self).exec()
+
+    def _open_service_account(self) -> None:
+        dlg = SettingsDialog(self._api, self, focus_service_account=True)
+        if dlg.exec():
+            self.refresh()
 
     def _open_app_logs(self) -> None:
         LogViewerDialog(self._api, self).exec()
@@ -418,10 +436,22 @@ class MainWindow(QMainWindow):
     def _import_settings(self) -> None:
         import_settings_flow(self._api, self)
 
+    def _ask_dev_note(self, title: str) -> str | None:
+        """Prompt for an optional problem description. Returns the note, or None if cancelled."""
+        note, ok = QInputDialog.getMultiLineText(
+            self,
+            title,
+            "Describe the problem for the developer (optional — leave blank to skip):",
+        )
+        return note if ok else None
+
     def _export_logs(self) -> None:
         """Build the diagnostic zip and let the user save it locally (email may be down)."""
+        note = self._ask_dev_note("Export logs to zip")
+        if note is None:
+            return
         try:
-            resp = self._api.export_logs()
+            resp = self._api.export_logs(note)
         except ApiError as e:
             QMessageBox.warning(self, "Export failed", str(e))
             return
@@ -455,16 +485,17 @@ class MainWindow(QMainWindow):
             )
         except ApiError:
             recipients = "the configured support email"
-        confirm = QMessageBox.question(
+        note, ok = QInputDialog.getMultiLineText(
             self,
             "Send logs to support",
             "Send the full diagnostic bundle (logs + sanitized settings, no passwords) "
-            f"to {recipients or 'the configured support email'}?",
+            f"to {recipients or 'the configured support email'}.\n\n"
+            "Describe the problem for the developer (optional):",
         )
-        if confirm != QMessageBox.StandardButton.Yes:
+        if not ok:
             return
         try:
-            resp = self._api.send_dev_logs()
+            resp = self._api.send_dev_logs(note)
         except ApiError as e:
             QMessageBox.warning(self, "Send failed", str(e))
             return

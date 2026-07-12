@@ -25,6 +25,7 @@ from reportflow.ui.log_format import LogHighlighter, filter_log_text
 from reportflow.ui.style import ACCENT
 
 _PROCESSES = ("service", "worker", "ui")
+_PROCESS_LABELS = {"service": "Service", "worker": "Worker", "ui": "UI"}
 _LEVELS = ("All", "Debug", "Info", "Success", "Warning", "Error")
 
 
@@ -36,17 +37,22 @@ class LogViewerDialog(QDialog):
         self.setWindowTitle("Application logs")
         self.resize(860, 580)
 
-        # One-click process switch (segmented toggle buttons instead of a 2-click dropdown).
+        # One-click process switch (segmented toggle buttons instead of a 2-click dropdown),
+        # on its own labelled row so it reads as a mode selector, not a toolbar button.
         self._process = "service"
         self._proc_group = QButtonGroup(self)
         self._proc_group.setExclusive(True)
         proc_row = QHBoxLayout()
         proc_row.setSpacing(0)
+        proc_label = QLabel("Show log for:")
+        proc_label.setProperty("muted", True)
+        proc_row.addWidget(proc_label)
+        proc_row.addSpacing(6)
         for name in _PROCESSES:
-            btn = QPushButton(name.capitalize())
+            btn = QPushButton(_PROCESS_LABELS[name])
             btn.setCheckable(True)
             btn.setChecked(name == self._process)
-            btn.setToolTip(f"Show the {name} log.")
+            btn.setToolTip(f"Show the {_PROCESS_LABELS[name]} log.")
             btn.setStyleSheet(
                 f"QPushButton:checked {{ background: {ACCENT}; color: #ffffff; "
                 f"border-color: {ACCENT}; }}"
@@ -54,6 +60,7 @@ class LogViewerDialog(QDialog):
             btn.clicked.connect(lambda _=False, n=name: self._switch_process(n))
             self._proc_group.addButton(btn)
             proc_row.addWidget(btn)
+        proc_row.addStretch()
 
         self.level = QComboBox()
         self.level.addItems(_LEVELS)
@@ -75,15 +82,13 @@ class LogViewerDialog(QDialog):
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.reload)
 
-        top = QHBoxLayout()
-        top.addLayout(proc_row)
-        top.addSpacing(10)
-        top.addWidget(QLabel("Level:"))
-        top.addWidget(self.level)
-        top.addWidget(self.search, 1)
-        top.addWidget(QLabel("Lines:"))
-        top.addWidget(self.tail)
-        top.addWidget(refresh)
+        filters = QHBoxLayout()
+        filters.addWidget(QLabel("Level:"))
+        filters.addWidget(self.level)
+        filters.addWidget(self.search, 1)
+        filters.addWidget(QLabel("Lines:"))
+        filters.addWidget(self.tail)
+        filters.addWidget(refresh)
 
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
@@ -93,7 +98,8 @@ class LogViewerDialog(QDialog):
         self._highlighter = LogHighlighter(self.text.document())
 
         layout = QVBoxLayout(self)
-        layout.addLayout(top)
+        layout.addLayout(proc_row)
+        layout.addLayout(filters)
         layout.addWidget(self.text)
 
         self.reload()
