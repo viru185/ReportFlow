@@ -109,9 +109,11 @@ optional can be left blank.
 Each job has two recipient sets — **production** and **test** — each with **To** (required),
 **Cc** (optional), and **Bcc** (optional).
 
-- **Test runs** email the **test** recipients only — they can never reach production addresses.
-- **Real runs** email the **production** recipients only if **"Email report … on real runs"**
-  is enabled. Failures never send an automatic email.
+- **Test email** runs email the **test** recipients only — they can never reach production.
+- **Real / scheduled Runs** email the **production** recipients only if **"Also email
+  Production recipients on real / scheduled runs"** is enabled. **Unticked, a scheduled or
+  manual Run emails no one at all** (not even the test recipients) — it just builds the report.
+  Failures never send an automatic email.
 - Report emails attach the **output Excel** plus **all per-sheet PDFs**.
 
 The email **body** is authored in-app: click **Edit email template…** in the job editor and
@@ -121,8 +123,11 @@ the built-in default.
 
 ### Run, test, and schedule
 
-- **▶ Run** (on the job card) — a real run (production recipients, if enabled).
-- **🧪 Test** — a test run to the test recipients, subject prefixed `[TEST]`.
+Three single-click actions on each job card:
+
+- **▶ Run** — a real run (emails the production recipients, if the job opted in).
+- **🧪 Test email** — emails the test recipients only, subject prefixed `[TEST]`.
+- **👁 Build only** — builds and verifies the report (checks the data) but emails no one.
 - **Schedule** — the service runs enabled jobs on their configured times automatically; each
   configured time registers its own trigger.
 
@@ -133,9 +138,11 @@ retried automatically — it's recorded and visible in the history.
 
 - **Logs** on a job card — that job's run history: status, timings, output paths, error
   summary, and the worker log tail. It refreshes live while a run is in progress.
-- **File → Application logs** — the full rolling logs of the Service, Worker, and UI.
-- **File → Send logs to support** — emails a diagnostic bundle (logs + sanitized settings,
-  never passwords) to the configured support email.
+- **Logs → Application logs** — the full rolling logs of the Service, Worker, and UI, with a
+  one-click Service/Worker/UI switcher and per-token colour (timestamp, level, message).
+- **Logs → Send logs to support** / **Export logs to zip** — bundle the logs + sanitized
+  settings (never passwords); you can type a short **problem description** that rides along in
+  the bundle (and the email) so the developer knows what to look for.
 - **File → Open data folder** — opens `C:\ProgramData\ReportFlow` in Explorer.
 
 ### Settings (SMTP, support email, application)
@@ -175,16 +182,17 @@ desktop user**.
 **Fix — run the service as a PI-enabled Windows user** (one that has PI DataLink installed
 and PI access):
 
-- **Existing install, no reinstall:** in an **elevated** PowerShell run
-  `scripts\set-service-account.ps1 -User "DOMAIN\your_pi_user"`. It sets the service log-on
-  account (NSSM grants the log-on-as-a-service right), restarts the service, and prints the
-  resulting identity.
-- **Fresh install:** the installer asks for an optional **service account** — enter the
-  PI-enabled user there.
-- **Verify:** **File → Settings → Application → "Service runs as"** shows the account (and
-  warns in red if it is LocalSystem); the dashboard shows a warning banner too. Then click
-  **🔍 Dry run** on the job — the worker log should read `Executing as DOMAIN\your_pi_user`
-  (no trailing `$`) and `COM add-in 'PI DataLink': connected=True`, with real values.
+- **In the app (easiest):** **File → Settings → Service account** → **Use current Windows
+  user** → enter the password → **Validate & apply**. ReportFlow checks the credentials with
+  Windows, reconfigures the service to run as that user, and restarts it — no admin prompt, no
+  reinstall. The dashboard's red banner has a **Set account…** button that jumps straight here.
+- **Fresh install:** the installer asks for an optional **service account** and validates the
+  credentials before continuing — enter the PI-enabled user there.
+- **Admin PowerShell (alternative):** `scripts\set-service-account.ps1 -User "DOMAIN\your_pi_user"`.
+- **Verify:** **File → Settings → Service account** shows the current account (and warns in red
+  if it is LocalSystem); the dashboard shows a warning banner too. Then click **👁 Build only**
+  on the job — the worker log should read `Executing as DOMAIN\your_pi_user` (no trailing `$`)
+  and `COM add-in 'PI DataLink': connected=True`, with real values.
 
 **Error cells are reported, not fatal.** Pre-existing errors like `#REF!` no longer block
 delivery — the report is sent and the errors show as a *warning* on the run. Strip them with
@@ -193,15 +201,15 @@ error cells (strict)"* to fail instead. If a sheet is only partly filled, the ad
 was still arriving at freeze time — raise **Extra wait after refresh** (ReportFlow waits
 adaptively up to that budget and logs when data is still changing at the end).
 
-**"Cannot be opened" output.** Removing unselected sheets can break a chart/defined name that
+**"Cannot be opened" output.** Removing non-selected sheets can break a chart/defined name that
 referenced them, and Office File Validation then blocks the file. ReportFlow purges broken
-`#REF!` defined names automatically; if a report still won't open, set that job's **Unselected
+`#REF!` defined names automatically; if a report still won't open, set that job's **Non-selected
 sheets** option (Advanced) to **Hide** — the others become very-hidden, references stay
 intact, and the file always opens. If the *input* file won't open by hand, it carries a
 Mark-of-the-Web: right-click → Properties → **Unblock** (or add its folder as a Trusted
 Location); reports still generate because the service opens files via automation.
 
-**Dry run** (🔍 on each job card) builds the full report and runs the checks but never emails
+**Build only** (👁 on each job card) builds the full report and runs the checks but never emails
 — use it to confirm PI data before relying on scheduled delivery.
 
 **Email failures no longer pass silently:** when a run builds but the email cannot be sent,

@@ -30,6 +30,15 @@ WizardStyle=modern
 SetupIconFile=..\..\assets\reportflow.ico
 UninstallDisplayIcon={app}\ui\reportflow-ui.exe
 
+[InstallDelete]
+; On upgrade, each frozen app bundles a VERSION-STAMPED reportflow-<ver>.dist-info. Inno's
+; [Files] only adds/overwrites — it never deletes the old, differently-named folder — so the
+; stale dist-info would linger and importlib.metadata.version() could return the OLD version
+; (the "About still shows the old version after upgrade" bug). Remove them before copying.
+Type: filesandordirs; Name: "{app}\ui\_internal\reportflow-*.dist-info"
+Type: filesandordirs; Name: "{app}\service\_internal\reportflow-*.dist-info"
+Type: filesandordirs; Name: "{app}\worker\_internal\reportflow-*.dist-info"
+
 [Files]
 Source: "..\..\dist\worker\*";  DestDir: "{app}\worker";  Flags: recursesubdirs ignoreversion
 Source: "..\..\dist\service\*"; DestDir: "{app}\service"; Flags: recursesubdirs ignoreversion
@@ -91,6 +100,17 @@ Type: filesandordirs; Name: "{app}"
 var
   AccountPage: TInputQueryWizardPage;
 
+// Validate the entered service account against Windows before letting the wizard proceed.
+const
+  LOGON32_LOGON_NETWORK = 3;
+  LOGON32_PROVIDER_DEFAULT = 0;
+
+function LogonUserW(lpszUsername, lpszDomain, lpszPassword: String;
+  dwLogonType, dwLogonProvider: Integer; var phToken: THandle): Boolean;
+  external 'LogonUserW@advapi32.dll stdcall';
+function CloseHandle(hObject: THandle): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+
 function GetOldVersion: String;
 var
   v: String;
@@ -115,8 +135,8 @@ begin
   Old := GetOldVersion;
   if (Old <> '') and (Old <> '{#MyAppVersion}') then
     WizardForm.WelcomeLabel2.Caption :=
-      'This will update {#MyAppName} from version ' + Old + ' to {#MyAppVersion}.' +
-      ' Your jobs, settings, and logs are preserved.' + #13#10#13#10 +
+      'Upgrading {#MyAppName}: ' + Old + '  ->  {#MyAppVersion}.' + #13#10 +
+      'Your jobs, settings, and logs are preserved.' + #13#10#13#10 +
       WizardForm.WelcomeLabel2.Caption;
 
   // Optional service log-on account. VSTO / Windows-integrated add-ins such as PI DataLink
@@ -125,11 +145,57 @@ begin
     'Service account',
     'Which Windows account should run ReportFlow?',
     'PI DataLink and other Excel add-ins only load under a real user account that has the ' +
-    'add-in installed and data access — NOT LocalSystem. Enter such an account to run the ' +
-    'service as that user, or leave both fields blank to keep LocalSystem (add-ins that ' +
-    'need a user profile will not work).');
+    'add-in installed and data access — NOT LocalSystem. Enter such an account (domain user ' +
+    'as DOMAIN\user, or a local user as .\user) to run the service as that user, or leave ' +
+    'both fields blank to keep LocalSystem. The credentials are validated before continuing.');
   AccountPage.Add('User (DOMAIN\user or .\user):', False);
   AccountPage.Add('Password:', True);
+  // Best-effort prefill with the current interactive user (the one who likely has PI DataLink).
+  if GetEnv('USERNAME') <> '' then
+    AccountPage.Values[0] := GetEnv('USERDOMAIN') + '\' + GetEnv('USERNAME');
+end;
+
+function ValidateAccount(User, Password: String): Boolean;
+var
+  Domain, Name: String;
+  Slash: Integer;
+  Token: THandle;
+begin
+  // Split DOMAIN\user / .\user / user into (domain, name); a bare name uses '.' (local).
+  Slash := Pos('\', User);
+  if Slash > 0 then
+  begin
+    Domain := Copy(User, 1, Slash - 1);
+    Name := Copy(User, Slash + 1, Length(User));
+  end
+  else
+  begin
+    Domain := '.';
+    Name := User;
+  end;
+  Result := LogonUserW(Name, Domain, Password, LOGON32_LOGON_NETWORK,
+    LOGON32_PROVIDER_DEFAULT, Token);
+  if Result then
+    CloseHandle(Token);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (AccountPage <> nil) and (CurPageID = AccountPage.ID) then
+  begin
+    // Blank user = keep LocalSystem (allowed). Otherwise the credentials must validate.
+    if Trim(AccountPage.Values[0]) <> '' then
+    begin
+      if not ValidateAccount(Trim(AccountPage.Values[0]), AccountPage.Values[1]) then
+      begin
+        MsgBox('Those credentials were rejected by Windows. Check the account name ' +
+          '(DOMAIN\user or .\user) and password, or clear both fields to keep LocalSystem.',
+          mbError, MB_OK);
+        Result := False;
+      end;
+    end;
+  end;
 end;
 
 function HasServiceAccount: Boolean;

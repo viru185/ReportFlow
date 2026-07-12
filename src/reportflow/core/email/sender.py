@@ -164,14 +164,22 @@ def send_dev_log_bundle(config: AppConfig, bundle_path: Path, context: dict[str,
     if not to:
         raise ValueError("no developer_bundle_recipients configured")
 
+    note = str(context.get("note", "")).strip()
     msg = EmailMessage()
     msg["From"] = config.smtp.from_address or config.smtp.username or "reportflow@localhost"
-    msg["Subject"] = f"[ReportFlow] Diagnostic bundle — {context.get('hostname', 'host')}"
+    subject = f"[ReportFlow] Diagnostic bundle — {context.get('hostname', 'host')}"
+    if note:
+        # Show the first line of the operator's note in the subject for a quick scan.
+        subject += f" — {note.splitlines()[0][:80]}"
+    msg["Subject"] = subject
     msg["To"] = ", ".join(to)
-    msg.set_content(
+    body = (
         "Attached is the ReportFlow diagnostic bundle (logs + sanitized config). "
         "Secrets have been redacted."
     )
+    if note:
+        body += f"\n\nProblem description from the operator:\n{note}"
+    msg.set_content(body)
     _attach_file(msg, Path(bundle_path))
 
     send_message(config.smtp, msg, to)

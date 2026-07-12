@@ -22,9 +22,9 @@ _HELP_HTML = f"""
 <a href="#updates">Updates</a> ·
 <a href="#advanced">Advanced options</a> ·
 <a href="#pidatalink">PI DataLink &amp; add-ins</a> ·
-<a href="#dryrun">Dry run</a> ·
+<a href="#dryrun">Build only</a> ·
 <a href="#emailalerts">Email failures</a> ·
-<a href="#exportlogs">Export logs</a>
+<a href="#exportlogs">Send logs to dev</a>
 </p>
 
 <h2 id="start">Getting started</h2>
@@ -73,9 +73,11 @@ one <code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per selected sheet.</p>
 <p>Each job has two recipient sets: <b>Production</b> and <b>Test</b>. <i>To</i> is
 required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses).</p>
 <ul>
-<li><b>Test runs</b> always email the <i>test</i> recipients only — never production.</li>
-<li><b>Real runs</b> email production recipients only when <i>“Email report … on real
-    runs”</i> is ticked. Failures never send email; check the logs instead.</li>
+<li><b>Test email</b> runs always email the <i>test</i> recipients only — never production.</li>
+<li><b>Real / scheduled Runs</b> email the production recipients only when <i>“Also email
+    Production recipients on real / scheduled runs”</i> is ticked. <b>If it is unticked, a
+    scheduled or manual Run emails no one at all</b> (not even the test recipients) — it just
+    builds the report. Failures never send email; check the logs instead.</li>
 <li>Emails attach the output Excel and all per-sheet PDFs.</li>
 <li>Every run's history entry shows an <b>email:</b> line — sent to how many recipients,
     or exactly why nothing was sent.</li>
@@ -85,10 +87,17 @@ required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses).</p>
 Placeholders like <code>{{{{ job_name }}}}</code>, <code>{{{{ status }}}}</code> and
 <code>{{{{ run_id }}}}</code> are filled in at send time.</p>
 
-<h2 id="runs">Running &amp; test runs</h2>
-<p>On each job card: <b>Run</b> starts a real run (production email if enabled);
-<b>Test</b> starts a test run (test recipients only, subject prefixed <code>[TEST]</code>).
-Jobs run in parallel, each in its own isolated Excel process. Failed runs are never
+<h2 id="runs">Running a job — three single-click actions</h2>
+<p>Each job card has three buttons, so any run is one click:</p>
+<ul>
+<li><b>▶ Run</b> — a real run. Emails the Production recipients <i>if</i> the job opted in
+    (otherwise it just builds the report and emails no one).</li>
+<li><b>🧪 Test email</b> — builds the report and emails the <i>Test</i> recipients only
+    (subject prefixed <code>[TEST]</code>).</li>
+<li><b>👁 Build only</b> — builds and verifies the report (checks that PI DataLink / your data
+    source produced real values) but <b>sends no email at all</b>.</li>
+</ul>
+<p>Jobs run in parallel, each in its own isolated Excel process. Failed runs are never
 retried automatically — they stay visible in the history.</p>
 
 <h2 id="logs">Logs &amp; history</h2>
@@ -115,6 +124,9 @@ retried automatically — they stay visible in the history.</p>
 <li><b>Support email</b> — receives the diagnostic bundles from "Send logs to support".</li>
 <li><b>Application</b> — max parallel runs, default timeout, log retention, and the
     check-for-updates-on-startup toggle.</li>
+<li><b>Service account (PI DataLink)</b> — set the Windows user the service runs as, right
+    here (see below). Click <b>Use current Windows user</b> to fill in the account you are
+    logged in as, enter its password, and click <b>Validate &amp; apply</b>.</li>
 </ul>
 
 <h2 id="transfer">Import &amp; export</h2>
@@ -155,10 +167,11 @@ upgrades automatically, preserving all jobs, settings, and logs.</p>
     report with Excel errors (<code>#REF!</code>, <code>#N/A</code>, …) is still
     <b>delivered</b>, and the errors are listed as a <i>warning</i> on the run. Tick this only
     if you want any error cell to fail the run instead.</li>
-<li><b>Output contains only the selected sheets</b> (default on) — the other tabs are dropped
-    from the output copy (the source is never modified). <b>Unselected sheets</b> chooses how:
-    <i>Remove</i> deletes them (smaller file, but can break defined names/charts that
-    referenced them, so Office may refuse to open the output); <i>Hide</i> makes them
+<li><b>Non-selected sheets</b> — one dropdown decides what the output copy does with the tabs
+    you did <i>not</i> select (the source is never modified):
+    <i>Keep all sheets</i> leaves every tab visible; <i>Remove</i> deletes them for a smaller
+    file (but can break defined names/charts that referenced them, so Office may refuse to open
+    the output); <i>Hide</i> keeps every sheet in the file but makes the non-selected ones
     very-hidden — references stay intact so the file always opens, but the raw data stays
     inside it. If a delivered report "cannot be opened", switch that job to <i>Hide</i>.</li>
 <li><b>Blank out values</b> — comma-separated cell values removed from the output after
@@ -176,20 +189,21 @@ add-in's worksheet functions are unregistered and every PI cell comes out as
 <code>#NAME?</code>. The report is broken, not empty.</p>
 <p><b>The fix — run the service as a PI-enabled Windows user:</b></p>
 <ul>
-<li><b>Right now, on this machine:</b> open an <b>Administrator</b> PowerShell and run
-    <code>scripts\\set-service-account.ps1 -User "DOMAIN\\your_pi_user"</code>. It switches the
-    ReportFlow service to that account (which must have PI DataLink installed and PI access),
-    grants it the log-on-as-a-service right, and restarts the service — no reinstall needed.</li>
-<li><b>On a fresh install:</b> the installer now asks for an optional <i>service account</i>
-    — enter the PI-enabled user there.</li>
-<li><b>File → Settings → Application → "Service runs as"</b> shows the current account. If it
-    reads <i>LocalSystem</i> (in red), add-ins will not load; the dashboard also shows a
-    warning banner.</li>
+<li><b>In the app (easiest):</b> open <b>File → Settings → Service account</b>, click
+    <b>Use current Windows user</b> (the account you are logged in as — the one that has PI
+    DataLink installed), type its password, and click <b>Validate &amp; apply</b>. ReportFlow
+    checks the credentials with Windows, reconfigures the service to run as that user, and
+    restarts it — no admin prompt and no reinstall. The dashboard's red banner has a
+    <b>Set account…</b> button that jumps straight here.</li>
+<li><b>On a fresh install:</b> the installer asks for an optional <i>service account</i> and
+    validates the credentials before continuing — enter the PI-enabled user there.</li>
+<li><b>Admin PowerShell (alternative):</b> run
+    <code>scripts\\set-service-account.ps1 -User "DOMAIN\\your_pi_user"</code>.</li>
 </ul>
-<p>After switching the account, click <b>🔍 Dry run</b> on the job (see below) to confirm.
-The worker log should show <code>Executing as DOMAIN\\your_pi_user</code> (no trailing
-<code>$</code>) and <code>COM add-in 'PI DataLink': connected=True</code>, with real values
-instead of <code>#NAME?</code>.</p>
+<p>After applying the account, click <b>👁 Build only</b> on the job to confirm. The worker log
+should show <code>Executing as DOMAIN\\your_pi_user</code> (no trailing <code>$</code>) and
+<code>COM add-in 'PI DataLink': connected=True</code>, with real values instead of
+<code>#NAME?</code>.</p>
 <p><b>Error cells &amp; incomplete data.</b> Pre-existing errors like <code>#REF!</code> no
 longer block delivery — the report is sent and the errors appear as a <i>warning</i> on the
 run (blank them out with the <b>Blank out values</b> list, or fail on them by ticking the
@@ -204,23 +218,25 @@ same message when you open it by hand, it carries a Mark-of-the-Web from being d
 right-click → Properties → <b>Unblock</b> (or add its folder as a Trusted Location).
 ReportFlow still generates reports from it because the service opens files via automation.</p>
 
-<h2 id="dryrun">Dry run — check the report without emailing</h2>
-<p>Each job card has a <b>🔍 Dry run</b> button. It builds the full output workbook and runs
-the same checks as a real run, but <b>never sends any email</b> — use it to verify that PI
-DataLink (or any data source) is producing real values before you rely on scheduled delivery.
-The result and any warnings show in the run history.</p>
+<h2 id="dryrun">Build only — check the report without emailing</h2>
+<p>Each job card has a <b>👁 Build only</b> button (previously "Dry run"). It builds the full
+output workbook and runs the same checks as a real run, but <b>never sends any email</b> — use
+it to verify that PI DataLink (or any data source) is producing real values before you rely on
+scheduled delivery. The result and any warnings show in the run history.</p>
 
 <h2 id="emailalerts">When a report email fails</h2>
 <p>If a run builds successfully but the email cannot be sent (wrong SMTP settings, server
-unreachable), ReportFlow now <b>pops a warning</b> — it no longer fails silently. The job
-card also shows a small <b>✉ failed</b> marker, and the run history's <code>email:</code>
-line gives the reason. Fix the SMTP settings under File → Settings and re-run.</p>
+unreachable), the run history shows an <b>inline warning banner</b> for that run — it no
+longer fails silently, and no pop-up interrupts you while a run is live. The job card also
+shows a small <b>✉ failed</b> marker, and the run history's <code>email:</code> line gives the
+reason. Fix the SMTP settings under File → Settings and re-run.</p>
 
-<h2 id="exportlogs">Exporting logs when email is down</h2>
-<p><b>Logs → Export logs to zip…</b> writes the full diagnostic bundle (logs + sanitized
-settings, never passwords) to a zip you choose — handy when the mail server is unreachable and
-you need to send the logs to support by hand. (<b>Send logs to support…</b> still emails the
-same bundle when SMTP works.)</p>
+<h2 id="exportlogs">Sending logs to the developer</h2>
+<p>Both <b>Logs → Export logs to zip…</b> and <b>Logs → Send logs to support…</b> let you type
+a short <b>description of the problem</b> first — it travels inside the bundle (and in the email
+subject/body for the "Send" option) so the developer knows what to look for. Export writes the
+bundle (logs + sanitized settings, never passwords) to a zip you choose — handy when the mail
+server is unreachable; Send emails the same bundle to the configured support address.</p>
 """
 
 
