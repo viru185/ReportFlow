@@ -141,6 +141,18 @@ def test_export_logs_writes_zip(client):
     assert bundle.exists() and bundle.suffix == ".zip" and bundle.stat().st_size > 0
 
 
+def test_export_logs_carries_operator_note(client):
+    import json
+    import zipfile
+
+    c, _ = client
+    resp = c.post("/system/export-logs", json={"note": "OSI job failed on #REF!"})
+    assert resp.status_code == 200
+    with zipfile.ZipFile(Path(resp.json()["bundle"])) as zf:
+        meta = json.loads(zf.read("metadata.json"))
+    assert meta["note"] == "OSI job failed on #REF!"
+
+
 def test_status_reports_service_account(client):
     c, _ = client
     status = c.get("/system/status").json()

@@ -165,10 +165,11 @@ class JobEditorDialog(QDialog):
 
         self.subject = QLineEdit()
         self.subject.setToolTip("Email subject; test runs are automatically prefixed [TEST].")
-        self.send_email = QCheckBox("Email report to production recipients on real runs")
+        self.send_email = QCheckBox("Also email Production recipients on real / scheduled runs")
         self.send_email.setToolTip(
-            "When ticked, successful REAL runs email the production recipients. Test runs "
-            "always email the test recipients regardless."
+            "When ticked, successful real and scheduled Runs email the Production recipients. "
+            "When unticked, real/scheduled Runs email no one. Test email runs always go to the "
+            "Test recipients regardless."
         )
         self.email_hint = QLabel("")
         self.email_hint.setProperty("muted", True)
@@ -256,19 +257,22 @@ class JobEditorDialog(QDialog):
             "(#REF!, #NAME?, …). Off = the report is delivered anyway and the error cells are "
             "reported as a warning; use 'Blank out values' below to strip specific errors."
         )
-        self.keep_only_selected = QCheckBox("Output contains only the selected sheets")
-        self.keep_only_selected.setChecked(True)
-        self.keep_only_selected.setToolTip(
-            "Keep only the selected sheets in the OUTPUT copy. The source is never modified."
-        )
-        self.unselected_mode = QComboBox()
-        self.unselected_mode.addItem("Remove (smaller file)", "remove")
-        self.unselected_mode.addItem("Hide (always opens)", "hide")
-        self.unselected_mode.setToolTip(
-            "How to drop the non-selected sheets. Remove deletes them (smaller file, but can "
-            "break defined names/charts that referenced them so Office may refuse to open the "
-            "output). Hide makes them very-hidden — references stay intact and the file always "
-            "opens, but the raw data stays inside it."
+        # One control for what happens to the sheets you did NOT select. Keep-all and Hide
+        # both retain every sheet in the file (Hide just makes the extras very-hidden);
+        # Remove deletes them. Data is derived into the two config fields in payload().
+        self.nonselected_mode = QComboBox()
+        self.nonselected_mode.addItem("Keep all sheets (visible)", "keep")
+        self.nonselected_mode.addItem("Remove them (smaller file)", "remove")
+        self.nonselected_mode.addItem("Hide them (kept in file, always opens)", "hide")
+        self.nonselected_mode.setCurrentIndex(1)  # default Remove — matches JobConfig default
+        self.nonselected_mode.setToolTip(
+            "What to do in the OUTPUT copy with the sheets you did not select (the source is "
+            "never modified):\n"
+            "• Keep all — leave every sheet visible.\n"
+            "• Remove — delete them for a smaller file (can break charts/defined names that "
+            "referenced them, so Office may refuse to open the output).\n"
+            "• Hide — keep every sheet in the file but make the non-selected ones very-hidden; "
+            "references stay intact and the file always opens, but the raw data stays inside it."
         )
         self.blank_values = QLineEdit()
         self.blank_values.setPlaceholderText("#REF!, #N/A, Tag not found, No Data")
@@ -284,8 +288,7 @@ class JobEditorDialog(QDialog):
         adv_form.addRow("Extra wait after refresh", self.post_refresh_wait)
         adv_form.addRow("", self.fail_if_empty)
         adv_form.addRow("", self.fail_if_errors)
-        adv_form.addRow("", self.keep_only_selected)
-        adv_form.addRow("Unselected sheets", self.unselected_mode)
+        adv_form.addRow("Non-selected sheets", self.nonselected_mode)
         adv_form.addRow("Blank out values", self.blank_values)
         adv_form.addRow("Notes", self.notes)
 
@@ -307,12 +310,14 @@ class JobEditorDialog(QDialog):
     def _update_email_hint(self, checked: bool) -> None:
         if checked:
             self.email_hint.setText(
-                "Successful real && scheduled runs will email the production recipients."
+                "Successful scheduled and manual Runs will email the Production recipients. "
+                "Test email runs still go only to the Test recipients."
             )
         else:
             self.email_hint.setText(
-                "Real && scheduled runs will NOT send email — only Test runs email the "
-                "test recipients. Tick the box above to email production on real runs."
+                "Scheduled and manual Runs will build the report but email NO ONE (not even "
+                "the Test recipients). Only a Test email run sends mail, to the Test "
+                "recipients. Tick this to also email Production on real/scheduled runs."
             )
 
     # -- actions -----------------------------------------------------------------
@@ -427,8 +432,12 @@ class JobEditorDialog(QDialog):
             "post_refresh_wait_seconds": self.post_refresh_wait.value(),
             "fail_if_sheet_empty": self.fail_if_empty.isChecked(),
             "fail_if_sheet_has_errors": self.fail_if_errors.isChecked(),
-            "keep_only_selected_sheets": self.keep_only_selected.isChecked(),
-            "unselected_sheets_mode": self.unselected_mode.currentData(),
+            # One dropdown -> two config fields. "keep" leaves all sheets; "remove"/"hide"
+            # prune to the selected ones (mode says how). Hide is only meaningful when pruning.
+            "keep_only_selected_sheets": self.nonselected_mode.currentData() != "keep",
+            "unselected_sheets_mode": (
+                "hide" if self.nonselected_mode.currentData() == "hide" else "remove"
+            ),
             "blank_out_values": _split_csv(self.blank_values.text()),
             "subject": self.subject.text().strip() or None,
             "send_report_email": self.send_email.isChecked(),
@@ -468,9 +477,13 @@ class JobEditorDialog(QDialog):
         self.post_refresh_wait.setValue(job.get("post_refresh_wait_seconds") or 0)
         self.fail_if_empty.setChecked(job.get("fail_if_sheet_empty", True))
         self.fail_if_errors.setChecked(job.get("fail_if_sheet_has_errors", False))
-        self.keep_only_selected.setChecked(job.get("keep_only_selected_sheets", True))
-        mode_index = self.unselected_mode.findData(job.get("unselected_sheets_mode", "remove"))
-        self.unselected_mode.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        # Rebuild the single dropdown from the two stored fields.
+        if not job.get("keep_only_selected_sheets", True):
+            nonselected = "keep"
+        else:
+            nonselected = "hide" if job.get("unselected_sheets_mode") == "hide" else "remove"
+        mode_index = self.nonselected_mode.findData(nonselected)
+        self.nonselected_mode.setCurrentIndex(mode_index if mode_index >= 0 else 1)
         self.blank_values.setText(_join_csv(job.get("blank_out_values")))
         self.notes.setPlainText(job.get("notes", ""))
         self.subject.setText(job.get("subject") or "")
