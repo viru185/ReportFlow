@@ -170,9 +170,11 @@ class RunHistoryDialog(QDialog):
             if warnings
             else ""
         )
+        duration = r.get("duration_seconds")
+        took = f" · took {duration:.0f}s" if isinstance(duration, int | float) else ""
         self.details.setText(
             f"<b>{r['run_id']}</b> · trigger: {r.get('trigger')} · test: {r.get('is_test')}<br>"
-            f"started: {r.get('started_at')} · finished: {r.get('finished_at') or '—'}<br>"
+            f"started: {r.get('started_at')} · finished: {r.get('finished_at') or '—'}{took}<br>"
             f"output: {r.get('output_xlsx') or '—'}<br>"
             f"email: {r.get('email_note') or '—'}"
             f"{('<br>error: ' + r['error_summary']) if r.get('error_summary') else ''}"

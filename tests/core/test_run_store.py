@@ -68,6 +68,17 @@ def test_email_note_round_trip(tmp_path):
     assert store.get("r1").email_note == "sent to 2 production recipient(s)"
 
 
+def test_duration_and_warnings_round_trip(tmp_path):
+    store = RunStore(tmp_path / "runs.db")
+    rec = _rec()
+    rec.duration_seconds = 42.5
+    rec.warnings = ["sheet 'Detail': 12 error cell(s) (#REF!) — delivered anyway"]
+    store.upsert(rec)
+    got = store.get("r1")
+    assert got.duration_seconds == 42.5
+    assert got.warnings == rec.warnings  # was silently dropped before the warnings column
+
+
 def test_migration_adds_email_note_to_old_db(tmp_path):
     """A database created before the email_note column existed gains it on open."""
     import sqlite3

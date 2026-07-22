@@ -296,6 +296,23 @@ def test_warnings_surface_on_record_and_email_context(tmp_path, monkeypatch):
     assert ctx["warnings"] == rec.warnings
 
 
+def test_duration_lands_on_record_and_in_email_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    job = _job(tmp_path)
+    launcher = _launcher(tmp_path, _config(job))
+
+    rec = launcher.run_job_by_name("daily", RunTrigger.DRY_RUN)
+
+    assert isinstance(rec.duration_seconds, float) and rec.duration_seconds >= 0
+    ctx = launcher._email_context(job, rec)
+    # A real number renders (e.g. "3" or "3.4") — never the old "" that made "Duration  s".
+    assert ctx["duration_seconds"] not in ("", "?", None)
+    float(ctx["duration_seconds"])  # parseable
+    # And it survives the SQLite round-trip along with warnings.
+    stored = launcher.run_store.get(rec.run_id)
+    assert stored is not None and stored.duration_seconds == rec.duration_seconds
+
+
 def test_run_history_persisted(tmp_path, monkeypatch):
     monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
     config = _config(_job(tmp_path))
