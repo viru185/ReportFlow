@@ -66,6 +66,12 @@ class ApiClient:
     def export_logs(self, note: str = "") -> dict:
         return self._request("POST", "/system/export-logs", json={"note": note})
 
+    def purge_logs(self, older_than_days: int | None = None, *, everything: bool = False) -> dict:
+        payload: dict[str, Any] = {"all": everything}
+        if older_than_days is not None:
+            payload["older_than_days"] = older_than_days
+        return self._request("POST", "/system/purge-logs", json=payload)
+
     def get_service_account(self) -> dict:
         return self._request("GET", "/system/service-account")
 

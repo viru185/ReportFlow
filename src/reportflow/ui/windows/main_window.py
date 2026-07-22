@@ -112,6 +112,9 @@ class MainWindow(QMainWindow):
         logs_menu.addAction("Export logs to zip…", self._export_logs)
         logs_menu.addAction("Send logs to support…", self._send_support_logs)
         logs_menu.addSeparator()
+        logs_menu.addAction("Delete old logs…", self._purge_old_logs)
+        logs_menu.addAction("Delete ALL logs…", self._purge_all_logs)
+        logs_menu.addSeparator()
         logs_menu.addAction("Open data folder", self._open_data_folder)
 
         help_menu = bar.addMenu("&Help")
@@ -533,6 +536,56 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "Sent", f"Diagnostic bundle sent to: {', '.join(resp.get('recipients', []))}"
         )
+
+    @staticmethod
+    def _purge_summary(stats: dict) -> str:
+        mb = stats.get("bytes_freed", 0) / 1e6
+        return (
+            f"Freed {mb:.1f} MB — {stats.get('run_dirs', 0)} run folder(s), "
+            f"{stats.get('bundles', 0)} bundle(s), {stats.get('log_files', 0)} log file(s), "
+            f"{stats.get('db_rows', 0)} history row(s)."
+        )
+
+    def _purge_old_logs(self) -> None:
+        try:
+            days = int(self._api.get_config().get("app", {}).get("log_retention_days", 30))
+        except ApiError:
+            days = 30
+        confirm = QMessageBox.question(
+            self,
+            "Delete old logs",
+            f"Delete run folders, log files, and diagnostic bundles older than {days} days "
+            f"(the retention setting)?\n\nRun history rows that old are removed too. "
+            "Active runs are never touched.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            stats = self._api.purge_logs(days)
+        except ApiError as e:
+            QMessageBox.warning(self, "Delete failed", str(e))
+            return
+        QMessageBox.information(self, "Old logs deleted", self._purge_summary(stats))
+
+    def _purge_all_logs(self) -> None:
+        confirm = QMessageBox.warning(
+            self,
+            "Delete ALL logs",
+            "This permanently deletes ALL run history, run folders, log files, and "
+            "diagnostic bundles — regardless of age. Only runs currently in progress "
+            "are kept.\n\nThere is no undo. Delete everything?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            stats = self._api.purge_logs(everything=True)
+        except ApiError as e:
+            QMessageBox.warning(self, "Delete failed", str(e))
+            return
+        QMessageBox.information(self, "All logs deleted", self._purge_summary(stats))
+        self.refresh()
 
     # -- help menu actions ----------------------------------------------------------
 

@@ -47,14 +47,16 @@ def configure_logging(process_name: str, *, level: str = "INFO", to_console: boo
     _configured.add(process_name)
 
 
-def reconfigure(process_name: str, *, level: str, to_console: bool = True) -> None:
-    """Re-apply the process sinks at a new level (e.g. debug toggle changed at runtime)."""
-    _apply(process_name, level=level, to_console=to_console)
+def reconfigure(
+    process_name: str, *, level: str, to_console: bool = True, retention_days: int = 30
+) -> None:
+    """Re-apply the process sinks with new settings (debug toggle / retention changed)."""
+    _apply(process_name, level=level, to_console=to_console, retention_days=retention_days)
     _configured.add(process_name)
-    logger.info("Log level set to {}", level)
+    logger.info("Log level set to {} (retention {} days)", level, retention_days)
 
 
-def _apply(process_name: str, *, level: str, to_console: bool) -> None:
+def _apply(process_name: str, *, level: str, to_console: bool, retention_days: int = 30) -> None:
     logger.remove()
     logger.configure(patcher=_patch)
 
@@ -67,7 +69,9 @@ def _apply(process_name: str, *, level: str, to_console: bool) -> None:
         log_path,
         level=level,
         rotation="10 MB",
-        retention="30 days",
+        # Honors the Settings value (log_retention_days) — hardcoding this was why the
+        # setting silently did nothing before 0.8.0.
+        retention=f"{max(1, retention_days)} days",
         enqueue=True,
         backtrace=False,
         diagnose=False,
