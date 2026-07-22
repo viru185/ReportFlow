@@ -63,6 +63,17 @@ class FakeApi:
         self.sent_note = note
         return {"recipients": ["dev@x.com"]}
 
+    def purge_logs(self, older_than_days=None, *, everything=False):
+        self.purged = (older_than_days, everything)
+        return {
+            "ok": True,
+            "run_dirs": 3,
+            "bundles": 1,
+            "log_files": 2,
+            "db_rows": 3,
+            "bytes_freed": 5_000_000,
+        }
+
     def get_service_account(self):
         return {
             "account": "WORKGROUP\\HOST$" if self._is_system else "CORP\\pi_reports",
@@ -422,6 +433,34 @@ def test_main_window_export_logs_saves_zip(qtbot, tmp_path, monkeypatch):
     win._export_logs()
     assert api.exported and dest.exists()
     assert api.export_note == "MURI is empty"  # the user's note rides along
+
+
+def test_main_window_purge_old_and_all_logs(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows import main_window as mw
+
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *a, **k: shown.append(a[2]))
+    )
+
+    api = FakeApi(jobs=[])
+    win = mw.MainWindow(api)
+    qtbot.addWidget(win)
+
+    win._purge_old_logs()
+    assert api.purged == (30, False)  # retention days from config
+    assert shown and "5.0 MB" in shown[-1] and "3 run folder(s)" in shown[-1]
+
+    win._purge_all_logs()
+    assert api.purged == (None, True)
 
 
 def test_main_window_export_logs_cancel_aborts(qtbot, monkeypatch):

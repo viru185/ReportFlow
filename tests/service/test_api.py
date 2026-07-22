@@ -169,6 +169,24 @@ def test_legacy_test_endpoint_removed(client):
     assert c.post("/jobs/daily/test").status_code in (404, 405)
 
 
+def test_purge_logs_endpoint(client):
+    c, _ = client
+    from reportflow.core import paths
+
+    stale = paths.runs_dir() / "stalerun"
+    stale.mkdir(parents=True)
+    (stale / "worker.log").write_text("x", encoding="utf-8")
+
+    # Validation: must pass a window or all=true.
+    assert c.post("/system/purge-logs", json={}).status_code == 400
+
+    resp = c.post("/system/purge-logs", json={"all": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True and body["run_dirs"] >= 1
+    assert not stale.exists()
+
+
 def test_export_logs_writes_zip(client):
     c, _ = client
     resp = c.post("/system/export-logs")
