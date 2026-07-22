@@ -88,6 +88,20 @@ class FakeApi:
         self._check()
         return self._jobs
 
+    def get_job(self, name):
+        for j in self._jobs:
+            if j.get("name") == name:
+                return {"job": dict(j)}
+        raise ApiError(f"unknown job: {name}", 404)
+
+    def update_job(self, name, job):
+        self.updated_job = (name, job)
+        return {"ok": True, "name": name}
+
+    def create_job(self, job):
+        self.created_job = job
+        return {"ok": True, "name": job.get("name")}
+
     def workbook_sheets(self, path):
         return self._sheets
 
@@ -344,6 +358,120 @@ def test_main_window_live_card_hides_go_live(qtbot):
     labels = [b.text() for b in win.findChildren(QPushButton)]
     assert not any("Go live" in t for t in labels)
     assert any(w.text() == "LIVE" for w in win.findChildren(QLabel))
+
+
+def test_main_window_disabled_card_is_unmissable(qtbot):
+    from PySide6.QtWidgets import QFrame, QLabel, QPushButton
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    disabled = dict(_sample_job_dict(), enabled=False)
+    win = MainWindow(FakeApi(jobs=[disabled]))
+    qtbot.addWidget(win)
+
+    # The whole card is dimmed via a graphics effect…
+    frames = [f for f in win.jobs_container.findChildren(QFrame) if f.property("card")]
+    assert frames and frames[0].graphicsEffect() is not None
+    # …with a loud pill, a paused schedule line, and a one-click Resume.
+    labels = [w.text() for w in win.findChildren(QLabel)]
+    assert any("⏸ DISABLED" in t for t in labels)
+    assert any("schedule paused" in t for t in labels)
+    buttons = [b.text() for b in win.findChildren(QPushButton)]
+    assert any("Resume" in t for t in buttons)
+    assert not any(t == "⏸" for t in buttons)  # no pause button on a paused card
+
+
+def test_main_window_enabled_card_not_dimmed_and_has_pause(qtbot):
+    from PySide6.QtWidgets import QFrame, QPushButton
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))
+    qtbot.addWidget(win)
+    frames = [f for f in win.jobs_container.findChildren(QFrame) if f.property("card")]
+    assert frames and frames[0].graphicsEffect() is None
+    buttons = [b.text() for b in win.findChildren(QPushButton)]
+    assert any(t == "⏸" for t in buttons)
+    assert not any("Resume" in t for t in buttons)
+
+
+def test_main_window_pause_and_resume_flip_enabled(qtbot):
+    from reportflow.ui.windows.main_window import MainWindow
+
+    api = FakeApi(jobs=[_sample_job_dict()])
+    win = MainWindow(api)
+    qtbot.addWidget(win)
+
+    win._set_enabled("daily", False)
+    name, payload = api.updated_job
+    assert name == "daily" and payload["enabled"] is False
+
+    win._set_enabled("daily", True)
+    _, payload = api.updated_job
+    assert payload["enabled"] is True
+
+
+def test_main_window_running_card_locks_run_buttons(qtbot):
+    from datetime import datetime
+
+    from PySide6.QtWidgets import QLabel, QPushButton
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    running = dict(
+        _sample_job_dict(),
+        last_status="running",
+        last_run_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    win = MainWindow(FakeApi(jobs=[running]))
+    qtbot.addWidget(win)
+
+    by_text = {b.text(): b for b in win.findChildren(QPushButton)}
+    assert not by_text["▶ Run"].isEnabled()
+    assert not by_text["👁 Build only"].isEnabled()
+    assert by_text["✎ Edit"].isEnabled()  # only the run actions lock
+    # The badge carries a live elapsed suffix (e.g. "running · 3s").
+    assert any("running ·" in w.text() for w in win.findChildren(QLabel))
+
+
+def test_main_window_open_last_report(qtbot, tmp_path, monkeypatch):
+    from reportflow.ui.windows import main_window as mw
+
+    report = tmp_path / "MD DPR_20260722.xlsx"
+    report.write_bytes(b"PK\x03\x04")
+    opened = []
+    monkeypatch.setattr(mw.subprocess, "Popen", lambda args, **k: opened.append(args) or None)
+    win = mw.MainWindow(FakeApi(jobs=[]))
+    qtbot.addWidget(win)
+
+    win._open_last_report({"last_output_xlsx": str(report)})
+    assert opened and opened[0][0] == "explorer" and str(report) in opened[0]
+
+    win._open_last_report({"last_output_xlsx": None})
+    assert "No successful report yet" in win.statusBar().currentMessage()
+
+
+def test_duplicate_prefills_editor_as_fresh_testing_job(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    source = dict(
+        _sample_job_dict(),
+        stage="live",
+        enabled=False,
+        email_template_path="C:/ProgramData/ReportFlow/templates/jobs/daily.html",
+    )
+    dlg = JobEditorDialog(FakeApi(), None, prefill=source)
+    qtbot.addWidget(dlg)
+
+    assert dlg.name.text() == "" and not dlg.name.isReadOnly()  # fresh, editable name
+    assert dlg.stage.currentData() == "testing" and not dlg.stage.isEnabled()
+    assert dlg.enabled.isChecked()
+    assert dlg.output_dir.text() == "C:/reports"  # settings copied
+    dlg.name.setText("daily_copy")
+    payload = dlg.payload()
+    assert payload["stage"] == "testing"
+    assert "email_template_path" not in payload  # template never shared between jobs
+    assert "not copied" in dlg.template_status.text()
 
 
 def test_main_window_go_live_confirms_and_calls_api(qtbot, monkeypatch):

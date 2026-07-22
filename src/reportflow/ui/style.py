@@ -358,13 +358,27 @@ def card_frame() -> QFrame:
     return frame
 
 
-def status_badge(status: str | None) -> QLabel:
-    """A small colored pill for a run/job status."""
+def status_badge(status: str | None, suffix: str = "") -> QLabel:
+    """A small colored pill for a run/job status; ``suffix`` appends live detail
+    (e.g. the elapsed seconds while a run is in flight)."""
     text = (status or "never run").replace("_", " ")
+    if suffix:
+        text = f"{text} {suffix}"
     fg, bg = status_colors(status)
     label = QLabel(text)
     label.setStyleSheet(
         f"color: {fg}; background: {bg}; border-radius: 8px; padding: 2px 10px; font-weight: 600;"
+    )
+    return label
+
+
+def disabled_badge() -> QLabel:
+    """Grey pill marking a job whose scheduling is paused (manual runs still work)."""
+    label = QLabel("⏸ DISABLED")
+    label.setToolTip("Scheduling is paused — click ▸ Resume to re-enable. Manual runs still work.")
+    label.setStyleSheet(
+        "color: #c3c8d4; background: #2b2f3a; border-radius: 8px; padding: 2px 10px; "
+        "font-weight: 600;"
     )
     return label
 
