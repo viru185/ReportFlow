@@ -130,7 +130,43 @@ def test_dry_run_completes_without_email(client):
     rec = c.get(f"/runs/{run_id}").json()
     assert rec["trigger"] == "dry_run"
     assert rec["email_sent"] is False
-    assert rec["email_note"] == "not sent — dry run (build only)"
+    assert rec["email_note"] == "not sent — build only"
+
+
+def test_new_job_starts_in_testing_and_run_is_test_flagged(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+
+    assert c.get("/jobs/daily").json()["job"]["stage"] == "testing"
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["stage"] == "testing"
+    assert summary["prod_recipients"] == ["boss@corp.example.com"]
+
+    run_id = c.post("/jobs/daily/run").json()["run_id"]
+    _wait_done(c, run_id)
+    assert c.get(f"/runs/{run_id}").json()["is_test"] is True  # stage decides
+
+
+def test_stage_endpoint_promotes_and_persists(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+
+    resp = c.post("/jobs/daily/stage", json={"stage": "live"})
+    assert resp.status_code == 200 and resp.json()["stage"] == "live"
+    assert c.get("/jobs/daily").json()["job"]["stage"] == "live"
+
+    # Demote works too, and bad values are rejected.
+    assert c.post("/jobs/daily/stage", json={"stage": "testing"}).status_code == 200
+    assert c.post("/jobs/daily/stage", json={"stage": "nope"}).status_code == 422
+
+
+def test_legacy_test_endpoint_removed(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    assert c.post("/jobs/daily/test").status_code in (404, 405)
 
 
 def test_export_logs_writes_zip(client):

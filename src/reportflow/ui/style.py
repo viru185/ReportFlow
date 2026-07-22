@@ -369,6 +369,22 @@ def status_badge(status: str | None) -> QLabel:
     return label
 
 
+def stage_badge(stage: str) -> QLabel:
+    """Lifecycle pill: amber TESTING (emails testers) / green LIVE (emails the client)."""
+    live = stage == "live"
+    fg, bg = ("#4ade80", "#14331f") if live else ("#fbbf24", "#3a2c10")
+    label = QLabel("LIVE" if live else "TESTING")
+    label.setToolTip(
+        "Runs email the Production recipients."
+        if live
+        else "Runs email only the Test recipients until you click Go live."
+    )
+    label.setStyleSheet(
+        f"color: {fg}; background: {bg}; border-radius: 8px; padding: 2px 10px; font-weight: 600;"
+    )
+    return label
+
+
 def connection_pill(connected: bool) -> str:
     """Rich-text for the header connection indicator."""
     if connected:

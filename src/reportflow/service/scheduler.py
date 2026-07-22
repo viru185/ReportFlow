@@ -61,7 +61,9 @@ class SchedulerService:
                 logger.info("Scheduled job {!r}: {}", job.name, cron)
 
     def _fire(self, name: str) -> None:
+        # Recipients resolve from the job's CURRENT stage at fire time (testing -> test
+        # recipients, live -> production), so promoting a job needs no re-scheduling.
         try:
-            self.launcher.submit_job_by_name(name, RunTrigger.SCHEDULED, is_test=False)
+            self.launcher.submit_job_by_name(name, RunTrigger.SCHEDULED)
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to launch scheduled job {!r}: {}", name, e)

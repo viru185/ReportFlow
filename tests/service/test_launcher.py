@@ -127,7 +127,7 @@ def test_missing_worker_records_actionable_error(tmp_path, monkeypatch):
         lambda: _config(_job(tmp_path)),
         worker_command=[str(tmp_path / "does-not-exist.exe")],
     )
-    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
 
     assert rec.status is RunStatus.CRASHED
     assert "worker executable not found" in (rec.error_summary or "")
@@ -164,45 +164,84 @@ def test_resolve_output_paths_no_pdf_when_disabled(tmp_path):
     assert pdf is None
 
 
-def test_success_real_run_no_email_when_not_optedin(tmp_path, monkeypatch):
-    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
-    job = _job(tmp_path, send_report_email=False)
-    launcher = _launcher(tmp_path, _config(job))
-
-    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
-
-    assert rec.status is RunStatus.SUCCESS
-    assert rec.email_sent is False
-    assert "'Email report on real runs' option is off" in (rec.email_note or "")
-    assert len(rec.pdf_paths) == 2
-    assert Path(rec.output_xlsx).exists()
-
-
-def test_success_real_run_emails_when_opted_in(tmp_path, monkeypatch):
+def test_testing_stage_run_emails_test_recipients(tmp_path, monkeypatch):
+    """A testing-stage job's manual run emails ONLY the test recipients ([TEST] flow)."""
     monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
     handler = _Capture()
     port = _free_port()
     controller = Controller(handler, hostname="127.0.0.1", port=port)
     controller.start()
     try:
-        job = _job(tmp_path, send_report_email=True)
+        job = _job(tmp_path)  # stage defaults to "testing"
         launcher = _launcher(tmp_path, _config(job, smtp_port=port))
-        rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+        rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
     finally:
         controller.stop()
 
+    assert rec.status is RunStatus.SUCCESS
+    assert rec.is_test is True  # stage decides, not the caller
+    assert rec.email_sent is True
+    assert rec.email_note == "sent to 1 test recipient(s) — job is in Testing"
+    assert handler.envelopes and set(handler.envelopes[0]) == {"dev@corp.example.com"}
+    assert len(rec.pdf_paths) == 2
+    assert Path(rec.output_xlsx).exists()
+
+
+def test_scheduled_run_in_testing_also_emails_test_recipients(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    handler = _Capture()
+    port = _free_port()
+    controller = Controller(handler, hostname="127.0.0.1", port=port)
+    controller.start()
+    try:
+        job = _job(tmp_path)
+        launcher = _launcher(tmp_path, _config(job, smtp_port=port))
+        rec = launcher.run_job_by_name("daily", RunTrigger.SCHEDULED)
+    finally:
+        controller.stop()
+
+    assert rec.is_test is True
+    assert handler.envelopes and set(handler.envelopes[0]) == {"dev@corp.example.com"}
+
+
+def test_live_stage_run_emails_production(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    handler = _Capture()
+    port = _free_port()
+    controller = Controller(handler, hostname="127.0.0.1", port=port)
+    controller.start()
+    try:
+        job = _job(tmp_path, stage="live")
+        launcher = _launcher(tmp_path, _config(job, smtp_port=port))
+        rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
+    finally:
+        controller.stop()
+
+    assert rec.is_test is False
     assert rec.email_sent is True
     assert rec.email_note == "sent to 1 production recipient(s)"
     assert handler.envelopes and set(handler.envelopes[0]) == {"boss@corp.example.com"}
 
 
+def test_dry_run_never_emails_even_when_live(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    job = _job(tmp_path, stage="live")
+    launcher = _launcher(tmp_path, _config(job))
+
+    rec = launcher.run_job_by_name("daily", RunTrigger.DRY_RUN)
+
+    assert rec.status is RunStatus.SUCCESS
+    assert rec.email_sent is False
+    assert rec.email_note == "not sent — build only"
+
+
 def test_smtp_down_records_failed_note_without_failing_run(tmp_path, monkeypatch):
     monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
     # SMTP points at a refused port -> send raises -> run still succeeds, note says failed.
-    job = _job(tmp_path, send_report_email=True)
+    job = _job(tmp_path, stage="live")
     launcher = _launcher(tmp_path, _config(job, smtp_port=1))
 
-    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
 
     assert rec.status is RunStatus.SUCCESS
     assert rec.email_sent is False
@@ -211,10 +250,10 @@ def test_smtp_down_records_failed_note_without_failing_run(tmp_path, monkeypatch
 
 def test_fail_records_failed_and_no_email(tmp_path, monkeypatch):
     monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "fail")
-    job = _job(tmp_path, send_report_email=True)
+    job = _job(tmp_path, stage="live")
     launcher = _launcher(tmp_path, _config(job))
 
-    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
 
     assert rec.status is RunStatus.FAILED
     assert rec.email_sent is False
@@ -226,7 +265,7 @@ def test_crash_without_result_is_crashed(tmp_path, monkeypatch):
     monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "crash")
     launcher = _launcher(tmp_path, _config(_job(tmp_path)))
 
-    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
 
     assert rec.status is RunStatus.CRASHED
     assert rec.exit_code == 3
@@ -237,37 +276,18 @@ def test_timeout_kills_and_records_timed_out(tmp_path, monkeypatch):
     job = _job(tmp_path)
     launcher = _launcher(tmp_path, _config(job, timeout=1))
 
-    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
 
     assert rec.status is RunStatus.TIMED_OUT
     assert "timed out" in (rec.error_summary or "")
 
 
-def test_test_run_sends_email_to_test_recipients(tmp_path, monkeypatch):
-    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
-    handler = _Capture()
-    port = _free_port()
-    controller = Controller(handler, hostname="127.0.0.1", port=port)
-    controller.start()
-    try:
-        job = _job(tmp_path, send_report_email=False)  # test run emails regardless
-        launcher = _launcher(tmp_path, _config(job, smtp_port=port))
-        rec = launcher.run_job_by_name("daily", RunTrigger.TEST, is_test=True)
-    finally:
-        controller.stop()
-
-    assert rec.status is RunStatus.SUCCESS
-    assert rec.email_sent is True
-    assert rec.email_note == "sent to 1 test recipient(s)"
-    assert handler.envelopes and set(handler.envelopes[0]) == {"dev@corp.example.com"}
-
-
 def test_warnings_surface_on_record_and_email_context(tmp_path, monkeypatch):
     monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "warn")
-    job = _job(tmp_path, send_report_email=False)
+    job = _job(tmp_path)
     launcher = _launcher(tmp_path, _config(job))
 
-    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+    rec = launcher.run_job_by_name("daily", RunTrigger.DRY_RUN)  # build only: no email try
 
     assert rec.status is RunStatus.SUCCESS  # delivered despite error cells
     assert rec.warnings and "#REF!" in rec.warnings[0]
@@ -280,7 +300,7 @@ def test_run_history_persisted(tmp_path, monkeypatch):
     monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
     config = _config(_job(tmp_path))
     launcher = _launcher(tmp_path, config)
-    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL, is_test=False)
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
 
     stored = launcher.run_store.get(rec.run_id)
     assert stored is not None and stored.status is RunStatus.SUCCESS

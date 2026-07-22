@@ -130,6 +130,28 @@ def test_error_and_unselected_mode_defaults_and_round_trip():
     assert loaded.unselected_sheets_mode == "hide"
 
 
+def test_stage_defaults_to_testing_and_round_trips():
+    assert _sample_job().stage == "testing"  # new jobs verify internally first
+
+    cfg = default_config()
+    cfg.jobs.append(_sample_job(stage="live"))
+    save_config(cfg)
+    assert load_config().jobs[0].stage == "live"
+
+    with pytest.raises(ValidationError):
+        _sample_job(stage="production")  # only testing|live
+
+
+def test_legacy_send_report_email_migrates_to_stage():
+    # Pre-0.8 configs stored send_report_email; True meant "emails production" -> live.
+    assert _sample_job(send_report_email=True).stage == "live"
+    assert _sample_job(send_report_email=False).stage == "testing"
+    # An explicit stage wins over the legacy flag, and the flag is never persisted.
+    job = _sample_job(send_report_email=True, stage="testing")
+    assert job.stage == "testing"
+    assert "send_report_email" not in job.model_dump()
+
+
 def test_debug_logging_setting_round_trips():
     cfg = default_config()
     assert cfg.app.debug_logging is False

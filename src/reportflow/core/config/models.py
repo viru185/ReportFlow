@@ -123,11 +123,23 @@ class JobConfig(_Base):
     subject: str | None = None
     prod: Recipients
     test: Recipients
-    # Real (non-test) runs email prod recipients only when this is explicitly enabled.
-    # Test runs always email the test recipients regardless of this flag.
-    send_report_email: bool = False
+    # Job lifecycle: a new job starts in "testing" — EVERY run (manual or scheduled) emails
+    # only the Test recipients, so the report is verified internally first. Promoting to
+    # "live" switches runs to the Production recipients. Replaces the old
+    # send_report_email opt-in checkbox (accepted on input for migration, never written).
+    stage: Literal["testing", "live"] = "testing"
 
     notes: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_send_report_email(cls, data: object) -> object:
+        # Pre-0.8 configs have send_report_email instead of stage: True meant "emails
+        # production on real runs", which maps to live; False/absent maps to testing.
+        if isinstance(data, dict) and "send_report_email" in data:
+            legacy = data.pop("send_report_email")
+            data.setdefault("stage", "live" if legacy else "testing")
+        return data
 
     @field_validator("name")
     @classmethod

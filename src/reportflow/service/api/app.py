@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from loguru import logger
@@ -146,6 +146,10 @@ class DevBundleRequest(BaseModel):
     note: str = ""
 
 
+class StageUpdate(BaseModel):
+    stage: Literal["testing", "live"]
+
+
 class SmtpTestRequest(BaseModel):
     host: str = ""
     port: int = 587
@@ -199,6 +203,8 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         return {
             "name": job.name,
             "enabled": job.enabled,
+            "stage": job.stage,
+            "prod_recipients": [str(a) for a in job.prod.to],
             "schedule_crons": job.schedule_crons,
             "sheet_names": job.sheet_names,
             "last_status": str(latest.status) if latest else None,
@@ -352,25 +358,29 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.post("/jobs/{name}/run", response_model=RunResponse)
     def run_job(name: str) -> RunResponse:
+        # The job's stage decides recipients: testing -> test recipients, live -> production.
         logger.info("API: manual run requested for {!r}", name)
         _require_job(name)
-        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.MANUAL, is_test=False)
-        return RunResponse(run_id=run_id)
-
-    @app.post("/jobs/{name}/test", response_model=RunResponse)
-    def test_job(name: str) -> RunResponse:
-        logger.info("API: test run requested for {!r}", name)
-        _require_job(name)
-        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.TEST, is_test=True)
+        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.MANUAL)
         return RunResponse(run_id=run_id)
 
     @app.post("/jobs/{name}/dry-run", response_model=RunResponse)
     def dry_run_job(name: str) -> RunResponse:
         # Build + validate the report (so the #NAME?/error-cell scan runs) but never email.
-        logger.info("API: dry run requested for {!r}", name)
+        logger.info("API: build-only run requested for {!r}", name)
         _require_job(name)
-        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.DRY_RUN, is_test=True)
+        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.DRY_RUN)
         return RunResponse(run_id=run_id)
+
+    @app.post("/jobs/{name}/stage")
+    def set_job_stage(name: str, update: StageUpdate) -> dict[str, Any]:
+        # Promote to live / demote to testing; persists and applies to the NEXT run.
+        logger.info("API: stage change for {!r} -> {}", name, update.stage)
+        job = _require_job(name)
+        updated = job.model_copy(update={"stage": update.stage})
+        jobs = [updated if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
+        _save_jobs_or_400(svc(), jobs)
+        return {"ok": True, "name": job.name, "stage": update.stage}
 
     def _job_template_path(job: JobConfig) -> Path:
         return paths.templates_dir() / "jobs" / f"{job.name}.html"

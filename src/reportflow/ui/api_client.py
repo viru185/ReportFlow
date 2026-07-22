@@ -93,11 +93,11 @@ class ApiClient:
     def run_job(self, name: str) -> dict:
         return self._request("POST", f"/jobs/{name}/run")
 
-    def test_job(self, name: str) -> dict:
-        return self._request("POST", f"/jobs/{name}/test")
-
     def dry_run_job(self, name: str) -> dict:
         return self._request("POST", f"/jobs/{name}/dry-run")
+
+    def set_job_stage(self, name: str, stage: str) -> dict:
+        return self._request("POST", f"/jobs/{name}/stage", json={"stage": stage})
 
     # -- runs --
     def list_runs(self, job: str | None = None, limit: int = 50) -> list[dict]:
