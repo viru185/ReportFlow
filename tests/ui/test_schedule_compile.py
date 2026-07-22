@@ -74,3 +74,19 @@ def test_weekly_requires_weekday():
 def test_times_deduped():
     crons = compile_spec(ScheduleSpec(mode="daily", times=["06:00", "06:00"]))
     assert crons == ["0 6 * * *"]
+
+
+def test_friendly_time_phrases():
+    from datetime import datetime
+
+    from reportflow.ui.schedule_compile import friendly_time
+
+    now = datetime(2026, 7, 15, 12, 0, 0)  # a Wednesday
+    assert friendly_time("2026-07-15T18:00:00", now) == "today 18:00"
+    assert friendly_time("2026-07-16T06:00:00", now) == "tomorrow 06:00"
+    assert friendly_time("2026-07-20T06:00:00", now) == "Mon 06:00"  # within a week
+    assert friendly_time("2026-08-01T06:00:00", now) == "2026-08-01 06:00"
+    assert friendly_time(None, now) is None
+    assert friendly_time("not-a-date", now) is None
+    # Aware timestamps (APScheduler hands those back) don't blow up.
+    assert friendly_time("2026-07-15T18:00:00+05:30", now) == "today 18:00"

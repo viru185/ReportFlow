@@ -48,8 +48,15 @@ def _join_csv(items: list[str] | None) -> str:
 
 class JobEditorDialog(QDialog):
     def __init__(
-        self, api: ApiClient, job: dict[str, Any] | None = None, parent: QWidget | None = None
+        self,
+        api: ApiClient,
+        job: dict[str, Any] | None = None,
+        parent: QWidget | None = None,
+        *,
+        prefill: dict[str, Any] | None = None,
     ) -> None:
+        """``job`` opens EDIT mode; ``prefill`` opens CREATE mode seeded from an existing
+        job (Duplicate): fresh editable name, forced back to Testing, template not shared."""
         super().__init__(parent)
         self._api = api
         self._editing = job is not None
@@ -60,7 +67,24 @@ class JobEditorDialog(QDialog):
         self._build()
         if job:
             self._load(job)
+        elif prefill:
+            self._load(prefill)
+            self._apply_duplicate_mode()
         self._update_output_example()
+
+    def _apply_duplicate_mode(self) -> None:
+        """Duplicating is CREATE, not EDIT: new name, fresh Testing lifecycle, own template."""
+        self.setWindowTitle("New Job (duplicate)")
+        self.name.clear()
+        self.name.setReadOnly(False)
+        self.name.setFocus()
+        self.enabled.setChecked(True)
+        self.stage.setCurrentIndex(self.stage.findData("testing"))
+        self.stage.setEnabled(False)  # like any new job: promote from the card after a run
+        # The source job's template file must not be shared — two jobs editing one file
+        # would cross-wire; the copy starts from the default (re-author if needed).
+        self._existing_template_path = None
+        self.template_status.setText("Template not copied — using the default.")
 
     # -- construction ------------------------------------------------------------
 

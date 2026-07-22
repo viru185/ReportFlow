@@ -136,10 +136,21 @@ Two single-click actions on each job card — the job's stage answers "who gets 
   when Live).
 - **👁 Build only** — builds and verifies the report (checks the data) but emails no one.
 - **Schedule** — the service runs enabled jobs on their configured times automatically; each
-  configured time registers its own trigger, honouring the job's stage.
+  configured time registers its own trigger, honouring the job's stage. Scheduled cards show
+  **when the next run fires** ("next: tomorrow 06:00").
 
-Multiple jobs run in parallel, each in its own disposable worker process. A failed run is never
-retried automatically — it's recorded and visible in the history.
+While a job is **running**, its card shows a live elapsed counter and the run buttons lock so
+it can't be double-fired. Multiple jobs run in parallel, each in its own disposable worker
+process. A failed run is never retried automatically — it's recorded and visible in history.
+
+More one-click card actions:
+
+- **⏸ / ▸ Resume** — pause or resume scheduling. A paused job is unmistakable: the whole card
+  dims, a grey **⏸ DISABLED** pill appears, and the schedule line reads *paused*. Manual runs
+  still work while paused.
+- **📂** — open the last successful report in Explorer, file pre-selected.
+- **⧉** — duplicate: a new job pre-filled from this one (fresh name, starts in Testing, own
+  email template).
 
 ### Logs & diagnostics
 
