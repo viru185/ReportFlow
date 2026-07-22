@@ -164,18 +164,20 @@ class JobEditorDialog(QDialog):
         email_form = QFormLayout(email_tab)
 
         self.subject = QLineEdit()
-        self.subject.setToolTip("Email subject; test runs are automatically prefixed [TEST].")
-        self.send_email = QCheckBox("Also email Production recipients on real / scheduled runs")
-        self.send_email.setToolTip(
-            "When ticked, successful real and scheduled Runs email the Production recipients. "
-            "When unticked, real/scheduled Runs email no one. Test email runs always go to the "
-            "Test recipients regardless."
+        self.subject.setToolTip("Email subject; Testing-stage runs are prefixed [TEST].")
+        # Lifecycle stage. New jobs always start in Testing (the combo is locked on create —
+        # promotion happens from the job card's "Go live" after a verified run); editing a
+        # job exposes it so a live job can be moved back to Testing.
+        self.stage = QComboBox()
+        self.stage.addItem("Testing — every run emails the Test recipients", "testing")
+        self.stage.addItem("Live — runs email the Production recipients", "live")
+        self.stage.setToolTip(
+            "Testing: every run (manual or scheduled) emails only the Test recipients, so "
+            "you can verify the report internally. Live: runs email the Production "
+            "recipients. Promote from the job card's 'Go live' button."
         )
-        self.email_hint = QLabel("")
-        self.email_hint.setProperty("muted", True)
-        self.email_hint.setWordWrap(True)
-        self.send_email.toggled.connect(self._update_email_hint)
-        self._update_email_hint(self.send_email.isChecked())
+        if not self._editing:
+            self.stage.setEnabled(False)  # new jobs always start in Testing
 
         self.prod_to = QLineEdit()
         self.prod_to.setToolTip("Production To — required. Comma-separated addresses.")
@@ -203,8 +205,7 @@ class JobEditorDialog(QDialog):
         tpl_row.addStretch()
 
         email_form.addRow("Subject", self.subject)
-        email_form.addRow("", self.send_email)
-        email_form.addRow("", self.email_hint)
+        email_form.addRow("Stage", self.stage)
         email_form.addRow("Prod: To", self.prod_to)
         email_form.addRow("Prod: Cc (optional)", self.prod_cc)
         email_form.addRow("Prod: Bcc (optional)", self.prod_bcc)
@@ -306,19 +307,6 @@ class JobEditorDialog(QDialog):
 
         outer.addWidget(self.tabs)
         outer.addWidget(buttons)
-
-    def _update_email_hint(self, checked: bool) -> None:
-        if checked:
-            self.email_hint.setText(
-                "Successful scheduled and manual Runs will email the Production recipients. "
-                "Test email runs still go only to the Test recipients."
-            )
-        else:
-            self.email_hint.setText(
-                "Scheduled and manual Runs will build the report but email NO ONE (not even "
-                "the Test recipients). Only a Test email run sends mail, to the Test "
-                "recipients. Tick this to also email Production on real/scheduled runs."
-            )
 
     # -- actions -----------------------------------------------------------------
 
@@ -440,7 +428,7 @@ class JobEditorDialog(QDialog):
             ),
             "blank_out_values": _split_csv(self.blank_values.text()),
             "subject": self.subject.text().strip() or None,
-            "send_report_email": self.send_email.isChecked(),
+            "stage": self.stage.currentData(),
             "prod": {
                 "to": _split_csv(self.prod_to.text()),
                 "cc": _split_csv(self.prod_cc.text()),
@@ -487,7 +475,8 @@ class JobEditorDialog(QDialog):
         self.blank_values.setText(_join_csv(job.get("blank_out_values")))
         self.notes.setPlainText(job.get("notes", ""))
         self.subject.setText(job.get("subject") or "")
-        self.send_email.setChecked(job.get("send_report_email", False))
+        stage_index = self.stage.findData(job.get("stage", "testing"))
+        self.stage.setCurrentIndex(stage_index if stage_index >= 0 else 0)
         self._existing_template_path = job.get("email_template_path")
         if self._existing_template_path:
             self.template_status.setText("This job has a custom template.")

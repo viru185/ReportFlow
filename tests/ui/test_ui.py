@@ -40,13 +40,13 @@ class FakeApi:
         self.triggered.append(("run", name))
         return {"run_id": "r-run"}
 
-    def test_job(self, name):
-        self.triggered.append(("test", name))
-        return {"run_id": "r-test"}
-
     def dry_run_job(self, name):
         self.triggered.append(("dry", name))
         return {"run_id": "r-dry"}
+
+    def set_job_stage(self, name, stage):
+        self.staged = (name, stage)
+        return {"ok": True, "name": name, "stage": stage}
 
     def list_runs(self, job=None, limit=50):
         return self._runs
@@ -134,6 +134,8 @@ def _sample_job_dict():
     return {
         "name": "daily",
         "enabled": True,
+        "stage": "testing",
+        "prod_recipients": ["boss@corp.example.com"],
         "input_excel_path": "C:/t.xlsx",
         "output_dir": "C:/reports",
         "output_name": "{job}_{date}",
@@ -286,19 +288,53 @@ def test_main_window_surfaces_config_error(qtbot):
     assert "Illegal character" in win.conn_label.toolTip()
 
 
-def test_main_window_run_actions_are_three_clear_buttons(qtbot):
-    from PySide6.QtWidgets import QPushButton
+def test_main_window_testing_card_buttons_and_pill(qtbot):
+    from PySide6.QtWidgets import QLabel, QPushButton
 
     from reportflow.ui.windows.main_window import MainWindow
 
-    win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))
+    win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))  # stage: testing
     qtbot.addWidget(win)
     labels = [b.text() for b in win.findChildren(QPushButton)]
-    # Single-click actions, clearly named (no jargon "Dry run", no dropdowns).
+    # Two single-click run actions + the promote button; no Test-email button.
     assert any("Run" in t for t in labels)
-    assert any("Test email" in t for t in labels)
     assert any("Build only" in t for t in labels)
-    assert not any("Dry run" in t for t in labels)
+    assert any("Go live" in t for t in labels)
+    assert not any("Test email" in t for t in labels)
+    assert any(w.text() == "TESTING" for w in win.findChildren(QLabel))
+
+
+def test_main_window_live_card_hides_go_live(qtbot):
+    from PySide6.QtWidgets import QLabel, QPushButton
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    live = dict(_sample_job_dict(), stage="live")
+    win = MainWindow(FakeApi(jobs=[live]))
+    qtbot.addWidget(win)
+    labels = [b.text() for b in win.findChildren(QPushButton)]
+    assert not any("Go live" in t for t in labels)
+    assert any(w.text() == "LIVE" for w in win.findChildren(QLabel))
+
+
+def test_main_window_go_live_confirms_and_calls_api(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: asked.append(a) or QMessageBox.StandardButton.Yes),
+    )
+    api = FakeApi(jobs=[_sample_job_dict()])
+    win = MainWindow(api)
+    qtbot.addWidget(win)
+    win._go_live(_sample_job_dict())
+    # The confirm names the production recipients; the API gets the promote.
+    assert asked and "boss@corp.example.com" in asked[0][2]
+    assert api.staged == ("daily", "live")
 
 
 def test_main_window_dry_run_triggers_api(qtbot, monkeypatch):
@@ -553,19 +589,17 @@ def test_help_dialog_builds(qtbot):
     assert "Timeout" in text
 
 
-def test_editor_email_hint_and_refresh_wait(qtbot):
+def test_editor_stage_and_refresh_wait(qtbot):
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
     dlg = JobEditorDialog(FakeApi())
     qtbot.addWidget(dlg)
 
-    # Opt-in unticked -> the hint spells out that real/scheduled runs email no one.
-    assert not dlg.send_email.isChecked()
-    assert "email NO ONE" in dlg.email_hint.text()
-    dlg.send_email.setChecked(True)
-    assert "will email the Production recipients" in dlg.email_hint.text()
+    # New jobs are locked to Testing — promotion happens from the card's Go live.
+    assert dlg.stage.currentData() == "testing"
+    assert not dlg.stage.isEnabled()
 
-    # Extra wait plumbs into the payload.
+    # Extra wait plumbs into the payload; stage rides along.
     dlg.name.setText("j")
     dlg.input_excel.setText("C:/t.xlsx")
     dlg._discover_sheets()
@@ -574,6 +608,20 @@ def test_editor_email_hint_and_refresh_wait(qtbot):
     dlg.test_to.setText("b@x.com")
     dlg.post_refresh_wait.setValue(120)
     assert dlg.payload()["post_refresh_wait_seconds"] == 120
+    assert dlg.payload()["stage"] == "testing"
+
+
+def test_editor_stage_editable_for_existing_job(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    live = dict(_sample_job_dict(), stage="live")
+    dlg = JobEditorDialog(FakeApi(), live)
+    qtbot.addWidget(dlg)
+    assert dlg.stage.isEnabled()
+    assert dlg.stage.currentData() == "live"
+    # Demote back to testing round-trips through the payload.
+    dlg.stage.setCurrentIndex(dlg.stage.findData("testing"))
+    assert dlg.payload()["stage"] == "testing"
 
 
 def test_editor_advanced_output_safety_fields(qtbot):

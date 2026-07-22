@@ -34,7 +34,13 @@ from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import logo_pixmap
 from reportflow.ui.fs_util import save_start_path
 from reportflow.ui.schedule_compile import describe
-from reportflow.ui.style import TEXT_MUTED, card_frame, connection_pill, status_badge
+from reportflow.ui.style import (
+    TEXT_MUTED,
+    card_frame,
+    connection_pill,
+    stage_badge,
+    status_badge,
+)
 from reportflow.ui.updater import UpdateInfo, check_latest
 from reportflow.ui.windows.about_dialog import AboutDialog
 from reportflow.ui.windows.help_dialog import HelpDialog
@@ -273,6 +279,7 @@ class MainWindow(QMainWindow):
             disabled = QLabel("disabled")
             disabled.setProperty("muted", True)
             name_row.addWidget(disabled)
+        name_row.addWidget(stage_badge(job.get("stage", "testing")))
         name_row.addWidget(status_badge(job.get("last_status")))
         if job.get("last_email_failed"):
             email_warn = QLabel("✉ failed")
@@ -303,25 +310,17 @@ class MainWindow(QMainWindow):
             return b
 
         job_name = job.get("name", "")
-        # Three single-click run actions, grouped tight so they read as one action set.
-        # Run is the accent (real run); the other two are clearly-labelled non-prod actions:
-        # "Test email" emails only the test recipients, "Build only" emails no one.
+        testing = job.get("stage", "testing") != "live"
+        # Two single-click run actions; the job's stage answers "who gets the email".
+        run_tip = (
+            "Builds the report and emails the TEST recipients (job is in Testing)."
+            if testing
+            else "Builds the report and emails the Production recipients (job is Live)."
+        )
         run_group = QHBoxLayout()
         run_group.setSpacing(2)
         run_group.addWidget(
-            _btn(
-                "▶ Run",
-                "Real run — builds the report and, if enabled, emails the Production recipients.",
-                lambda *_: self._trigger(job_name, mode="run"),
-                accent=True,
-            )
-        )
-        run_group.addWidget(
-            _btn(
-                "🧪 Test email",
-                "Builds the report and emails only the Test recipients.",
-                lambda *_: self._trigger(job_name, mode="test"),
-            )
+            _btn("▶ Run", run_tip, lambda *_: self._trigger(job_name, mode="run"), accent=True)
         )
         run_group.addWidget(
             _btn(
@@ -330,6 +329,15 @@ class MainWindow(QMainWindow):
                 lambda *_: self._trigger(job_name, mode="dry"),
             )
         )
+        if testing:
+            run_group.addWidget(
+                _btn(
+                    "✓ Go live",
+                    "Promote this job: future runs (incl. scheduled) email the Production "
+                    "recipients instead of the Test recipients.",
+                    lambda *_: self._go_live(job),
+                )
+            )
         lay.addLayout(run_group)
         lay.addSpacing(10)
         lay.addWidget(_btn("✎ Edit", "Edit this job.", lambda *_: self._edit_job(job_name)))
@@ -375,6 +383,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Save failed", str(e))
             return
         self.refresh()
+        if create:
+            self.statusBar().showMessage(
+                f"Job {payload.get('name')!r} created in Testing — click ▶ Run to build it "
+                "and email the test recipients; Go live when you're happy with it."
+            )
 
     def _delete_job(self, name: str) -> None:
         confirm = QMessageBox.question(self, "Delete", f"Delete job {name!r}?")
@@ -389,12 +402,8 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def _trigger(self, name: str, *, mode: str = "run") -> None:
-        api_call = {
-            "run": self._api.run_job,
-            "test": self._api.test_job,
-            "dry": self._api.dry_run_job,
-        }[mode]
-        kind = {"run": "Run", "test": "Test email", "dry": "Build only"}[mode]
+        api_call = {"run": self._api.run_job, "dry": self._api.dry_run_job}[mode]
+        kind = {"run": "Run", "dry": "Build only"}[mode]
         try:
             resp = api_call(name)
         except ApiError as e:
@@ -403,6 +412,28 @@ class MainWindow(QMainWindow):
         logger.info("{} started for {!r}: run {}", kind, name, resp.get("run_id"))
         self.statusBar().showMessage(f"{kind} started for {name} (run {resp['run_id']})")
         RunHistoryDialog(self._api, name, self).exec()
+
+    def _go_live(self, job: dict[str, Any]) -> None:
+        """Promote a testing job to live after an explicit, recipient-naming confirmation."""
+        name = job.get("name", "")
+        recipients = ", ".join(job.get("prod_recipients") or []) or "the Production recipients"
+        confirm = QMessageBox.question(
+            self,
+            "Go live",
+            f"Go live with {name!r}?\n\n"
+            f"Future runs — including scheduled ones — will email:\n{recipients}\n\n"
+            "You can move it back to Testing from the job editor's Email tab.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._api.set_job_stage(name, "live")
+        except ApiError as e:
+            QMessageBox.warning(self, "Go live failed", str(e))
+            return
+        logger.info("Job {!r} promoted to live", name)
+        self.statusBar().showMessage(f"{name} is now LIVE — future runs email production.")
+        self.refresh()
 
     def _view_logs(self, name: str | None = None) -> None:
         RunHistoryDialog(self._api, name, self).exec()

@@ -6,8 +6,8 @@ Responsibilities:
   killable.
 * Enforce the timeout; on expiry, tree-kill the worker (which reaps its Excel).
 * Read the worker's ``result.json`` (authoritative) + exit code and record the run.
-* Send email per policy: test runs -> test recipients always; real runs -> prod recipients
-  only if the job opted in. NEVER email on failure.
+* Send email per lifecycle policy: testing-stage jobs -> test recipients on every run;
+  live jobs -> production recipients. Build-only runs never email. NEVER email on failure.
 * Bound parallelism: a global concurrency cap plus a per-concurrency-group mutex.
 """
 
@@ -30,7 +30,7 @@ from reportflow.core.email import send_report
 from reportflow.core.ipc import RunStatus, WorkerRequest, read_result, write_request
 from reportflow.core.state import RunRecord, RunStore, RunTrigger
 
-_DRY_RUN_NOTE = "not sent — dry run (build only)"
+_DRY_RUN_NOTE = "not sent — build only"
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -121,21 +121,21 @@ class Launcher:
 
     # -- public ------------------------------------------------------------------
 
-    def run_job_by_name(self, name: str, trigger: RunTrigger, *, is_test: bool) -> RunRecord:
+    def run_job_by_name(self, name: str, trigger: RunTrigger) -> RunRecord:
         """Synchronous run (blocks until the worker finishes). Used by tests and internally."""
         config = self.get_config()
         job = config.job(name)
         if job is None:
             raise KeyError(f"unknown job: {name}")
-        return self.run(config, job, trigger, is_test=is_test)
+        return self.run(config, job, trigger)
 
-    def submit_job_by_name(self, name: str, trigger: RunTrigger, *, is_test: bool) -> str:
+    def submit_job_by_name(self, name: str, trigger: RunTrigger) -> str:
         """Non-blocking run: records the RUNNING row, starts a worker thread, returns run_id."""
         config = self.get_config()
         job = config.job(name)
         if job is None:
             raise KeyError(f"unknown job: {name}")
-        request, record = self._prepare(config, job, trigger, is_test=is_test)
+        request, record = self._prepare(config, job, trigger)
         thread = threading.Thread(
             target=self._run_prepared,
             args=(config, job, request, record),
@@ -157,16 +157,27 @@ class Launcher:
         with self._group_guard:
             return self._group_locks.setdefault(group, threading.Lock())
 
-    def run(
-        self, config: AppConfig, job: JobConfig, trigger: RunTrigger, *, is_test: bool
-    ) -> RunRecord:
-        request, record = self._prepare(config, job, trigger, is_test=is_test)
+    def run(self, config: AppConfig, job: JobConfig, trigger: RunTrigger) -> RunRecord:
+        request, record = self._prepare(config, job, trigger)
         self._run_prepared(config, job, request, record)
         return record
 
+    @staticmethod
+    def _resolve_is_test(job: JobConfig, trigger: RunTrigger) -> bool:
+        """The job's lifecycle stage decides who a run emails, resolved at fire time.
+
+        Testing-stage jobs email only the Test recipients on EVERY run (manual or
+        scheduled) — promotion to live flips future runs to production without
+        re-scheduling. Build-only (dry) runs stay test-flagged; they never email anyway.
+        """
+        if trigger in (RunTrigger.DRY_RUN, RunTrigger.TEST):
+            return True
+        return job.stage == "testing"
+
     def _prepare(
-        self, config: AppConfig, job: JobConfig, trigger: RunTrigger, *, is_test: bool
+        self, config: AppConfig, job: JobConfig, trigger: RunTrigger
     ) -> tuple[WorkerRequest, RunRecord]:
+        is_test = self._resolve_is_test(job, trigger)
         run_id = uuid.uuid4().hex[:12]
         now = datetime.now()
         run_dir = paths.run_dir(run_id)
@@ -336,19 +347,21 @@ class Launcher:
             record.email_note = _DRY_RUN_NOTE
         elif record.status is not RunStatus.SUCCESS:
             record.email_note = "not sent — run did not succeed"
-        elif not request.is_test and not job.send_report_email:
-            record.email_note = "not sent — the job's 'Email report on real runs' option is off"
         else:
             attachments: list[Path] = []
             if record.output_xlsx:
                 attachments.append(Path(record.output_xlsx))
             attachments.extend(Path(p) for p in record.pdf_paths)
             context = self._email_context(job, record)
-            kind = "test" if request.is_test else "production"
+            kind = (
+                "test recipient(s) — job is in Testing"
+                if request.is_test
+                else "production recipient(s)"
+            )
             try:
                 recipients = send_report(config, job, context, attachments, is_test=request.is_test)
                 record.email_sent = True
-                record.email_note = f"sent to {len(recipients)} {kind} recipient(s)"
+                record.email_note = f"sent to {len(recipients)} {kind}"
             except Exception as e:  # noqa: BLE001 — email failure must not fail the run
                 record.email_note = f"failed: {e}"
                 logger.error("Emailing report for run {} failed: {}", record.run_id, e)
