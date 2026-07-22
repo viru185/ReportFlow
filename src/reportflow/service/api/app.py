@@ -221,9 +221,12 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown job: {name}")
         return job
 
-    def _job_summary(job: JobConfig) -> dict[str, Any]:
+    def _job_summary(job: JobConfig, next_runs: dict[str, str] | None = None) -> dict[str, Any]:
         latest = svc().run_store.latest_for_job(job.name)
         last_failure = svc().run_store.latest_failure_for_job(job.name)
+        last_success = svc().run_store.latest_success_for_job(job.name)
+        if next_runs is None:
+            next_runs = svc().scheduler.next_run_times()
         return {
             "name": job.name,
             "enabled": job.enabled,
@@ -231,9 +234,11 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             "prod_recipients": [str(a) for a in job.prod.to],
             "schedule_crons": job.schedule_crons,
             "sheet_names": job.sheet_names,
+            "next_run_at": next_runs.get(job.name),
             "last_status": str(latest.status) if latest else None,
             "last_run_at": latest.started_at if latest else None,
             "last_failure_at": last_failure.started_at if last_failure else None,
+            "last_output_xlsx": last_success.output_xlsx if last_success else None,
             "last_email_note": latest.email_note if latest else None,
             "last_email_failed": bool(latest and (latest.email_note or "").startswith("failed:")),
         }
@@ -365,7 +370,8 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.get("/jobs")
     def list_jobs() -> list[dict[str, Any]]:
-        return [_job_summary(j) for j in svc().config.jobs]
+        next_runs = svc().scheduler.next_run_times()  # one scheduler read for the whole list
+        return [_job_summary(j, next_runs) for j in svc().config.jobs]
 
     @app.get("/jobs/{name}")
     def get_job(name: str) -> dict[str, Any]:

@@ -196,3 +196,17 @@ class RunStore:
                 (job_name, RunStatus.FAILED, RunStatus.TIMED_OUT, RunStatus.CRASHED),
             ).fetchone()
         return self._from_row(row) if row else None
+
+    def latest_success_for_job(self, job_name: str) -> RunRecord | None:
+        """The most recent successful run that produced an output file (for 'open last
+        report' — a later failure must not hide the last good output)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM runs
+                WHERE job_name=? AND status=? AND output_xlsx IS NOT NULL
+                ORDER BY COALESCE(started_at, '') DESC LIMIT 1
+                """,
+                (job_name, RunStatus.SUCCESS),
+            ).fetchone()
+        return self._from_row(row) if row else None
