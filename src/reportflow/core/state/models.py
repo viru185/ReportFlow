@@ -27,6 +27,8 @@ class RunRecord(BaseModel):
 
     started_at: str | None = None
     finished_at: str | None = None
+    # Authoritative worker-measured duration; falls back to finished-started when absent.
+    duration_seconds: float | None = None
     exit_code: int | None = None
 
     output_xlsx: str | None = None
