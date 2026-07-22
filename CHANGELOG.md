@@ -1,15 +1,19 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
-## [Unreleased]
+## [0.8.0] - 2026-07-22
 
 ### Bug Fixes
 - Add spacing to log switcher buttons (service, ui, worker)
 - Report emails render a real Duration; persist warnings across restarts
 - Per-sheet settle with opening baselines; collapse output selection to A1
 
+### CI/CD
+- Actually update CHANGELOG.md — regenerate + commit back on release
+
 ### Documentation
 - Add CLAUDE.md — project guide that travels with the repo
+- 0.8.0 — lifecycle, log cleanup, duration in help/README/CLAUDE.md; bump version
 
 ### Features
 - Testing→Live job lifecycle replaces the email opt-in checkbox
