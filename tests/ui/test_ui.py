@@ -197,6 +197,24 @@ def test_editor_loads_existing_job(qtbot):
     assert dlg.payload()["schedule_crons"] == ["0 6 * * *", "0 18 * * *"]
 
 
+def test_editor_new_job_discovery_checks_all_sheets(qtbot):
+    from PySide6.QtCore import Qt
+
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi())
+    qtbot.addWidget(dlg)
+    dlg.input_excel.setText("C:/t.xlsx")
+    dlg._discover_sheets()
+    # New job: everything ticked by default (export-all is the common case).
+    assert dlg._checked_sheet_names() == ["Summary", "Detail"]
+
+    # A deliberate partial selection survives re-discovery (no re-check-all).
+    dlg.sheets.item(1).setCheckState(Qt.CheckState.Unchecked)
+    dlg._discover_sheets()
+    assert dlg._checked_sheet_names() == ["Summary"]
+
+
 def test_editor_output_example_updates(qtbot):
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
