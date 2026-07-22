@@ -337,12 +337,16 @@ class JobEditorDialog(QDialog):
             QMessageBox.warning(self, "Sheet discovery failed", str(e))
             return
         checked = self._checked_sheet_names()
+        # Fresh discovery with nothing ticked yet (a new job): default everything ON —
+        # exporting all sheets is the common case, unticking the exception. Re-discovery
+        # on an existing job keeps its saved selection.
+        check_all = not checked
         self.sheets.clear()
         for name in names:
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(
-                Qt.CheckState.Checked if name in checked else Qt.CheckState.Unchecked
+                Qt.CheckState.Checked if check_all or name in checked else Qt.CheckState.Unchecked
             )
             self.sheets.addItem(item)
 
