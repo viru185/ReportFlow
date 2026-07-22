@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
+## [0.9.0] - 2026-07-22
+
+### Documentation
+- Update CHANGELOG.md for v0.8.0 [skip ci]
+
+### Features
+- Job summaries expose next run time and last successful report
+- Unmissable disabled cards; running lockout; pause/resume, open-report, duplicate
+
 ## [0.8.0] - 2026-07-22
 
 ### Bug Fixes
