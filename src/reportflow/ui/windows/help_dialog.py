@@ -69,16 +69,19 @@ one <code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per selected sheet.</p>
     (<code>minute hour day-of-month month day-of-week</code>).</li>
 </ul>
 
-<h2 id="email">Email &amp; templates</h2>
+<h2 id="email">Email, recipients &amp; the Testing → Live lifecycle</h2>
 <p>Each job has two recipient sets: <b>Production</b> and <b>Test</b>. <i>To</i> is
-required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses).</p>
+required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses). <b>Who gets
+emailed is decided by the job's stage:</b></p>
 <ul>
-<li><b>Test email</b> runs always email the <i>test</i> recipients only — never production.</li>
-<li><b>Real / scheduled Runs</b> email the production recipients only when <i>“Also email
-    Production recipients on real / scheduled runs”</i> is ticked. <b>If it is unticked, a
-    scheduled or manual Run emails no one at all</b> (not even the test recipients) — it just
-    builds the report. Failures never send email; check the logs instead.</li>
-<li>Emails attach the output Excel and all per-sheet PDFs.</li>
+<li><b>TESTING</b> (every new job starts here, amber pill on the card) — <b>every</b> run,
+    manual or scheduled, emails only the <i>Test</i> recipients, subject prefixed
+    <code>[TEST]</code>. Verify the report internally as long as you need.</li>
+<li><b>LIVE</b> (green pill) — runs email the <i>Production</i> recipients. Promote with the
+    card's <b>✓ Go live</b> button; the confirmation shows exactly who will receive future
+    reports. A live job can be moved back to Testing in the job editor's Email tab.</li>
+<li>Failures never send email; check the logs instead.</li>
+<li>Emails attach the output Excel and all per-sheet PDFs, and show the run's duration.</li>
 <li>Every run's history entry shows an <b>email:</b> line — sent to how many recipients,
     or exactly why nothing was sent.</li>
 </ul>
@@ -87,13 +90,11 @@ required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses).</p>
 Placeholders like <code>{{{{ job_name }}}}</code>, <code>{{{{ status }}}}</code> and
 <code>{{{{ run_id }}}}</code> are filled in at send time.</p>
 
-<h2 id="runs">Running a job — three single-click actions</h2>
-<p>Each job card has three buttons, so any run is one click:</p>
+<h2 id="runs">Running a job — two single-click actions</h2>
+<p>Each job card has two run buttons; the job's stage answers "who gets the email":</p>
 <ul>
-<li><b>▶ Run</b> — a real run. Emails the Production recipients <i>if</i> the job opted in
-    (otherwise it just builds the report and emails no one).</li>
-<li><b>🧪 Test email</b> — builds the report and emails the <i>Test</i> recipients only
-    (subject prefixed <code>[TEST]</code>).</li>
+<li><b>▶ Run</b> — builds the report and emails it per the stage: the Test recipients while
+    the job is in <b>Testing</b>, the Production recipients once it is <b>Live</b>.</li>
 <li><b>👁 Build only</b> — builds and verifies the report (checks that PI DataLink / your data
     source produced real values) but <b>sends no email at all</b>.</li>
 </ul>
@@ -109,6 +110,11 @@ retried automatically — they stay visible in the history.</p>
     by severity.</li>
 <li><b>Logs → Send logs to support</b> — emails a diagnostic bundle (logs + sanitized
     settings, never passwords) to the configured support email.</li>
+<li><b>Logs → Delete old logs…</b> — frees disk space by deleting run folders, log files,
+    bundles, and history rows older than the retention setting. The service also does this
+    automatically at startup and nightly.</li>
+<li><b>Logs → Delete ALL logs…</b> — wipes everything regardless of age (strong
+    confirmation; runs currently in progress always survive). No undo.</li>
 <li><b>Logs → Open data folder</b> — opens the folder holding config, logs, and outputs
     metadata in Explorer.</li>
 </ul>
@@ -122,7 +128,8 @@ retried automatically — they stay visible in the history.</p>
     server without sending an email.</li>
 <li><b>Test recipients</b> — global fallback for test runs.</li>
 <li><b>Support email</b> — receives the diagnostic bundles from "Send logs to support".</li>
-<li><b>Application</b> — max parallel runs, default timeout, log retention, and the
+<li><b>Application</b> — max parallel runs, default timeout, log retention (drives the
+    automatic nightly cleanup), and the
     check-for-updates-on-startup toggle.</li>
 <li><b>Service account (PI DataLink)</b> — set the Windows user the service runs as, right
     here (see below). Click <b>Use current Windows user</b> to fill in the account you are

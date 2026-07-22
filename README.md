@@ -10,7 +10,7 @@ stay isolated at runtime:
 
 | Executable | Role |
 |---|---|
-| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs, discover sheets, run/test, view logs. |
+| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs, discover sheets, run, go live, view logs. |
 | **Service** (`reportflow-service`) | Background control plane: localhost API + scheduler; launches workers. Runs as a Windows service (via NSSM). |
 | **Excel Worker** (`reportflow-worker`) | Short-lived process that does the Excel automation for one run, then exits. |
 
@@ -104,32 +104,39 @@ and **Concurrency group** (jobs sharing a group run one-at-a-time), plus notes.
 Only the input file, at least one sheet, and the **To** addresses are required. Everything
 optional can be left blank.
 
+### Job lifecycle: Testing → Live
+
+Every job starts in **Testing**: every run — manual **and scheduled** — emails only the
+**Test** recipients (subject prefixed `[TEST]`), so the report is verified internally first.
+When you're happy with it, click **✓ Go live** on the job card (the confirmation names the
+production recipients); from then on runs email the **client**. A live job can be moved back
+to Testing from the job editor's Email tab. The card shows an amber **TESTING** / green
+**LIVE** pill so the state is always visible.
+
 ### Recipients & email template
 
 Each job has two recipient sets — **production** and **test** — each with **To** (required),
 **Cc** (optional), and **Bcc** (optional).
 
-- **Test email** runs email the **test** recipients only — they can never reach production.
-- **Real / scheduled Runs** email the **production** recipients only if **"Also email
-  Production recipients on real / scheduled runs"** is enabled. **Unticked, a scheduled or
-  manual Run emails no one at all** (not even the test recipients) — it just builds the report.
-  Failures never send an automatic email.
-- Report emails attach the **output Excel** plus **all per-sheet PDFs**.
+- **Testing-stage** runs email the **test** recipients only — they can never reach production.
+- **Live** runs email the **production** recipients. Failures never send an automatic email.
+- Report emails attach the **output Excel** plus **all per-sheet PDFs**, and show the run's
+  real **duration**.
 
 The email **body** is authored in-app: click **Edit email template…** in the job editor and
 write it in **Simple** mode (plain text + placeholder-insert buttons) or **HTML** mode, with a
 live **Preview** against sample data. The template is stored per job; leave it untouched to use
 the built-in default.
 
-### Run, test, and schedule
+### Run and schedule
 
-Three single-click actions on each job card:
+Two single-click actions on each job card — the job's stage answers "who gets the email":
 
-- **▶ Run** — a real run (emails the production recipients, if the job opted in).
-- **🧪 Test email** — emails the test recipients only, subject prefixed `[TEST]`.
+- **▶ Run** — builds the report and emails per the stage (testers while Testing, the client
+  when Live).
 - **👁 Build only** — builds and verifies the report (checks the data) but emails no one.
 - **Schedule** — the service runs enabled jobs on their configured times automatically; each
-  configured time registers its own trigger.
+  configured time registers its own trigger, honouring the job's stage.
 
 Multiple jobs run in parallel, each in its own disposable worker process. A failed run is never
 retried automatically — it's recorded and visible in the history.
@@ -143,6 +150,10 @@ retried automatically — it's recorded and visible in the history.
 - **Logs → Send logs to support** / **Export logs to zip** — bundle the logs + sanitized
   settings (never passwords); you can type a short **problem description** that rides along in
   the bundle (and the email) so the developer knows what to look for.
+- **Logs → Delete old logs… / Delete ALL logs…** — free disk space on demand. "Old" uses the
+  retention setting; "ALL" wipes every run folder, log, bundle, and history row (strong
+  confirm; active runs always survive). The service also purges automatically at startup and
+  nightly per **Log retention** — the setting now genuinely controls disk usage.
 - **File → Open data folder** — opens `C:\ProgramData\ReportFlow` in Explorer.
 
 ### Settings (SMTP, support email, application)
@@ -438,7 +449,7 @@ schedule_crons = ["0 6 * * MON-FRI", "0 18 * * MON-FRI"]   # one trigger per ent
 timeout_seconds = 1200
 concurrency_group = "reports"
 subject = "Daily Sales — {date}"
-send_report_email = true                  # real runs email prod only if true
+stage = "live"                            # "testing" (default) emails testers; "live" -> prod
 
   [job.prod]
   to  = ["managers@corp.example.com"]
@@ -469,7 +480,9 @@ Bound to `127.0.0.1` only.
 | `GET/POST/DELETE /system/smtp-password` | Status / store / clear the DPAPI SMTP password. |
 | `GET /system/logs?process=&tail=` | Tail the Service/Worker/UI rolling log. |
 | `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD. |
-| `POST /jobs/{name}/run` · `POST /jobs/{name}/test` | Trigger a real / test run. |
+| `POST /jobs/{name}/run` · `POST /jobs/{name}/dry-run` | Run per the job's stage / build only. |
+| `POST /jobs/{name}/stage` | Promote to live / demote to testing. |
+| `POST /system/purge-logs` | Delete old (or all) run folders, logs, bundles. |
 | `GET/PUT /jobs/{name}/email-template` | Read / write the job's per-job email template. |
 | `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs. |
 | `POST /workbook/sheets` | Discover sheet names (openpyxl, no COM). |
