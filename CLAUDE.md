@@ -32,8 +32,12 @@ is the schema; it is the contract between the two processes).
    deliberate guard in `worker/excel.py::save_output` — keep it.
 2. **Secrets never touch the config file.** SMTP + service-account passwords go through
    DPAPI/keyring (`core/secrets.py`). Never log a password; never return one from the API.
-3. **A test run can never email production.** The guard lives in exactly one place
-   (`core/email/sender.py::resolve_recipients`). Keep it that way.
+3. **A testing-stage/test-flagged run can never email production.** The recipient guard
+   lives in exactly one place (`core/email/sender.py::resolve_recipients`). Keep it that
+   way. Jobs have a lifecycle `stage` ("testing" → "live", `JobConfig.stage`): testing
+   jobs email ONLY the Test recipients on every run (manual and scheduled); promotion to
+   live (card "Go live" / `POST /jobs/{name}/stage`) switches runs to production. The
+   launcher resolves `is_test` from the stage at fire time (`Launcher._resolve_is_test`).
 4. **Non-mandatory settings stay optional.** `To` is required; `Cc`/`Bcc` optional. Don't
    make a new setting mandatory without asking.
 
@@ -59,13 +63,25 @@ is the schema; it is the contract between the two processes).
   broken `#REF!` defined names after removal; the per-job **Hide** mode (very-hidden sheets)
   is the guaranteed-openable fallback. On the *input* side the same message means
   Mark-of-the-Web → Unblock / Trusted Location (automation still opens it).
-- **PI data arrives AFTER Excel says calculation is done.** A fixed sleep froze sheets
-  half-populated. `refresh_and_wait` settles *adaptively* — recalculate until the populated
-  cell count stops growing, bounded by the job's `post_refresh_wait_seconds` budget — and
-  logs a warning if data is still changing when the budget runs out.
-- **Email policy is counter-intuitive; state it explicitly.** A scheduled/manual **Run**
-  with `send_report_email` unticked emails **no one** — not even test recipients. Only an
-  explicit **Test email** run mails the test recipients. (`service/launcher.py::_maybe_email`)
+- **PI data arrives AFTER Excel says calculation is done — and a spill can COLLAPSE
+  mid-recalc.** A fixed sleep froze sheets half-populated (0.6.2 added adaptive settle);
+  then the Equipment/Sensor report shipped one sheet empty because the settle judged
+  stability with `sig <= prev` over a SUMMED count — a collapsed `PINCompDat` dynamic-array
+  spill (count *drops*) read as "stable". The settle now tracks counts **per sheet**
+  against **opening baselines** (the template's cached values, captured in
+  `open_workbook`): stable = exactly unchanged everywhere, a decrease resets, no sheet may
+  sit below its baseline, one bounded 30 s grace past the budget, then a deliver-anyway
+  warning naming the lagging sheet. Pure predicate: `worker/excel.py::_settle_verdict`.
+- **PasteSpecial leaves the whole used range selected and Excel persists it into the
+  file** — recipients opened reports with everything highlighted. `collapse_selection`
+  selects A1 per sheet and leaves the first selected sheet active before every save.
+- **The old `send_report_email` checkbox is gone (0.8.0).** Legacy configs migrate via a
+  `JobConfig` before-validator: `send_report_email=True` → `stage="live"`, else testing.
+  Never re-add the key; never persist it.
+- **Log/dir growth is bounded by `core/maintenance.py::purge_logs`** — startup + nightly
+  (03:30) via APScheduler. `SchedulerService.rebuild()` wipes ALL jobs, so the maintenance
+  job is re-registered inside `rebuild`; keep that invariant. Live per-process log files
+  and active runs are never deleted.
 - **Inno Setup / ISPP:** a `{code:Fn}` scripted constant *must* be
   `function Fn(Param: String): String`. Any line whose first non-whitespace char is `#` is
   read as a preprocessor directive — never start a continuation line with `#13#10`.
@@ -101,7 +117,8 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pyt
 4. Commit to `main`, tag `vX.Y.Z`, push both → GitHub Actions builds the installer and
    publishes the release. The in-app updater reads the latest GitHub release and runs the
    setup exe with `/SILENT` (so installer wizard pages, incl. the welcome page, never show
-   on that path).
+   on that path). The workflow also regenerates `CHANGELOG.md` with git-cliff and commits
+   it back to `main` as the actions bot (`[skip ci]`) — don't edit that file by hand.
 
 Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-REPORTFLOW01}`
 (the uninstall registry key is that AppId + `_is1`).
