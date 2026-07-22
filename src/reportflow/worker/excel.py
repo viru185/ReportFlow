@@ -42,9 +42,13 @@ _ERROR_SAMPLE_LIMIT = 200  # cap cells scanned when collecting distinct error te
 
 _XL_SHEET_VERY_HIDDEN = 2  # xlSheetVeryHidden
 
-# Adaptive settle: keep recalculating until the populated-cell count stops growing.
+# Adaptive settle: keep recalculating until every selected sheet's populated-cell count is
+# unchanged AND at least back to its opening baseline (the template's cached values). PI
+# archive pulls (PINCompDat & co.) routinely exceed small budgets, so a still-lagging sheet
+# earns ONE bounded grace extension before we give up and warn.
 _SETTLE_STEP_SECONDS = 4.0
 _SETTLE_STABLE_ROUNDS = 2
+_SETTLE_GRACE_SECONDS = 30.0
 
 # Substring that marks a VSTO add-in that refused to activate (e.g. PI DataLink under a
 # service/LocalSystem context). Captured so the runner can name it in the failure message.
@@ -123,15 +127,40 @@ def _count_values(values: object) -> int:
     return 1  # numbers, datetimes, bools — real data
 
 
-def _count_values_across(book: xw.Book, sheet_names: list[str]) -> int:
-    """Total populated cells across the selected sheets (best-effort; COM errors count 0)."""
-    total = 0
+def _count_values_by_sheet(book: xw.Book, sheet_names: list[str]) -> dict[str, int]:
+    """Populated cells per selected sheet (best-effort; a COM read error counts 0).
+
+    Per-sheet, not summed: a fast sheet's large stable count must never mask a slow
+    sheet whose async spill is still empty (the Equipment/Sensor field bug).
+    """
+    counts: dict[str, int] = {}
     for name in sheet_names:
         try:
-            total += _count_values(book.sheets[name].used_range.value)
+            counts[name] = _count_values(book.sheets[name].used_range.value)
         except Exception as e:  # noqa: BLE001 — a transient read must not abort settling
             logger.debug("Could not read used range of {!r} for settle signature: {}", name, e)
-    return total
+            counts[name] = 0
+    return counts
+
+
+def _settle_verdict(
+    counts: dict[str, int],
+    prev: dict[str, int] | None,
+    baselines: dict[str, int],
+    stable_rounds: int,
+) -> tuple[int, list[str]]:
+    """Pure settle predicate: ``(new_stable_rounds, lagging_sheets)``.
+
+    A round is stable only when EVERY sheet's populated count is exactly unchanged. A
+    decrease is a dynamic-array spill collapsed mid-recalc — instability, never
+    convergence (the old ``sig <= prev`` check froze half-loaded sheets). Sheets still
+    below their opening baseline (the template's cached values) are "lagging": async data
+    has not caught back up to what the workbook held when it was opened.
+    """
+    lagging = [n for n, c in counts.items() if c < baselines.get(n, 0)]
+    if prev is None or any(counts[n] != prev.get(n, -1) for n in counts):
+        return 0, lagging
+    return stable_rounds + 1, lagging
 
 
 def format_error_cell_message(
@@ -201,6 +230,12 @@ class ExcelRun:
         # Add-ins that failed to activate with the VSTO "could not be installed" signature
         # (e.g. PI DataLink under a service account) — surfaced in the failure message.
         self.failed_addins: list[str] = []
+        # Per-sheet populated counts captured at open (the template's cached values) —
+        # the settle loop's "expected shape" for each selected sheet.
+        self.baseline_counts: dict[str, int] = {}
+        # Deliver-anyway notes when settling gave up (sheets still lagging/changing);
+        # the runner merges these into the run's warnings.
+        self.settle_warnings: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -443,6 +478,11 @@ class ExcelRun:
             raise ExcelJobError(
                 f"selected sheet(s) not found in workbook: {missing} (available: {existing})"
             )
+        # The template's cached values are the settle loop's "expected shape": after the
+        # refresh, a selected sheet holding fewer values than it OPENED with means async
+        # data (PI archive pulls) hasn't caught up yet — keep waiting, then warn.
+        self.baseline_counts = _count_values_by_sheet(book, sheet_names)
+        logger.info("Opening populated-cell baselines: {}", self.baseline_counts)
         # The fragile startup+open is done; let other worker processes start their Excel now.
         self._release_startup_lock()
         return book
@@ -491,21 +531,37 @@ class ExcelRun:
         """Wait for asynchronous add-in data (PI DataLink & co.) to finish arriving.
 
         PI cells keep filling AFTER Excel reports calculation done, and different sheets
-        resolve at different rates (a smaller sheet can lag a larger one). Instead of a fixed
-        sleep, keep recalculating within ``budget_seconds`` and stop as soon as the count of
-        populated cells stops growing for a couple of rounds. Fast workbooks finish early;
-        slow ones use the whole budget.
+        resolve at different rates — archive-history pulls (PINCompDat) are far slower than
+        snapshot reads. Per-sheet counts + opening baselines decide convergence (see
+        :func:`_settle_verdict`); a sheet still below its baseline at the budget earns ONE
+        bounded grace extension, then a deliver-anyway warning naming the sheet.
         """
         assert self.app is not None
         logger.info("Settling async add-in data (budget {}s)…", budget_seconds)
         deadline = time.monotonic() + budget_seconds
-        prev = _count_values_across(book, sheet_names)
+        baselines = self.baseline_counts
+        prev: dict[str, int] | None = None
+        counts: dict[str, int] = {}
         stable = 0
         rounds = 0
+        graced = False
         while True:
             self._check_deadline("adaptive settle")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                counts = counts or _count_values_by_sheet(book, sheet_names)
+                lagging = [n for n, c in counts.items() if c < baselines.get(n, 0)]
+                if not graced and (lagging or stable < _SETTLE_STABLE_ROUNDS):
+                    # Archive pulls routinely outlive small budgets; extend exactly once.
+                    graced = True
+                    deadline = time.monotonic() + _SETTLE_GRACE_SECONDS
+                    logger.info(
+                        "Settle budget elapsed with sheets still lagging/changing {} — "
+                        "extending once by {}s",
+                        lagging or "(counts not yet stable)",
+                        int(_SETTLE_GRACE_SECONDS),
+                    )
+                    continue
                 break
             time.sleep(min(_SETTLE_STEP_SECONDS, remaining))
             # Nudge the add-in to pull any late data, then let the calc chain settle.
@@ -519,22 +575,37 @@ class ExcelRun:
                 logger.debug("CalculateUntilAsyncQueriesDone unavailable: {}", e)
             self._wait_for_calc()
 
-            sig = _count_values_across(book, sheet_names)
+            counts = _count_values_by_sheet(book, sheet_names)
             rounds += 1
-            if sig <= prev:
-                stable += 1
-                if stable >= _SETTLE_STABLE_ROUNDS:
-                    logger.info("Data settled after {} round(s) ({} populated cells)", rounds, sig)
-                    return
-            else:
-                stable = 0
-            prev = max(prev, sig)
-        logger.warning(
-            "Data still changing when the {}s settle budget elapsed ({} populated cells) — "
-            "output may be incomplete; raise 'Extra wait after refresh' if a sheet is sparse.",
-            budget_seconds,
-            prev,
-        )
+            stable, lagging = _settle_verdict(counts, prev, baselines, stable)
+            prev = counts
+            logger.debug(
+                "Settle round {}: counts={} stable={} lagging={}", rounds, counts, stable, lagging
+            )
+            if stable >= _SETTLE_STABLE_ROUNDS and not lagging:
+                logger.info(
+                    "Data settled after {} round(s) ({} populated cells)",
+                    rounds,
+                    sum(counts.values()),
+                )
+                return
+
+        # Budget + grace exhausted: deliver anyway, but say exactly which sheet is short.
+        for name, count in counts.items():
+            baseline = baselines.get(name, 0)
+            if count < baseline:
+                self.settle_warnings.append(
+                    f"sheet '{name}' has {count} populated cells but the workbook opened "
+                    f"with {baseline} — async data (e.g. PI) may not have finished; raise "
+                    "'Extra wait after refresh' for this job"
+                )
+        if not self.settle_warnings:
+            self.settle_warnings.append(
+                f"data was still changing when the settle budget (+{int(_SETTLE_GRACE_SECONDS)}s "
+                "grace) elapsed — output may be incomplete; raise 'Extra wait after refresh'"
+            )
+        for warning in self.settle_warnings:
+            logger.warning("{}", warning)
 
     def _wait_for_calc(self) -> None:
         assert self.app is not None
@@ -572,6 +643,26 @@ class ExcelRun:
             except Exception as e:  # noqa: BLE001 — cosmetic (clears the marching ants)
                 logger.debug("Could not reset CutCopyMode: {}", e)
             logger.info("Froze formulas to values on sheet {!r} ({} cells)", name, cell_count)
+
+    def collapse_selection(self, book: xw.Book, sheet_names: list[str]) -> None:
+        """Select A1 on every selected sheet and finish on the first one.
+
+        PasteSpecial leaves the whole used range selected, and Excel PERSISTS the
+        per-sheet selection into the saved file — recipients opened the report with the
+        entire sheet highlighted. Walk the sheets in reverse so the last activation is
+        the FIRST selected sheet: that's the tab the workbook opens on. Cosmetic —
+        every step is best-effort.
+        """
+        for name in reversed(sheet_names):
+            try:
+                sheet = book.sheets[name]
+                sheet.api.Activate()
+                sheet.api.Range("A1").Select()
+                window = book.app.api.ActiveWindow
+                window.ScrollRow = 1
+                window.ScrollColumn = 1
+            except Exception as e:  # noqa: BLE001 — never fail a run over selection tidy-up
+                logger.debug("Could not collapse selection on {!r}: {}", name, e)
 
     def validate_sheets_not_empty(self, book: xw.Book, sheet_names: list[str]) -> None:
         """Fail loudly when a selected sheet produced no data at all.
