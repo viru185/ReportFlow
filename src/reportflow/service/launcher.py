@@ -32,6 +32,25 @@ from reportflow.core.state import RunRecord, RunStore, RunTrigger
 
 _DRY_RUN_NOTE = "not sent — build only"
 
+
+def _elapsed_seconds(started_at: str | None, finished_at: str | None) -> float | None:
+    """Duration from the record's ISO timestamps; None when either is missing/invalid."""
+    if not started_at or not finished_at:
+        return None
+    try:
+        delta = datetime.fromisoformat(finished_at) - datetime.fromisoformat(started_at)
+    except ValueError:
+        return None
+    return max(0.0, delta.total_seconds())
+
+
+def _format_duration(seconds: float | None) -> str:
+    """Whole seconds render bare ("42"), fractional keep one decimal; None -> "?"."""
+    if seconds is None:
+        return "?"
+    return str(int(seconds)) if float(seconds).is_integer() else f"{seconds:.1f}"
+
+
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
@@ -308,6 +327,7 @@ class Launcher:
     ) -> None:
         record.exit_code = exit_code
         record.finished_at = datetime.now().isoformat(timespec="seconds")
+        record.duration_seconds = _elapsed_seconds(record.started_at, record.finished_at)
 
         result = None
         if request.result_path.exists():
@@ -327,6 +347,9 @@ class Launcher:
             record.output_xlsx = str(result.output_xlsx) if result.output_xlsx else None
             record.pdf_paths = [str(p) for p in result.pdf_paths]
             record.warnings = list(result.warnings)
+            if result.duration_seconds is not None:
+                # Prefer the worker's own measurement over the launcher-bracket fallback.
+                record.duration_seconds = result.duration_seconds
             if not result.ok:
                 record.error_summary = (result.message or "run failed").strip()[:500]
 
@@ -377,7 +400,7 @@ class Launcher:
             "run_id": record.run_id,
             "started_at": record.started_at,
             "finished_at": record.finished_at,
-            "duration_seconds": "",
+            "duration_seconds": _format_duration(record.duration_seconds),
             "sheet_names": job.sheet_names,
             "hostname": os.environ.get("COMPUTERNAME", "host"),
             "is_test": record.is_test,
