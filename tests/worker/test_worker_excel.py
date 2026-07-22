@@ -91,6 +91,14 @@ def test_success_freezes_and_exports(tmp_path):
     assert "Data" not in wb.sheetnames  # unselected sheets are removed from the OUTPUT
     assert set(wb.sheetnames) == {"Summary", "Detail"}
 
+    # Selection is collapsed: the file opens on the first selected sheet with A1 active,
+    # not with the whole used range highlighted (PasteSpecial's leftover selection).
+    assert wb.active.title == "Summary"
+    for name in ("Summary", "Detail"):
+        selection = wb[name].sheet_view.selection[0]
+        assert selection.activeCell == "A1"
+        assert selection.sqref == "A1"
+
     # The SOURCE workbook is untouched: helper sheet still there, formulas intact.
     src = openpyxl.load_workbook(tmp_path / "template.xlsx")
     assert "Data" in src.sheetnames
