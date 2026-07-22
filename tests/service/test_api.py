@@ -109,6 +109,26 @@ def test_run_now_completes(client):
     assert runs and runs[0]["run_id"] == run_id
     assert c.get(f"/runs/{run_id}/log").status_code == 200
 
+    # The card's "open last report" source: the summary points at the produced file.
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["last_output_xlsx"] and Path(summary["last_output_xlsx"]).exists()
+
+
+def test_summary_reports_next_run_for_scheduled_jobs(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    payload = dict(_job_payload(tmp_path), schedule_crons=["0 6 * * *"])
+    c.post("/jobs", json=payload)
+
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["next_run_at"]  # scheduler knows the next fire time
+
+    # Disabling unschedules -> no next run.
+    payload["enabled"] = False
+    c.put("/jobs/daily", json=payload)
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["next_run_at"] is None
+
 
 def _wait_done(c, run_id: str) -> str:
     for _ in range(50):

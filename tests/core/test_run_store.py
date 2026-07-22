@@ -68,6 +68,20 @@ def test_email_note_round_trip(tmp_path):
     assert store.get("r1").email_note == "sent to 2 production recipient(s)"
 
 
+def test_latest_success_for_job_prefers_output_over_later_failure(tmp_path):
+    store = RunStore(tmp_path / "runs.db")
+    ok = _rec(run_id="ok", status=RunStatus.SUCCESS, started="2026-07-07T06:00:00")
+    ok.output_xlsx = "C:/out/daily.xlsx"
+    store.upsert(ok)
+    store.upsert(_rec(run_id="bad", status=RunStatus.FAILED, started="2026-07-08T06:00:00"))
+    # A success WITHOUT an output (e.g. legacy row) must not win either.
+    store.upsert(_rec(run_id="noout", status=RunStatus.SUCCESS, started="2026-07-09T06:00:00"))
+
+    hit = store.latest_success_for_job("daily")
+    assert hit is not None and hit.run_id == "ok"
+    assert store.latest_success_for_job("other") is None
+
+
 def test_duration_and_warnings_round_trip(tmp_path):
     store = RunStore(tmp_path / "runs.db")
     rec = _rec()

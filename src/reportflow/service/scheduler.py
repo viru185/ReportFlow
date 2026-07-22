@@ -39,6 +39,18 @@ class SchedulerService:
         # Internal maintenance is not a user job — keep it out of status counts.
         return [j.id for j in self.scheduler.get_jobs() if j.id != _MAINTENANCE_JOB_ID]
 
+    def next_run_times(self) -> dict[str, str]:
+        """Earliest upcoming fire time per job name (ISO), across its cron triggers."""
+        result: dict[str, str] = {}
+        for aps_job in self.scheduler.get_jobs():
+            if aps_job.id == _MAINTENANCE_JOB_ID or aps_job.next_run_time is None:
+                continue
+            name = aps_job.id.rsplit("#", 1)[0]  # trigger ids are "{job.name}#{index}"
+            iso = aps_job.next_run_time.isoformat(timespec="seconds")
+            if name not in result or iso < result[name]:
+                result[name] = iso
+        return result
+
     def rebuild(self, config: AppConfig) -> None:
         """Replace all scheduled jobs from the current config.
 
