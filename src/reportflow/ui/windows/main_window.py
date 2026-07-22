@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -33,11 +36,12 @@ from reportflow.core import paths
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import logo_pixmap
 from reportflow.ui.fs_util import save_start_path
-from reportflow.ui.schedule_compile import describe
+from reportflow.ui.schedule_compile import describe, friendly_time
 from reportflow.ui.style import (
     TEXT_MUTED,
     card_frame,
     connection_pill,
+    disabled_badge,
     stage_badge,
     status_badge,
 )
@@ -55,6 +59,21 @@ from reportflow.ui.windows.transfer_dialogs import (
     import_settings_flow,
 )
 from reportflow.ui.windows.update_dialog import UpdateDialog
+
+
+def _elapsed_text(started_at: str | None) -> str:
+    """Human elapsed time since an ISO timestamp — '38s', '2m 10s'; '' when unknown."""
+    if not started_at:
+        return ""
+    try:
+        seconds = int((datetime.now() - datetime.fromisoformat(started_at)).total_seconds())
+    except ValueError:
+        return ""
+    if seconds < 0:
+        return ""
+    if seconds < 120:
+        return f"{seconds}s"
+    return f"{seconds // 60}m {seconds % 60}s"
 
 
 class _UpdateCheckThread(QThread):
@@ -273,17 +292,20 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(10, 6, 10, 6)
         lay.setSpacing(6)
 
+        enabled = bool(job.get("enabled", True))
+        running = (job.get("last_status") or "") == "running"
+
         info = QVBoxLayout()
         info.setSpacing(1)
         name_row = QHBoxLayout()
         name = QLabel(f"<b>{job.get('name', '')}</b>")
         name_row.addWidget(name)
-        if not job.get("enabled", True):
-            disabled = QLabel("disabled")
-            disabled.setProperty("muted", True)
-            name_row.addWidget(disabled)
         name_row.addWidget(stage_badge(job.get("stage", "testing")))
-        name_row.addWidget(status_badge(job.get("last_status")))
+        if not enabled:
+            name_row.addWidget(disabled_badge())
+        # Elapsed time rides the dashboard's 4s refresh — no extra polling machinery.
+        suffix = f"· {_elapsed_text(job.get('last_run_at'))}" if running else ""
+        name_row.addWidget(status_badge(job.get("last_status"), suffix))
         if job.get("last_email_failed"):
             email_warn = QLabel("✉ failed")
             email_warn.setStyleSheet("color: #e06c6c; font-size: 11px;")
@@ -294,21 +316,33 @@ class MainWindow(QMainWindow):
         name_row.addStretch()
         info.addLayout(name_row)
 
-        schedule_text = describe(job.get("schedule_crons") or [])
+        schedule_text = (
+            "schedule paused" if not enabled else describe(job.get("schedule_crons") or [])
+        )
         sheets = job.get("sheet_names") or []
         last_run = job.get("last_run_at") or "never"
-        detail = QLabel(f"{schedule_text} · {len(sheets)} sheet(s) · last run: {last_run}")
+        detail_text = f"{schedule_text} · {len(sheets)} sheet(s) · last run: {last_run}"
+        next_at = friendly_time(job.get("next_run_at")) if enabled else None
+        if next_at:
+            detail_text += f" · next: {next_at}"
+        detail = QLabel(detail_text)
         detail.setProperty("muted", True)
         info.addWidget(detail)
         lay.addLayout(info, 1)
 
-        def _btn(label: str, tip: str, slot, *, accent: bool = False) -> QPushButton:
+        def _btn(
+            label: str, tip: str, slot, *, accent: bool = False, active: bool = True
+        ) -> QPushButton:
             b = QPushButton(label)
             b.setToolTip(tip)
-            if accent:
+            # No accent glow on a paused card — the dimming should read as "asleep".
+            if accent and enabled:
                 b.setProperty("accent", True)
             else:
                 b.setStyleSheet("padding: 3px 10px;")
+            if not active:
+                b.setEnabled(False)
+                b.setToolTip("Already running — wait for it to finish.")
             b.clicked.connect(slot)
             return b
 
@@ -323,13 +357,20 @@ class MainWindow(QMainWindow):
         run_group = QHBoxLayout()
         run_group.setSpacing(2)
         run_group.addWidget(
-            _btn("▶ Run", run_tip, lambda *_: self._trigger(job_name, mode="run"), accent=True)
+            _btn(
+                "▶ Run",
+                run_tip,
+                lambda *_: self._trigger(job_name, mode="run"),
+                accent=True,
+                active=not running,
+            )
         )
         run_group.addWidget(
             _btn(
                 "👁 Build only",
                 "Builds and verifies the report (checks PI DataLink data) without emailing anyone.",
                 lambda *_: self._trigger(job_name, mode="dry"),
+                active=not running,
             )
         )
         if testing:
@@ -341,8 +382,30 @@ class MainWindow(QMainWindow):
                     lambda *_: self._go_live(job),
                 )
             )
+        if not enabled:
+            resume = _btn(
+                "▸ Resume",
+                "Re-enable scheduling for this job (one click).",
+                lambda *_: self._set_enabled(job_name, True),
+            )
+            resume.setProperty("accent", True)  # THE call-to-action on a paused card
+            run_group.addWidget(resume)
         lay.addLayout(run_group)
         lay.addSpacing(10)
+        lay.addWidget(
+            _btn(
+                "📂",
+                "Open the last report's folder (file selected).",
+                lambda *_: self._open_last_report(job),
+            )
+        )
+        lay.addWidget(
+            _btn(
+                "⧉",
+                "Duplicate: new job pre-filled from this one — starts in Testing.",
+                lambda *_: self._duplicate_job(job_name),
+            )
+        )
         lay.addWidget(_btn("✎ Edit", "Edit this job.", lambda *_: self._edit_job(job_name)))
         lay.addWidget(
             _btn(
@@ -351,7 +414,22 @@ class MainWindow(QMainWindow):
                 lambda *_: self._view_logs(job_name),
             )
         )
+        if enabled:
+            lay.addWidget(
+                _btn(
+                    "⏸",
+                    "Pause scheduling — manual runs still work. Resume with one click.",
+                    lambda *_: self._set_enabled(job_name, False),
+                )
+            )
         lay.addWidget(_btn("🗑", "Delete this job.", lambda *_: self._delete_job(job_name)))
+
+        if not enabled:
+            # One effect dims the ENTIRE card uniformly — pills, text, buttons — so a
+            # paused job cannot be mistaken for a live one at any glance distance.
+            effect = QGraphicsOpacityEffect(card)
+            effect.setOpacity(0.55)
+            card.setGraphicsEffect(effect)
         return card
 
     # -- job actions --------------------------------------------------------------
@@ -437,6 +515,49 @@ class MainWindow(QMainWindow):
         logger.info("Job {!r} promoted to live", name)
         self.statusBar().showMessage(f"{name} is now LIVE — future runs email production.")
         self.refresh()
+
+    def _set_enabled(self, name: str, enabled: bool) -> None:
+        """One-click Pause/Resume: flip `enabled` through the normal update path (the
+        service re-validates and re-schedules)."""
+        try:
+            job = self._api.get_job(name)["job"]
+            job["enabled"] = enabled
+            self._api.update_job(name, job)
+        except ApiError as e:
+            QMessageBox.warning(self, "Resume failed" if enabled else "Pause failed", str(e))
+            return
+        logger.info("Job {!r} {}", name, "resumed" if enabled else "paused")
+        self.statusBar().showMessage(
+            f"{name} resumed — next run per its schedule."
+            if enabled
+            else f"{name} paused — scheduling is off; manual runs still work."
+        )
+        self.refresh()
+
+    def _open_last_report(self, job: dict[str, Any]) -> None:
+        """Open Explorer at the last successful report, file pre-selected."""
+        path_text = job.get("last_output_xlsx")
+        if not path_text:
+            self.statusBar().showMessage("No successful report yet — run the job first.")
+            return
+        path = Path(path_text)
+        if path.exists():
+            subprocess.Popen(["explorer", "/select,", str(path)])  # noqa: S603,S607
+        elif path.parent.exists():
+            os.startfile(str(path.parent))  # noqa: S606 — deliberate shell open
+        else:
+            self.statusBar().showMessage(f"Last report no longer exists: {path}")
+
+    def _duplicate_job(self, name: str) -> None:
+        """New job pre-filled from an existing one (fresh name, starts in Testing)."""
+        try:
+            job = self._api.get_job(name)["job"]
+        except ApiError as e:
+            QMessageBox.warning(self, "Duplicate failed", str(e))
+            return
+        dlg = JobEditorDialog(self._api, None, self, prefill=job)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._save(dlg, create=True)
 
     def _view_logs(self, name: str | None = None) -> None:
         RunHistoryDialog(self._api, name, self).exec()

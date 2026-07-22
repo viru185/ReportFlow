@@ -90,13 +90,25 @@ emailed is decided by the job's stage:</b></p>
 Placeholders like <code>{{{{ job_name }}}}</code>, <code>{{{{ status }}}}</code> and
 <code>{{{{ run_id }}}}</code> are filled in at send time.</p>
 
-<h2 id="runs">Running a job — two single-click actions</h2>
+<h2 id="runs">Running a job — everything is one click</h2>
 <p>Each job card has two run buttons; the job's stage answers "who gets the email":</p>
 <ul>
 <li><b>▶ Run</b> — builds the report and emails it per the stage: the Test recipients while
     the job is in <b>Testing</b>, the Production recipients once it is <b>Live</b>.</li>
 <li><b>👁 Build only</b> — builds and verifies the report (checks that PI DataLink / your data
     source produced real values) but <b>sends no email at all</b>.</li>
+</ul>
+<p>While a run is in flight the card's badge counts the elapsed time and the run buttons
+lock, so a job cannot be started twice by accident. Scheduled cards also show the next fire
+time ("next: tomorrow 06:00").</p>
+<p>More card actions:</p>
+<ul>
+<li><b>⏸ / ▸ Resume</b> — pause or resume scheduling in one click. A paused job is
+    unmistakable: the whole card is dimmed with a grey <b>⏸ DISABLED</b> pill and the
+    schedule line reads <i>paused</i>. Manual runs still work while paused.</li>
+<li><b>📂</b> — open the last successful report in Explorer with the file pre-selected.</li>
+<li><b>⧉</b> — duplicate this job: the editor opens pre-filled (fresh name required, starts
+    in Testing, uses the default email template).</li>
 </ul>
 <p>Jobs run in parallel, each in its own isolated Excel process. Failed runs are never
 retried automatically — they stay visible in the history.</p>

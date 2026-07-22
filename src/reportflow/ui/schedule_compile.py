@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal
 
 Mode = Literal["manual", "daily", "weekly", "monthly", "advanced"]
@@ -127,3 +128,28 @@ def describe(crons: list[str]) -> str:
         days = ", ".join(str(d) for d in spec.month_days)
         return f"Monthly day {days} at {times}"
     return "Cron: " + "; ".join(spec.crons)
+
+
+def friendly_time(iso: str | None, now: datetime | None = None) -> str | None:
+    """Compact human phrasing of an upcoming ISO timestamp for the job card.
+
+    "today 18:00" / "tomorrow 06:00" / "Mon 06:00" (within a week) / "2026-08-01 06:00".
+    Returns None for missing/invalid input so callers can simply skip the segment.
+    """
+    if not iso:
+        return None
+    try:
+        when = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    when = when.replace(tzinfo=None)  # scheduler may hand back an aware datetime
+    now = now or datetime.now()
+    clock = when.strftime("%H:%M")
+    days_ahead = (when.date() - now.date()).days
+    if days_ahead <= 0:
+        return f"today {clock}"
+    if days_ahead == 1:
+        return f"tomorrow {clock}"
+    if days_ahead < 7:
+        return f"{when.strftime('%a')} {clock}"
+    return f"{when.strftime('%Y-%m-%d')} {clock}"
