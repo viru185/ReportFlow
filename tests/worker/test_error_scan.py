@@ -1,9 +1,11 @@
-"""Unit tests for the error-cell message + machine-account detection (no Excel needed)."""
+"""Unit tests for the error-cell message, settle predicate, and account detection
+(no Excel needed)."""
 
 from __future__ import annotations
 
 from reportflow.worker.excel import (
     _count_values,
+    _settle_verdict,
     format_error_cell_message,
     format_error_cell_warnings,
 )
@@ -46,6 +48,47 @@ def test_count_values_counts_only_non_empty():
     assert _count_values(grid) == 3  # 1, 0, and "x"
     assert _count_values(None) == 0
     assert _count_values([[None, None]]) == 0
+
+
+def test_settle_decrease_is_never_stable():
+    """A collapsed dynamic-array spill (count DROPS mid-recalc) must reset stability —
+    the old `sig <= prev` treated the drop as convergence and froze half-loaded sheets."""
+    baselines = {"Snapshot": 60, "TimeSeries": 1100}
+    # Round 1: TimeSeries collapsed to headers only.
+    stable, lagging = _settle_verdict(
+        {"Snapshot": 60, "TimeSeries": 44}, {"Snapshot": 60, "TimeSeries": 1100}, baselines, 1
+    )
+    assert stable == 0  # decrease resets, never increments
+    assert lagging == ["TimeSeries"]
+
+
+def test_settle_stable_below_baseline_keeps_lagging():
+    """Unchanged-but-empty is NOT settled: the sheet opened with far more data."""
+    baselines = {"TimeSeries": 1100}
+    counts = {"TimeSeries": 44}
+    stable, lagging = _settle_verdict(counts, dict(counts), baselines, 1)
+    assert stable == 2  # counts unchanged -> stability advances...
+    assert lagging == ["TimeSeries"]  # ...but the sheet is still flagged as lagging
+
+
+def test_settle_converges_when_all_sheets_stable_at_or_above_baseline():
+    baselines = {"Snapshot": 60, "TimeSeries": 1100}
+    counts = {"Snapshot": 62, "TimeSeries": 1144}
+    stable, lagging = _settle_verdict(counts, dict(counts), baselines, 1)
+    assert stable == 2 and lagging == []
+
+
+def test_settle_first_round_and_per_sheet_masking():
+    baselines = {"Fast": 100, "Slow": 500}
+    # First round (no prev) never counts as stable.
+    stable, _ = _settle_verdict({"Fast": 100, "Slow": 0}, None, baselines, 5)
+    assert stable == 0
+    # A big stable sheet must not mask a still-growing small one (per-sheet, not summed).
+    stable, lagging = _settle_verdict(
+        {"Fast": 100, "Slow": 200}, {"Fast": 100, "Slow": 100}, baselines, 1
+    )
+    assert stable == 0  # Slow changed -> whole round unstable
+    assert lagging == ["Slow"]
 
 
 def test_machine_account_detection(monkeypatch):

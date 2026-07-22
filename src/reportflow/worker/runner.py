@@ -77,8 +77,11 @@ def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) ->
                 raise ExcelJobError(
                     format_error_cell_message(findings, run.failed_addins, _account())
                 )
+            warnings = [*run.settle_warnings]  # e.g. a sheet still below its opening baseline
             if findings:
-                outcome.warnings = format_error_cell_warnings(findings)
+                warnings.extend(format_error_cell_warnings(findings))
+            if warnings:
+                outcome.warnings = warnings
             if request.freeze_values:
                 run.freeze_sheets(book, request.sheet_names)
             if request.fail_if_sheet_empty:
@@ -91,6 +94,9 @@ def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) ->
                 outcome.pdf_paths = run.export_pdfs(
                     book, request.sheet_names, request.output_pdf_path
                 )
+            # Leave the file tidy: A1 selected everywhere, first selected sheet active
+            # (PasteSpecial's whole-range selection would otherwise persist into the file).
+            run.collapse_selection(book, request.sheet_names)
             outcome.output_xlsx = run.save_output(book, request.output_xlsx_path)
         if outcome.output_xlsx is not None and request.blank_out_values:
             blank_out_values(outcome.output_xlsx, request.blank_out_values)
