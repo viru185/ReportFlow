@@ -84,3 +84,30 @@ jobs:
           files: |
             packaging/innosetup/Output/ReportFlow-Setup-*.exe
             dist/*.zip
+
+      # Keep the tracked CHANGELOG.md true to its own header: regenerate the FULL history
+      # and commit it back to main (the tag checkout is detached, so switch explicitly).
+      - name: Switch to main for changelog commit
+        run: |
+          git fetch origin main
+          git switch -C main origin/main
+
+      - name: Regenerate full CHANGELOG.md
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --output CHANGELOG.md
+
+      - name: Commit CHANGELOG.md to main
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "docs: update CHANGELOG.md for ${{ github.ref_name }} [skip ci]"
+            git push origin main
+          } else {
+            "CHANGELOG.md already up to date"
+          }
