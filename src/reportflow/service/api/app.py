@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from reportflow import __version__
 from reportflow.core import paths, secrets
@@ -43,8 +43,21 @@ class ServiceState:
         self.config: AppConfig = self._load_or_default()
         self.run_store = RunStore()
         self.launcher = Launcher(self.run_store, lambda: self.config, worker_command=worker_command)
-        self.scheduler = SchedulerService(self.launcher)
+        self.scheduler = SchedulerService(self.launcher, maintenance=self.run_maintenance)
         self._lock = threading.Lock()
+
+    def run_maintenance(self) -> None:
+        """Purge run folders/bundles/rotated logs past the configured retention window."""
+        from reportflow.core.maintenance import purge_logs
+
+        try:
+            purge_logs(
+                self.config.app.log_retention_days,
+                active_run_ids=set(self.launcher.active_run_ids()),
+                run_store=self.run_store,
+            )
+        except Exception as e:  # noqa: BLE001 — housekeeping must never take the service down
+            logger.error("Log maintenance failed: {}", e)
 
     def _load_or_default(self) -> AppConfig:
         try:
@@ -111,7 +124,11 @@ class ServiceState:
     def _apply_log_level(self) -> None:
         from reportflow.core.logging_setup import reconfigure
 
-        reconfigure("service", level="DEBUG" if self.config.app.debug_logging else "INFO")
+        reconfigure(
+            "service",
+            level="DEBUG" if self.config.app.debug_logging else "INFO",
+            retention_days=self.config.app.log_retention_days,
+        )
 
 
 # --- request/response models ---------------------------------------------------
@@ -150,6 +167,11 @@ class StageUpdate(BaseModel):
     stage: Literal["testing", "live"]
 
 
+class PurgeRequest(BaseModel):
+    older_than_days: int | None = Field(default=None, ge=1)
+    all: bool = False
+
+
 class SmtpTestRequest(BaseModel):
     host: str = ""
     port: int = 587
@@ -178,6 +200,8 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         st: ServiceState = app.state.svc
         st.scheduler.start()
         st.scheduler.rebuild(st.config)
+        # Catch-up sweep in a worker thread so a big backlog can't delay startup.
+        threading.Thread(target=st.run_maintenance, name="startup-maintenance", daemon=True).start()
         logger.info("Service started (version {})", __version__)
         try:
             yield
@@ -309,6 +333,23 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         except Exception as e:  # noqa: BLE001 — surface the reason to the UI
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True}
+
+    @app.post("/system/purge-logs")
+    def purge_logs_endpoint(req: PurgeRequest) -> dict[str, Any]:
+        """Delete old (or ALL) run folders, bundles, and rotated logs; returns stats."""
+        from reportflow.core.maintenance import purge_logs
+
+        st = svc()
+        if not req.all and req.older_than_days is None:
+            raise HTTPException(status_code=400, detail="pass older_than_days or all=true")
+        logger.info("API: log purge requested ({})", "ALL" if req.all else req.older_than_days)
+        stats = purge_logs(
+            req.older_than_days,
+            everything=req.all,
+            active_run_ids=set(st.launcher.active_run_ids()),
+            run_store=st.run_store,
+        )
+        return {"ok": True, **stats.as_dict()}
 
     @app.get("/system/logs")
     def system_logs(process: str = "service", tail: int = 500) -> dict[str, Any]:

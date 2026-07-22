@@ -160,6 +160,30 @@ class RunStore:
         runs = self.list(job_name=job_name, limit=1)
         return runs[0] if runs else None
 
+    def delete_before(self, cutoff_iso: str, *, keep_ids: set[str] | None = None) -> int:
+        """Delete history rows started before ``cutoff_iso`` (ISO string; lexicographic
+        compare matches chronological for our second-precision timestamps). Rows in
+        ``keep_ids`` (active runs) survive regardless. Returns the number deleted."""
+        keep = sorted(keep_ids or ())
+        placeholders = ",".join("?" for _ in keep)
+        query = "DELETE FROM runs WHERE COALESCE(started_at, '') < ?"
+        if keep:
+            query += f" AND run_id NOT IN ({placeholders})"
+        with self._connect() as conn:
+            cur = conn.execute(query, (cutoff_iso, *keep))
+        return cur.rowcount
+
+    def delete_all(self, *, keep_ids: set[str] | None = None) -> int:
+        """Delete ALL history rows except ``keep_ids`` (active runs). Returns the count."""
+        keep = sorted(keep_ids or ())
+        placeholders = ",".join("?" for _ in keep)
+        query = "DELETE FROM runs"
+        if keep:
+            query += f" WHERE run_id NOT IN ({placeholders})"
+        with self._connect() as conn:
+            cur = conn.execute(query, keep)
+        return cur.rowcount
+
     def latest_failure_for_job(self, job_name: str) -> RunRecord | None:
         """The last failed run is preserved for visibility even after later successes."""
         with self._connect() as conn:
