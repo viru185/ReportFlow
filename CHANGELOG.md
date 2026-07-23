@@ -1,6 +1,16 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
+## [0.10.0] - 2026-07-23
+
+### Documentation
+- Update CHANGELOG.md for v0.9.0 [skip ci]
+- 0.10.0 — card edge/⋯ menu and two-column Settings in README/help; bump version
+
+### Features
+- Declutter job cards — status edge, one pill, 3 buttons + ⋯ menu
+- Two-column Settings dialog so it fits on screen
+
 ## [0.9.0] - 2026-07-22
 
 ### Documentation
