@@ -182,6 +182,12 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+  // Silent upgrade (the in-app updater runs /SILENT): no one is at the keyboard. Inno still
+  // calls NextButtonClick for every page, and the account field is prefilled with the current
+  // user + a BLANK password — so validation would fail with "credentials were rejected" and
+  // abort the update. The existing service account is already configured; leave it untouched.
+  if WizardSilent then
+    exit;
   if (AccountPage <> nil) and (CurPageID = AccountPage.ID) then
   begin
     // Blank user = keep LocalSystem (allowed). Otherwise the credentials must validate.
@@ -200,7 +206,10 @@ end;
 
 function HasServiceAccount: Boolean;
 begin
-  Result := Trim(AccountPage.Values[0]) <> '';
+  // Never reconfigure the account on a silent upgrade: the field is prefilled with a
+  // passwordless user, so applying it would set NSSM ObjectName to a blank password and
+  // break the service. Credentials are only ever really entered in an interactive install.
+  Result := (not WizardSilent) and (Trim(AccountPage.Values[0]) <> '');
 end;
 
 function NssmObjectNameArgs(Param: String): String;
