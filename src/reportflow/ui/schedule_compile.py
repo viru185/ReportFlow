@@ -153,3 +153,31 @@ def friendly_time(iso: str | None, now: datetime | None = None) -> str | None:
     if days_ahead < 7:
         return f"{when.strftime('%a')} {clock}"
     return f"{when.strftime('%Y-%m-%d')} {clock}"
+
+
+def ago_text(iso: str | None, now: datetime | None = None) -> str | None:
+    """Compact relative phrasing of a past ISO timestamp for the job card.
+
+    "just now" / "5m ago" / "3h ago" (within 2 days) / "2d ago" (within a week) /
+    "2026-07-01". Returns None for missing/invalid input so callers can skip the segment.
+    """
+    if not iso:
+        return None
+    try:
+        when = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    when = when.replace(tzinfo=None)  # records may carry a timezone
+    now = now or datetime.now()
+    seconds = (now - when).total_seconds()
+    if seconds < 0:
+        return None
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 48 * 3600:
+        return f"{int(seconds // 3600)}h ago"
+    if seconds < 7 * 86400:
+        return f"{int(seconds // 86400)}d ago"
+    return when.strftime("%Y-%m-%d")
