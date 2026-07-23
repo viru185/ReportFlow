@@ -143,14 +143,20 @@ While a job is **running**, its card shows a live elapsed counter and the run bu
 it can't be double-fired. Multiple jobs run in parallel, each in its own disposable worker
 process. A failed run is never retried automatically — it's recorded and visible in history.
 
-More one-click card actions:
+Each card's **coloured left edge** tells the last run's outcome at a glance — green =
+success, red = failed, amber = running, grey = paused or never ran — and the detail line
+reads `next: tomorrow 06:00 · last: success 2h ago · 4 sheet(s)`.
 
-- **⏸ / ▸ Resume** — pause or resume scheduling. A paused job is unmistakable: the whole card
-  dims, a grey **⏸ DISABLED** pill appears, and the schedule line reads *paused*. Manual runs
-  still work while paused.
-- **📂** — open the last successful report in Explorer, file pre-selected.
-- **⧉** — duplicate: a new job pre-filled from this one (fresh name, starts in Testing, own
+Everything occasional lives behind the card's **⋯** menu (so daily actions stay one click):
+
+- **📂 Open last report** — Explorer opens with the last successful report pre-selected.
+- **✎ Edit** and **Logs** — the job editor / that job's run history.
+- **⧉ Duplicate** — a new job pre-filled from this one (fresh name, starts in Testing, own
   email template).
+- **⏸ Pause** — pause scheduling. A paused job is unmissable: the whole card dims, a grey
+  **⏸ PAUSED** pill appears, the schedule line reads *paused*, and a one-click **▸ Resume**
+  button takes the promote button's slot. Manual runs still work while paused.
+- **🗑 Delete** — remove the job (with confirmation).
 
 ### Logs & diagnostics
 
@@ -169,7 +175,8 @@ More one-click card actions:
 
 ### Settings (SMTP, support email, application)
 
-**File → Settings** configures everything in-app:
+**File → Settings** configures everything in-app (one compact two-column dialog — email on
+the left, application & service on the right):
 
 - **SMTP** — host, port, STARTTLS/SSL, from-address, username, and the **password** (stored
   encrypted via Windows DPAPI, machine scope — never in the config file). An eye icon shows
