@@ -98,6 +98,10 @@ class FakeApi:
         self.updated_job = (name, job)
         return {"ok": True, "name": name}
 
+    def delete_job(self, name):
+        self.deleted_job = name
+        return {"ok": True}
+
     def create_job(self, job):
         self.created_job = job
         return {"ok": True, "name": job.get("name")}
@@ -331,6 +335,21 @@ def test_main_window_surfaces_config_error(qtbot):
     assert "Illegal character" in win.conn_label.toolTip()
 
 
+def _card_frames(win):
+    from PySide6.QtWidgets import QFrame
+
+    return [f for f in win.jobs_container.findChildren(QFrame) if f.property("card")]
+
+
+def _card_menu(win):
+    """The ⋯ menu of the first job card."""
+    from PySide6.QtWidgets import QToolButton
+
+    buttons = win.jobs_container.findChildren(QToolButton)
+    assert buttons, "job card has no ⋯ menu button"
+    return buttons[0].menu()
+
+
 def test_main_window_testing_card_buttons_and_pill(qtbot):
     from PySide6.QtWidgets import QLabel, QPushButton
 
@@ -338,13 +357,41 @@ def test_main_window_testing_card_buttons_and_pill(qtbot):
 
     win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))  # stage: testing
     qtbot.addWidget(win)
-    labels = [b.text() for b in win.findChildren(QPushButton)]
-    # Two single-click run actions + the promote button; no Test-email button.
+    labels = [b.text() for b in win.jobs_container.findChildren(QPushButton)]
+    # Daily single-click actions + the promote button; nothing else visible on the card.
     assert any("Run" in t for t in labels)
     assert any("Build only" in t for t in labels)
     assert any("Go live" in t for t in labels)
-    assert not any("Test email" in t for t in labels)
+    assert len(labels) == 3  # everything occasional lives behind ⋯
     assert any(w.text() == "TESTING" for w in win.findChildren(QLabel))
+    # The last-run status lives on the card edge + detail line, not in a pill.
+    assert _card_frames(win)[0].property("edge") == "success"
+    assert not any(w.text().startswith("success") for w in win.findChildren(QLabel))
+
+
+def test_main_window_card_more_menu_holds_occasional_actions(qtbot):
+    from reportflow.ui.windows.main_window import MainWindow
+
+    win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))  # enabled, testing
+    qtbot.addWidget(win)
+    texts = [a.text() for a in _card_menu(win).actions() if a.text()]
+    assert texts == ["📂 Open last report", "✎ Edit", "Logs", "⧉ Duplicate", "⏸ Pause", "🗑 Delete"]
+
+
+def test_main_window_card_menu_delete_action_wired(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    api = FakeApi(jobs=[_sample_job_dict()])
+    win = MainWindow(api)
+    qtbot.addWidget(win)
+    delete = next(a for a in _card_menu(win).actions() if "Delete" in a.text())
+    delete.trigger()
+    assert api.deleted_job == "daily"
 
 
 def test_main_window_live_card_hides_go_live(qtbot):
@@ -361,7 +408,7 @@ def test_main_window_live_card_hides_go_live(qtbot):
 
 
 def test_main_window_disabled_card_is_unmissable(qtbot):
-    from PySide6.QtWidgets import QFrame, QLabel, QPushButton
+    from PySide6.QtWidgets import QLabel, QPushButton
 
     from reportflow.ui.windows.main_window import MainWindow
 
@@ -369,29 +416,34 @@ def test_main_window_disabled_card_is_unmissable(qtbot):
     win = MainWindow(FakeApi(jobs=[disabled]))
     qtbot.addWidget(win)
 
-    # The whole card is dimmed via a graphics effect…
-    frames = [f for f in win.jobs_container.findChildren(QFrame) if f.property("card")]
+    # The whole card is dimmed via a graphics effect, with a muted status edge…
+    frames = _card_frames(win)
     assert frames and frames[0].graphicsEffect() is not None
+    assert frames[0].property("edge") == "muted"
     # …with a loud pill, a paused schedule line, and a one-click Resume.
     labels = [w.text() for w in win.findChildren(QLabel)]
-    assert any("⏸ DISABLED" in t for t in labels)
+    assert any("⏸ PAUSED" in t for t in labels)
     assert any("schedule paused" in t for t in labels)
-    buttons = [b.text() for b in win.findChildren(QPushButton)]
+    buttons = [b.text() for b in win.jobs_container.findChildren(QPushButton)]
     assert any("Resume" in t for t in buttons)
-    assert not any(t == "⏸" for t in buttons)  # no pause button on a paused card
+    # Pause disappears from the menu; Go live stays reachable there (Resume took its slot).
+    texts = [a.text() for a in _card_menu(win).actions() if a.text()]
+    assert "⏸ Pause" not in texts
+    assert "✓ Go live" in texts
 
 
 def test_main_window_enabled_card_not_dimmed_and_has_pause(qtbot):
-    from PySide6.QtWidgets import QFrame, QPushButton
+    from PySide6.QtWidgets import QPushButton
 
     from reportflow.ui.windows.main_window import MainWindow
 
     win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))
     qtbot.addWidget(win)
-    frames = [f for f in win.jobs_container.findChildren(QFrame) if f.property("card")]
+    frames = _card_frames(win)
     assert frames and frames[0].graphicsEffect() is None
-    buttons = [b.text() for b in win.findChildren(QPushButton)]
-    assert any(t == "⏸" for t in buttons)
+    texts = [a.text() for a in _card_menu(win).actions() if a.text()]
+    assert "⏸ Pause" in texts
+    buttons = [b.text() for b in win.jobs_container.findChildren(QPushButton)]
     assert not any("Resume" in t for t in buttons)
 
 
@@ -426,12 +478,15 @@ def test_main_window_running_card_locks_run_buttons(qtbot):
     win = MainWindow(FakeApi(jobs=[running]))
     qtbot.addWidget(win)
 
-    by_text = {b.text(): b for b in win.findChildren(QPushButton)}
+    by_text = {b.text(): b for b in win.jobs_container.findChildren(QPushButton)}
     assert not by_text["▶ Run"].isEnabled()
     assert not by_text["👁 Build only"].isEnabled()
-    assert by_text["✎ Edit"].isEnabled()  # only the run actions lock
-    # The badge carries a live elapsed suffix (e.g. "running · 3s").
+    # Occasional actions in ⋯ stay usable while a run is in flight.
+    edit = next(a for a in _card_menu(win).actions() if "Edit" in a.text())
+    assert edit.isEnabled()
+    # The badge carries a live elapsed suffix (e.g. "running · 3s"); the edge turns amber.
     assert any("running ·" in w.text() for w in win.findChildren(QLabel))
+    assert _card_frames(win)[0].property("edge") == "running"
 
 
 def test_main_window_open_last_report(qtbot, tmp_path, monkeypatch):
@@ -1020,6 +1075,19 @@ def test_apply_theme_runs_and_sets_dark_palette(qtbot):
     assert palette.color(QPalette.ColorRole.Window).name() == BG
     assert palette.color(QPalette.ColorRole.WindowText).name() == TEXT
     assert app.styleSheet()  # QSS applied
+
+
+def test_status_edge_mapping():
+    from reportflow.ui.style import status_edge
+
+    assert status_edge("success") == "success"
+    assert status_edge("failed") == "failed"
+    assert status_edge("timed_out") == "failed"
+    assert status_edge("crashed") == "failed"
+    assert status_edge("running") == "running"
+    assert status_edge(None) == "muted"
+    # A paused card reads "asleep" regardless of how its last run ended.
+    assert status_edge("success", paused=True) == "muted"
 
 
 def test_status_colors_cover_all_run_states():

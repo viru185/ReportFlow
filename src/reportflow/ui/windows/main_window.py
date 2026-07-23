@@ -24,9 +24,11 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -36,7 +38,7 @@ from reportflow.core import paths
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import logo_pixmap
 from reportflow.ui.fs_util import save_start_path
-from reportflow.ui.schedule_compile import describe, friendly_time
+from reportflow.ui.schedule_compile import ago_text, describe, friendly_time
 from reportflow.ui.style import (
     TEXT_MUTED,
     card_frame,
@@ -44,6 +46,7 @@ from reportflow.ui.style import (
     disabled_badge,
     stage_badge,
     status_badge,
+    status_edge,
 )
 from reportflow.ui.updater import UpdateInfo, check_latest
 from reportflow.ui.windows.about_dialog import AboutDialog
@@ -147,7 +150,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(8, 6, 8, 6)
         root.setSpacing(6)
 
-        # Header: logo + title + stat strip + connection pill, one tight row.
+        # Header: logo + title + stat strip + actions + connection pill, one tight row.
         header = QHBoxLayout()
         logo = QLabel()
         logo.setPixmap(logo_pixmap(24))
@@ -163,21 +166,18 @@ class MainWindow(QMainWindow):
         for pill, _value in (self.card_jobs, self.card_active, self.card_failures):
             header.addWidget(pill)
         header.addStretch()
-        self.conn_label = QLabel(connection_pill(False))
-        header.addWidget(self.conn_label)
-        root.addLayout(header)
-
-        # Actions row
-        actions = QHBoxLayout()
         new_btn = QPushButton("+ New Job")
         new_btn.setProperty("accent", True)
         new_btn.clicked.connect(self._new_job)
-        refresh_btn = QPushButton("⟳ Refresh")
+        refresh_btn = QPushButton("⟳")
+        refresh_btn.setToolTip("Refresh now — the dashboard auto-refreshes every 4 seconds.")
         refresh_btn.clicked.connect(self.refresh)
-        actions.addWidget(new_btn)
-        actions.addStretch()
-        actions.addWidget(refresh_btn)
-        root.addLayout(actions)
+        header.addWidget(new_btn)
+        header.addWidget(refresh_btn)
+        header.addSpacing(8)
+        self.conn_label = QLabel(connection_pill(False))
+        header.addWidget(self.conn_label)
+        root.addLayout(header)
 
         # Warning banner shown when the service runs as LocalSystem (VSTO/PI add-ins can't
         # load there → reports come out #NAME?). Hidden until refresh() detects it.
@@ -287,13 +287,15 @@ class MainWindow(QMainWindow):
             self.jobs_layout.insertWidget(i, self._job_card(job))
 
     def _job_card(self, job: dict[str, Any]) -> QFrame:
-        card = card_frame()
+        enabled = bool(job.get("enabled", True))
+        running = (job.get("last_status") or "") == "running"
+
+        # The coloured left edge carries the last-run status; a pill only appears for
+        # states that need attention (running / paused / email failed).
+        card = card_frame(edge=status_edge(job.get("last_status"), paused=not enabled))
         lay = QHBoxLayout(card)
         lay.setContentsMargins(10, 6, 10, 6)
         lay.setSpacing(6)
-
-        enabled = bool(job.get("enabled", True))
-        running = (job.get("last_status") or "") == "running"
 
         info = QVBoxLayout()
         info.setSpacing(1)
@@ -303,9 +305,11 @@ class MainWindow(QMainWindow):
         name_row.addWidget(stage_badge(job.get("stage", "testing")))
         if not enabled:
             name_row.addWidget(disabled_badge())
-        # Elapsed time rides the dashboard's 4s refresh — no extra polling machinery.
-        suffix = f"· {_elapsed_text(job.get('last_run_at'))}" if running else ""
-        name_row.addWidget(status_badge(job.get("last_status"), suffix))
+        elif running:
+            # Elapsed time rides the dashboard's 4s refresh — no extra polling machinery.
+            name_row.addWidget(
+                status_badge("running", f"· {_elapsed_text(job.get('last_run_at'))}")
+            )
         if job.get("last_email_failed"):
             email_warn = QLabel("✉ failed")
             email_warn.setStyleSheet("color: #e06c6c; font-size: 11px;")
@@ -316,16 +320,23 @@ class MainWindow(QMainWindow):
         name_row.addStretch()
         info.addLayout(name_row)
 
-        schedule_text = (
-            "schedule paused" if not enabled else describe(job.get("schedule_crons") or [])
-        )
-        sheets = job.get("sheet_names") or []
-        last_run = job.get("last_run_at") or "never"
-        detail_text = f"{schedule_text} · {len(sheets)} sheet(s) · last run: {last_run}"
-        next_at = friendly_time(job.get("next_run_at")) if enabled else None
-        if next_at:
-            detail_text += f" · next: {next_at}"
-        detail = QLabel(detail_text)
+        parts: list[str] = []
+        if not enabled:
+            parts.append("schedule paused")
+        else:
+            next_at = friendly_time(job.get("next_run_at"))
+            parts.append(
+                f"next: {next_at}" if next_at else describe(job.get("schedule_crons") or [])
+            )
+        last_status = job.get("last_status")
+        if last_status:
+            ago = ago_text(job.get("last_run_at"))
+            status_text = str(last_status).replace("_", " ")
+            parts.append(f"last: {status_text} {ago}" if ago else f"last: {status_text}")
+        else:
+            parts.append("no runs yet")
+        parts.append(f"{len(job.get('sheet_names') or [])} sheet(s)")
+        detail = QLabel(" · ".join(parts))
         detail.setProperty("muted", True)
         info.addWidget(detail)
         lay.addLayout(info, 1)
@@ -348,15 +359,14 @@ class MainWindow(QMainWindow):
 
         job_name = job.get("name", "")
         testing = job.get("stage", "testing") != "live"
-        # Two single-click run actions; the job's stage answers "who gets the email".
+        # Daily actions stay single-click; everything occasional lives behind ⋯ (an
+        # owner-approved amendment to the single-click policy — keeps cards scannable).
         run_tip = (
             "Builds the report and emails the TEST recipients (job is in Testing)."
             if testing
             else "Builds the report and emails the Production recipients (job is Live)."
         )
-        run_group = QHBoxLayout()
-        run_group.setSpacing(2)
-        run_group.addWidget(
+        lay.addWidget(
             _btn(
                 "▶ Run",
                 run_tip,
@@ -365,7 +375,7 @@ class MainWindow(QMainWindow):
                 active=not running,
             )
         )
-        run_group.addWidget(
+        lay.addWidget(
             _btn(
                 "👁 Build only",
                 "Builds and verifies the report (checks PI DataLink data) without emailing anyone.",
@@ -373,15 +383,6 @@ class MainWindow(QMainWindow):
                 active=not running,
             )
         )
-        if testing:
-            run_group.addWidget(
-                _btn(
-                    "✓ Go live",
-                    "Promote this job: future runs (incl. scheduled) email the Production "
-                    "recipients instead of the Test recipients.",
-                    lambda *_: self._go_live(job),
-                )
-            )
         if not enabled:
             resume = _btn(
                 "▸ Resume",
@@ -389,40 +390,39 @@ class MainWindow(QMainWindow):
                 lambda *_: self._set_enabled(job_name, True),
             )
             resume.setProperty("accent", True)  # THE call-to-action on a paused card
-            run_group.addWidget(resume)
-        lay.addLayout(run_group)
-        lay.addSpacing(10)
-        lay.addWidget(
-            _btn(
-                "📂",
-                "Open the last report's folder (file selected).",
-                lambda *_: self._open_last_report(job),
-            )
-        )
-        lay.addWidget(
-            _btn(
-                "⧉",
-                "Duplicate: new job pre-filled from this one — starts in Testing.",
-                lambda *_: self._duplicate_job(job_name),
-            )
-        )
-        lay.addWidget(_btn("✎ Edit", "Edit this job.", lambda *_: self._edit_job(job_name)))
-        lay.addWidget(
-            _btn(
-                "Logs",
-                "Run history and logs for this job.",
-                lambda *_: self._view_logs(job_name),
-            )
-        )
-        if enabled:
+            lay.addWidget(resume)
+        elif testing:
             lay.addWidget(
                 _btn(
-                    "⏸",
-                    "Pause scheduling — manual runs still work. Resume with one click.",
-                    lambda *_: self._set_enabled(job_name, False),
+                    "✓ Go live",
+                    "Promote this job: future runs (incl. scheduled) email the Production "
+                    "recipients instead of the Test recipients.",
+                    lambda *_: self._go_live(job),
                 )
             )
-        lay.addWidget(_btn("🗑", "Delete this job.", lambda *_: self._delete_job(job_name)))
+
+        more = QToolButton()
+        more.setText("⋯")
+        more.setToolTip("More actions")
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(more)
+        menu.setToolTipsVisible(True)
+        menu.addAction(
+            "📂 Open last report", lambda *_, j=job: self._open_last_report(j)
+        ).setToolTip("Open the last report's folder (file selected).")
+        menu.addAction("✎ Edit", lambda *_: self._edit_job(job_name))
+        menu.addAction("Logs", lambda *_: self._view_logs(job_name))
+        menu.addAction("⧉ Duplicate", lambda *_: self._duplicate_job(job_name))
+        if testing and not enabled:
+            # Promote is normally a visible button; on a paused card Resume takes that
+            # slot, so keep Go live reachable here.
+            menu.addAction("✓ Go live", lambda *_, j=job: self._go_live(j))
+        if enabled:
+            menu.addAction("⏸ Pause", lambda *_: self._set_enabled(job_name, False))
+        menu.addSeparator()
+        menu.addAction("🗑 Delete", lambda *_: self._delete_job(job_name))
+        more.setMenu(menu)
+        lay.addWidget(more)
 
         if not enabled:
             # One effect dims the ENTIRE card uniformly — pills, text, buttons — so a

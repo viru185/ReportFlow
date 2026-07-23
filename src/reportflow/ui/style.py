@@ -307,6 +307,35 @@ QFrame[card="true"] {{
     border: 1px solid {BORDER};
     border-radius: 8px;
 }}
+QFrame[card="true"][edge="success"] {{
+    border-left: 3px solid #4ade80;
+}}
+QFrame[card="true"][edge="failed"] {{
+    border-left: 3px solid #e06c6c;
+}}
+QFrame[card="true"][edge="running"] {{
+    border-left: 3px solid #fbbf24;
+}}
+QFrame[card="true"][edge="muted"] {{
+    border-left: 3px solid #3a3f4d;
+}}
+QToolButton {{
+    background: {FIELD_BG};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 5px 10px;
+}}
+QToolButton:hover {{
+    border-color: {ACCENT};
+    color: {ACCENT_HOVER};
+}}
+QToolButton:pressed {{
+    background: {BG};
+}}
+QToolButton::menu-indicator {{
+    image: none;
+}}
 """
 
 
@@ -351,11 +380,30 @@ def apply_theme(app: QApplication) -> None:
 # -- widget helpers -----------------------------------------------------------------
 
 
-def card_frame() -> QFrame:
-    """A rounded card container styled by the app QSS."""
+def card_frame(edge: str | None = None) -> QFrame:
+    """A rounded card container styled by the app QSS.
+
+    ``edge`` paints a coloured left border ("success" / "failed" / "running" / "muted") —
+    the quiet replacement for an always-on status pill on job cards."""
     frame = QFrame()
     frame.setProperty("card", True)
+    if edge:
+        frame.setProperty("edge", edge)
     return frame
+
+
+def status_edge(status: str | None, *, paused: bool = False) -> str:
+    """Map a job's last run status to a card edge colour key."""
+    if paused:
+        return "muted"
+    s = (status or "").lower()
+    if s == "success":
+        return "success"
+    if s in ("failed", "timed_out", "crashed"):
+        return "failed"
+    if s == "running":
+        return "running"
+    return "muted"
 
 
 def status_badge(status: str | None, suffix: str = "") -> QLabel:
@@ -374,7 +422,7 @@ def status_badge(status: str | None, suffix: str = "") -> QLabel:
 
 def disabled_badge() -> QLabel:
     """Grey pill marking a job whose scheduling is paused (manual runs still work)."""
-    label = QLabel("⏸ DISABLED")
+    label = QLabel("⏸ PAUSED")
     label.setToolTip("Scheduling is paused — click ▸ Resume to re-enable. Manual runs still work.")
     label.setStyleSheet(
         "color: #c3c8d4; background: #2b2f3a; border-radius: 8px; padding: 2px 10px; "
