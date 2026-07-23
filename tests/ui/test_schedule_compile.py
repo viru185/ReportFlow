@@ -90,3 +90,22 @@ def test_friendly_time_phrases():
     assert friendly_time("not-a-date", now) is None
     # Aware timestamps (APScheduler hands those back) don't blow up.
     assert friendly_time("2026-07-15T18:00:00+05:30", now) == "today 18:00"
+
+
+def test_ago_text_phrases():
+    from datetime import datetime
+
+    from reportflow.ui.schedule_compile import ago_text
+
+    now = datetime(2026, 7, 15, 12, 0, 0)
+    assert ago_text("2026-07-15T11:59:30", now) == "just now"
+    assert ago_text("2026-07-15T11:55:00", now) == "5m ago"
+    assert ago_text("2026-07-15T09:00:00", now) == "3h ago"
+    assert ago_text("2026-07-14T09:00:00", now) == "27h ago"  # under 2 days stays in hours
+    assert ago_text("2026-07-13T09:00:00", now) == "2d ago"
+    assert ago_text("2026-07-01T09:00:00", now) == "2026-07-01"
+    assert ago_text(None, now) is None
+    assert ago_text("not-a-date", now) is None
+    assert ago_text("2026-07-16T09:00:00", now) is None  # future -> skip the segment
+    # Aware timestamps don't blow up.
+    assert ago_text("2026-07-15T11:00:00+05:30", now) == "1h ago"
