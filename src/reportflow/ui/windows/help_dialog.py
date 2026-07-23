@@ -101,14 +101,24 @@ Placeholders like <code>{{{{ job_name }}}}</code>, <code>{{{{ status }}}}</code>
 <p>While a run is in flight the card's badge counts the elapsed time and the run buttons
 lock, so a job cannot be started twice by accident. Scheduled cards also show the next fire
 time ("next: tomorrow 06:00").</p>
-<p>More card actions:</p>
+<p>The card's <b>coloured left edge</b> is the last run's outcome at a glance:
+<span style="color:#4ade80;">green</span> = success,
+<span style="color:#f87171;">red</span> = failed,
+<span style="color:#fbbf24;">amber</span> = running,
+grey = paused or never ran. The detail line shows the next fire time, the last outcome
+("last: success 2h ago") and the sheet count.</p>
+<p>Everything occasional lives behind the card's <b>⋯</b> menu, so daily actions stay one
+click:</p>
 <ul>
-<li><b>⏸ / ▸ Resume</b> — pause or resume scheduling in one click. A paused job is
-    unmistakable: the whole card is dimmed with a grey <b>⏸ DISABLED</b> pill and the
-    schedule line reads <i>paused</i>. Manual runs still work while paused.</li>
-<li><b>📂</b> — open the last successful report in Explorer with the file pre-selected.</li>
-<li><b>⧉</b> — duplicate this job: the editor opens pre-filled (fresh name required, starts
+<li><b>📂 Open last report</b> — Explorer opens with the last successful report
+    pre-selected.</li>
+<li><b>✎ Edit</b> / <b>Logs</b> — the job editor and that job's run history.</li>
+<li><b>⧉ Duplicate</b> — a new job pre-filled from this one (fresh name required, starts
     in Testing, uses the default email template).</li>
+<li><b>⏸ Pause</b> — pause scheduling. A paused job is unmistakable: the whole card dims
+    with a grey <b>⏸ PAUSED</b> pill, and a one-click <b>▸ Resume</b> button appears on the
+    card. Manual runs still work while paused.</li>
+<li><b>🗑 Delete</b> — remove the job (asks for confirmation).</li>
 </ul>
 <p>Jobs run in parallel, each in its own isolated Excel process. Failed runs are never
 retried automatically — they stay visible in the history.</p>

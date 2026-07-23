@@ -132,4 +132,7 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   and won't happen (see the email hint in `ui/windows/job_editor.py`).
 - UI principle (from the product owner): simple, functional, minimum wasted space, any level
   of user should manage. **If one click can do the job, don't make it two** — no dropdown
-  menus for primary actions.
+  menus for primary actions. Owner-approved amendment (2026-07-23): *occasional* job-card
+  actions (Open report / Edit / Logs / Duplicate / Pause / Delete) live behind the card's ⋯
+  menu; only daily actions (Run, Build only, Go live/Resume) stay as visible buttons. Don't
+  "fix" that back to a button row — 9+ visible buttons per card was the problem.
