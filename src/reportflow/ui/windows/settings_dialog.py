@@ -39,7 +39,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._api = api
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(880)
         self._build()
         self._load()
         if focus_service_account:
@@ -214,10 +214,20 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
 
-        layout.addWidget(smtp_box)
-        layout.addWidget(rcpt_box)
-        layout.addWidget(app_box)
-        layout.addWidget(account_box)
+        # Two columns so the whole dialog fits on screen: email-related settings on the
+        # left, machine/service settings on the right.
+        columns = QHBoxLayout()
+        left = QVBoxLayout()
+        left.addWidget(smtp_box)
+        left.addWidget(rcpt_box)
+        left.addStretch()
+        right = QVBoxLayout()
+        right.addWidget(app_box)
+        right.addWidget(account_box)
+        right.addStretch()
+        columns.addLayout(left, 1)
+        columns.addLayout(right, 1)
+        layout.addLayout(columns)
         layout.addWidget(buttons)
 
     # -- data --------------------------------------------------------------------
