@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
+## [0.10.1] - 2026-07-23
+
+### Bug Fixes
+- Two WizardSilent guards in reportflow.iss — on a silent upgrade the account is already configured from the prior install, so leave it untouched:
+
+### Documentation
+- Update CHANGELOG.md for v0.10.0 [skip ci]
+
 ## [0.10.0] - 2026-07-23
 
 ### Documentation
