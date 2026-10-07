@@ -4,10 +4,15 @@ Network failures (offline, GitHub unreachable, rate-limited) always resolve to "
 update" so the startup check is silent when the internet is unavailable. Unlike the
 local API client, these requests DO honor system proxies (trust_env default) — internet
 traffic should use them.
+
+Beta pre-releases are never offered: GitHub's "latest release" excludes pre-releases, and
+the release workflow never marks a beta latest. Someone who installed a beta by hand IS
+offered the final release of that version (0.11.0 is newer than 0.11.0b1).
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -42,9 +47,33 @@ def parse_version(text: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+# "0.11.0", "v0.11.0-beta.2", "0.11.0b1" (PEP 440 spelling the installed app reports).
+_VERSION_RE = re.compile(
+    r"^[vV]?(?P<release>\d+(?:\.\d+)*)(?:[-.]?(?P<kind>alpha|beta|rc|a|b)[-.]?(?P<num>\d*))?",
+    re.IGNORECASE,
+)
+_PRE_RANK = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "rc": 2}
+
+
+def version_key(text: str) -> tuple[tuple[int, ...], tuple[int, int, int]] | None:
+    """Sortable key: release numbers, then pre-release ordering (alpha < beta < rc < final).
+
+    '0.11.0-beta.1' / '0.11.0b1' -> ((0, 11, 0), (0, 1, 1)); '0.11.0' -> ((0, 11, 0), (1, 0, 0)).
+    None for junk.
+    """
+    match = _VERSION_RE.match(text.strip())
+    if not match:
+        return None
+    numbers = tuple(int(p) for p in match["release"].split("."))
+    release = (*numbers, 0, 0)[: max(3, len(numbers))]  # 0.11 == 0.11.0
+    if not match["kind"]:
+        return release, (1, 0, 0)  # a final release sorts after all its pre-releases
+    return release, (0, _PRE_RANK[match["kind"].lower()], int(match["num"] or 0))
+
+
 def is_newer(latest: str, current: str) -> bool:
-    lt, ct = parse_version(latest), parse_version(current)
-    return bool(lt) and bool(ct) and lt > ct
+    lt, ct = version_key(latest), version_key(current)
+    return lt is not None and ct is not None and lt > ct
 
 
 def _extract(release: dict) -> UpdateInfo | None:

@@ -766,10 +766,10 @@ class MainWindow(QMainWindow):
     def _startup_update_check(self) -> None:
         try:
             enabled = bool(
-                self._api.get_config().get("ui", {}).get("check_updates_on_startup", True)
+                self._api.get_config().get("ui", {}).get("check_updates_on_startup", False)
             )
         except ApiError:
-            enabled = True  # config unavailable — the check itself fails silently offline
+            enabled = False  # config unavailable — stick to the default (off)
         if not enabled:
             return
         self._run_update_check(silent=True)

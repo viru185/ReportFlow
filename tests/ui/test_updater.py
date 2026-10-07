@@ -33,6 +33,16 @@ def test_parse_version(text, expected):
         ("v1.0.0", "0.9.9", True),
         ("v0.2.10", "0.2.9", True),
         ("junk", "0.2.1", False),
+        # Pre-releases: a beta tester is offered the final release of that version...
+        ("v0.11.0", "0.11.0b1", True),
+        ("v0.11.0", "0.11.0-beta.2", True),
+        # ...a later beta beats an earlier one, rc beats beta...
+        ("v0.11.0-beta.2", "0.11.0b1", True),
+        ("v0.11.0-rc.1", "0.11.0b3", True),
+        # ...but a beta is never "newer" than its own final release.
+        ("v0.11.0-beta.1", "0.11.0", False),
+        ("v0.11.0-beta.1", "0.10.1", True),
+        ("v0.11", "0.11.0", False),
     ],
 )
 def test_is_newer(latest, current, newer):
