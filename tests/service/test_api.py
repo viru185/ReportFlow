@@ -417,3 +417,63 @@ def test_multiple_crons_register_multiple_triggers(client):
 
     scheduled = c.get("/system/status").json()["scheduled_jobs"]
     assert sorted(scheduled) == ["daily#0", "daily#1"]
+
+
+def test_rename_job_moves_history_and_template(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    c.put("/jobs/daily/email-template", json={"content": "<p>{{ job_name }}</p>"})
+    run_id = c.post("/jobs/daily/dry-run").json()["run_id"]
+    assert _wait_done(c, run_id) == "success"
+    launcher = c.app.state.svc.launcher
+    for _ in range(50):  # the run thread lets go of the job just after the final status
+        if not launcher.inflight_job_names():
+            break
+        time.sleep(0.1)
+
+    job = c.get("/jobs/daily").json()["job"]
+    resp = c.put("/jobs/daily", json=dict(job, name="Daily Sales"))
+    assert resp.status_code == 200 and resp.json()["renamed_from"] == "daily"
+
+    assert c.get("/jobs/daily").status_code == 404
+    renamed = c.get("/jobs/Daily Sales").json()["job"]
+    assert renamed["email_template_path"].endswith("Daily Sales.html")
+    assert c.get("/jobs/Daily Sales/email-template").json()["content"] == "<p>{{ job_name }}</p>"
+    old_tpl = Path(job["email_template_path"])
+    assert not old_tpl.exists()  # moved, not duplicated
+    assert [r["run_id"] for r in c.get("/runs", params={"job": "Daily Sales"}).json()] == [run_id]
+    assert c.get("/runs", params={"job": "daily"}).json() == []
+
+
+def test_rename_refuses_existing_name_and_running_job(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    c.post("/jobs", json=dict(_job_payload(tmp_path), name="weekly"))
+    job = c.get("/jobs/daily").json()["job"]
+
+    resp = c.put("/jobs/daily", json=dict(job, name="WEEKLY"))
+    assert resp.status_code == 409 and "already exists" in resp.json()["detail"]
+
+    launcher = c.app.state.svc.launcher
+    launcher._inflight["r-queued"] = "daily"  # a run queued or in flight
+    try:
+        resp = c.put("/jobs/daily", json=dict(job, name="renamed"))
+        assert resp.status_code == 409 and "running" in resp.json()["detail"]
+    finally:
+        launcher._inflight.pop("r-queued")
+    assert c.get("/jobs/daily").status_code == 200  # nothing changed
+
+
+def test_rename_only_letter_case(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    c.put("/jobs/daily/email-template", json={"content": "<p>x</p>"})
+    job = c.get("/jobs/daily").json()["job"]
+
+    assert c.put("/jobs/daily", json=dict(job, name="Daily")).status_code == 200
+    names = [j["name"] for j in c.get("/jobs").json()]
+    assert names == ["Daily"]
+    assert c.get("/jobs/Daily/email-template").json()["content"] == "<p>x</p>"

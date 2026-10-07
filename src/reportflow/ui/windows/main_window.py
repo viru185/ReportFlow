@@ -481,11 +481,13 @@ class MainWindow(QMainWindow):
     def _save(self, dlg: JobEditorDialog, *, create: bool) -> None:
         payload = dlg.payload()
         logger.info("{} job {!r}", "Creating" if create else "Updating", payload.get("name"))
+        # Saved under its ORIGINAL name: a changed name in the payload is a rename.
+        original = dlg.original_name() or payload["name"]
         try:
             if create:
                 self._api.create_job(payload)
             else:
-                self._api.update_job(payload["name"], payload)
+                self._api.update_job(original, payload)
             template = dlg.template_html()
             if template is not None:
                 self._api.put_email_template(payload["name"], template)
@@ -493,6 +495,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Save failed", str(e))
             return
         self.refresh()
+        if not create and original != payload["name"]:
+            self.statusBar().showMessage(
+                f"Renamed {original!r} to {payload['name']!r} — its run history came along."
+            )
         if create:
             self.statusBar().showMessage(
                 f"Job {payload.get('name')!r} created in Testing — click ▶ Run to build it "

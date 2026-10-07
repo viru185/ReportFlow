@@ -154,6 +154,9 @@ class Launcher:
         self._group_guard = threading.Lock()
         self._active: dict[str, subprocess.Popen] = {}
         self._active_guard = threading.Lock()
+        # run_id -> job name for every run from prepare to finish — including runs still
+        # queued behind the concurrency cap, which have no worker process yet.
+        self._inflight: dict[str, str] = {}
 
     # -- public ------------------------------------------------------------------
 
@@ -184,6 +187,11 @@ class Launcher:
     def active_run_ids(self) -> list[str]:
         with self._active_guard:
             return list(self._active)
+
+    def inflight_job_names(self) -> set[str]:
+        """Jobs with a run queued or running (e.g. a rename must wait for them)."""
+        with self._active_guard:
+            return set(self._inflight.values())
 
     # -- internals ---------------------------------------------------------------
 
@@ -230,6 +238,8 @@ class Launcher:
             worker_log_path=str(request.log_path),
         )
         self.run_store.upsert(record)
+        with self._active_guard:
+            self._inflight[run_id] = job.name
         return request, record
 
     def _run_prepared(
@@ -250,6 +260,8 @@ class Launcher:
         finally:
             if group_lock is not None:
                 group_lock.release()
+            with self._active_guard:
+                self._inflight.pop(request.run_id, None)
 
     def _build_request(
         self,

@@ -107,6 +107,7 @@ class JobEditorDialog(QDialog):
         self._existing_template_path: str | None = None
         self._workbooks: list[_WorkbookState] = [_WorkbookState()]
         self._loaded_timeout_seconds: int | None = None
+        self._original_name: str | None = None  # EDIT mode: the name the job is stored under
         self._current_wb = 0
         self._syncing = False  # guards widget signals while the editor fills widgets itself
         self.setWindowTitle("Edit Job" if self._editing else "New Job")
@@ -144,7 +145,10 @@ class JobEditorDialog(QDialog):
         input_form = QFormLayout(general_tab)
 
         self.name = QLineEdit()
-        self.name.setToolTip("A unique name for this job; it is also used in output filenames.")
+        self.name.setToolTip(
+            "A unique name for this job; it is also used in output filenames. Renaming keeps "
+            "the job's run history and email template."
+        )
         self.name.textChanged.connect(self._update_output_example)
         self.enabled = QCheckBox("Enabled")
         self.enabled.setChecked(True)
@@ -708,7 +712,9 @@ class JobEditorDialog(QDialog):
         existing = self._template_html or ""
         if not existing and self._editing:
             try:
-                existing = self._api.get_email_template(self.name.text().strip()).get("content", "")
+                # Stored under the original name until a rename is saved.
+                stored_as = self._original_name or self.name.text().strip()
+                existing = self._api.get_email_template(stored_as).get("content", "")
             except ApiError:
                 existing = ""
         dlg = EmailTemplateDialog(existing, self.name.text().strip(), self)
@@ -820,6 +826,10 @@ class JobEditorDialog(QDialog):
             return loaded
         return minutes * 60
 
+    def original_name(self) -> str | None:
+        """EDIT mode: the name the job is saved under (differs from payload's on a rename)."""
+        return self._original_name
+
     def template_html(self) -> str | None:
         """The in-app authored template source, or None when unchanged."""
         return self._template_html
@@ -827,7 +837,9 @@ class JobEditorDialog(QDialog):
     def _load(self, job: dict[str, Any]) -> None:
         job = migrate_legacy_job(job)  # an old-shaped (pre-0.11) job dict still loads
         self.name.setText(job.get("name", ""))
-        self.name.setReadOnly(True)  # name is the key; edit via delete+recreate
+        if self._editing:
+            # Renaming is allowed: the service moves the run history and template along.
+            self._original_name = job.get("name")
         self.enabled.setChecked(job.get("enabled", True))
         # Only the included sheets are known until "Discover sheets" reads the workbook.
         self._set_workbooks(
