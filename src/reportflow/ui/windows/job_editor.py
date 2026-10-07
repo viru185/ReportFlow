@@ -97,9 +97,12 @@ class JobEditorDialog(QDialog):
         parent: QWidget | None = None,
         *,
         prefill: dict[str, Any] | None = None,
+        prefill_template: str | None = None,
     ) -> None:
         """``job`` opens EDIT mode; ``prefill`` opens CREATE mode seeded from an existing
-        job (Duplicate): fresh editable name, forced back to Testing, template not shared."""
+        job (Duplicate): everything copied except the name (fresh) and the stage (back to
+        Testing). ``prefill_template`` is the source job's email template content — the copy
+        gets its own file with the same content."""
         super().__init__(parent)
         self._api = api
         self._editing = job is not None
@@ -117,22 +120,25 @@ class JobEditorDialog(QDialog):
             self._load(job)
         elif prefill:
             self._load(prefill)
-            self._apply_duplicate_mode()
+            self._apply_duplicate_mode(prefill.get("name", ""), prefill_template)
         self._update_output_example()
 
-    def _apply_duplicate_mode(self) -> None:
-        """Duplicating is CREATE, not EDIT: new name, fresh Testing lifecycle, own template."""
-        self.setWindowTitle("New Job (duplicate)")
+    def _apply_duplicate_mode(self, source: str, template: str | None) -> None:
+        """Duplicating is CREATE, not EDIT: everything is copied except the name (fresh)
+        and the stage (a new job verifies in Testing first, like any other)."""
+        self.setWindowTitle(f"New Job (duplicate of {source})" if source else "New Job")
         self.name.clear()
-        self.name.setReadOnly(False)
         self.name.setFocus()
-        self.enabled.setChecked(True)
         self.stage.setCurrentIndex(self.stage.findData("testing"))
         self.stage.setEnabled(False)  # like any new job: promote from the card after a run
-        # The source job's template file must not be shared — two jobs editing one file
-        # would cross-wire; the copy starts from the default (re-author if needed).
+        # The template FILE is never shared — two jobs editing one file would cross-wire —
+        # but its content is copied, and saved as the new job's own template.
         self._existing_template_path = None
-        self.template_status.setText("Template not copied — using the default.")
+        if template and template.strip():
+            self._template_html = template
+            self.template_status.setText(f"Template copied from {source}.")
+        else:
+            self.template_status.setText("Using the default template (as the original).")
 
     # -- construction ------------------------------------------------------------
 
