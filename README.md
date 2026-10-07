@@ -434,7 +434,7 @@ Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) and `packaging/nssm/nss
 ```
 
 For a beta, also pass the numeric part for the Windows file version:
-`/DMyAppVersion=0.11.0-beta.1 /DMyAppNumericVersion=0.11.0`.
+`/DMyAppVersion=0.11.0-beta /DMyAppNumericVersion=0.11.0`.
 
 ### Project layout
 
@@ -577,8 +577,9 @@ Bound to `127.0.0.1` only.
   with git-cliff (everything since the last stable tag), and publishes a GitHub Release with
   the installer + zipped executables.
 
-**Beta first.** A new feature ships as a beta: set `version = "X.Y.Z-beta.N"` in
-`pyproject.toml` and push tag `vX.Y.Z-beta.N` (from any branch). It is published as a GitHub
+**Beta first.** A new feature ships as a beta: set `version = "X.Y.Z-beta"` in
+`pyproject.toml` and push tag `vX.Y.Z-beta` (from any branch). Betas are **not numbered** — if a
+beta needs a fix, bump the version (`v0.11.0-beta` → `v0.11.1-beta`), never `-beta.2`. It is published as a GitHub
 **pre-release**, never marked latest, so the in-app updater ignores it and testers install it
 by hand. When it's verified, set `version = "X.Y.Z"`, merge to `main` and push tag `vX.Y.Z`:
 that release is offered to everyone, its notes include the beta's changes, and the workflow

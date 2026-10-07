@@ -24,7 +24,7 @@ split_commits = false
 protect_breaking_commits = true
 filter_commits = false
 tag_pattern = "v[0-9]*"
-# Beta pre-releases (vX.Y.Z-beta.N) are not changelog versions of their own: their commits
+# Beta pre-releases (vX.Y.Z-beta) are not changelog versions of their own: their commits
 # roll into the next stable release, so its notes cover everything since the last stable.
 ignore_tags = "-(alpha|beta|rc)"
 sort_commits = "oldest"

@@ -43,6 +43,11 @@ def test_parse_version(text, expected):
         ("v0.11.0-beta.1", "0.11.0", False),
         ("v0.11.0-beta.1", "0.10.1", True),
         ("v0.11", "0.11.0", False),
+        # House style — un-numbered betas, a fix bumps the version:
+        ("v0.11.0", "0.11.0-beta", True),
+        ("v0.11.1-beta", "0.11.0-beta", True),
+        ("v0.11.1-beta", "0.11.0b0", True),
+        ("v0.11.0-beta", "0.11.0", False),
     ],
 )
 def test_is_newer(latest, current, newer):

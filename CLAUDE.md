@@ -133,14 +133,14 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pyt
 
 New features ship as a **beta first** (owner's workflow since 0.11):
 
-1. Bump `version` in `pyproject.toml` (single source) — `X.Y.Z-beta.N` for a beta, `X.Y.Z`
+1. Bump `version` in `pyproject.toml` (single source) — `X.Y.Z-beta` for a beta, `X.Y.Z`
    for the final release. `release.yml` fails if the tag disagrees
    (`scripts/check_release_tag.py`).
 2. Gate green + `uv run pytest -m excel`.
 3. Validate the installer compiles:
    `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=X.Y.Z packaging\innosetup\reportflow.iss`
    (a beta also needs `/DMyAppNumericVersion=X.Y.Z` — Windows file versions are numeric).
-4. **Beta:** tag `vX.Y.Z-beta.N` (any branch) and push it → published as a GitHub
+4. **Beta:** tag `vX.Y.Z-beta` (any branch) and push it → published as a GitHub
    **pre-release**, never "latest", no CHANGELOG commit. **Final:** merge to `main`, tag
    `vX.Y.Z`, push both → normal release. The in-app updater reads the LATEST release (betas
    are invisible to it) and runs the setup exe with `/SILENT` (so installer wizard pages,
@@ -148,6 +148,9 @@ New features ship as a **beta first** (owner's workflow since 0.11):
    the last stable tag; beta tags are `ignore_tags` in `cliff.toml`. A final release
    regenerates `CHANGELOG.md` and commits it to `main` as the actions bot (`[skip ci]`) —
    don't edit that file by hand.
+
+Betas are **never numbered** (owner's rule): a fix to `v0.11.0-beta` ships as
+`v0.11.1-beta` — bump the version, don't use `-beta.2`.
 
 Commits: author Viren Hirpara, **no co-author trailer**.
 

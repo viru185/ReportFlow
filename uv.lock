@@ -1295,7 +1295,7 @@ wheels = [
 
 [[package]]
 name = "reportflow"
-version = "0.11.0b1"
+version = "0.11.0b0"
 source = { editable = "." }
 dependencies = [
     { name = "email-validator" },

@@ -1,9 +1,11 @@
 name: Release
 
-# Tag vX.Y.Z           -> a normal release (the in-app updater offers it).
-# Tag vX.Y.Z-beta.N    -> a PRE-RELEASE: built and published the same way, but marked
-#                         pre-release and never "latest", so the updater ignores it. A new
-#                         feature ships as a beta first; promote it with a plain vX.Y.Z tag.
+# Tag vX.Y.Z        -> a normal release (the in-app updater offers it).
+# Tag vX.Y.Z-beta   -> a PRE-RELEASE: built and published the same way, but marked
+#                      pre-release and never "latest", so the updater ignores it. A new
+#                      feature ships as a beta first; promote it with a plain vX.Y.Z tag.
+#                      Betas are not numbered: a fix to a beta bumps the version
+#                      (v0.11.0-beta -> v0.11.1-beta), never -beta.2.
 on:
   push:
     tags: ["v*"]
@@ -35,7 +37,7 @@ jobs:
           $ref = "${{ github.ref_name }}"
           $ver = $ref -replace '^v', ''
           if (-not $ver) { $ver = "0.0.0-dev" }
-          # Windows file versions are numeric only: 0.11.0-beta.1 -> 0.11.0.
+          # Windows file versions are numeric only: 0.11.0-beta -> 0.11.0.
           $numeric = ($ver -split '-')[0]
           $pre = if ($ver -match '-(alpha|beta|rc)') { "true" } else { "false" }
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append

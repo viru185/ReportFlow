@@ -5,7 +5,7 @@
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
 #endif
-; Windows file versions are numeric only, so a beta (0.11.0-beta.1) passes its numeric part
+; Windows file versions are numeric only, so a beta (0.11.0-beta) passes its numeric part
 ; (0.11.0) separately; a stable version is already numeric.
 #ifndef MyAppNumericVersion
   #define MyAppNumericVersion MyAppVersion
