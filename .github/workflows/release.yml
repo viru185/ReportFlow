@@ -1,5 +1,9 @@
 name: Release
 
+# Tag vX.Y.Z           -> a normal release (the in-app updater offers it).
+# Tag vX.Y.Z-beta.N    -> a PRE-RELEASE: built and published the same way, but marked
+#                         pre-release and never "latest", so the updater ignores it. A new
+#                         feature ships as a beta first; promote it with a plain vX.Y.Z tag.
 on:
   push:
     tags: ["v*"]
@@ -31,7 +35,19 @@ jobs:
           $ref = "${{ github.ref_name }}"
           $ver = $ref -replace '^v', ''
           if (-not $ver) { $ver = "0.0.0-dev" }
+          # Windows file versions are numeric only: 0.11.0-beta.1 -> 0.11.0.
+          $numeric = ($ver -split '-')[0]
+          $pre = if ($ver -match '-(alpha|beta|rc)') { "true" } else { "false" }
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "numeric=$numeric" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "prerelease=$pre" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "Version $ver (numeric $numeric), pre-release: $pre"
+
+      - name: Check the tag matches pyproject.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        # The app reads its version from the package metadata — a tag that disagrees with
+        # pyproject.toml would publish an installer that reports the wrong version.
+        run: uv run python scripts/check_release_tag.py ${{ github.ref_name }}
 
       - name: Build executables
         run: uv run python packaging/build_all.py
@@ -62,6 +78,7 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             /DMyAppVersion=${{ steps.ver.outputs.version }} `
+            /DMyAppNumericVersion=${{ steps.ver.outputs.numeric }} `
             packaging\innosetup\reportflow.iss
 
       - name: Zip executables
@@ -71,34 +88,54 @@ jobs:
           Compress-Archive dist\service dist\reportflow-service-${{ steps.ver.outputs.version }}.zip
           Compress-Archive dist\ui      dist\reportflow-ui-${{ steps.ver.outputs.version }}.zip
 
+      - name: Find the previous stable release
+        id: prev
+        shell: pwsh
+        # Release notes cover everything since the last STABLE tag: a beta lists all of the
+        # upcoming release so far, and the final release repeats nothing from older ones.
+        run: |
+          $prev = git describe --tags --abbrev=0 --match "v[0-9]*" --exclude "*-*" HEAD^ 2>$null
+          if (-not $prev) { $prev = git rev-list --max-parents=0 HEAD }
+          $global:LASTEXITCODE = 0  # "no stable tag yet" is not a failure
+          "range=$prev..HEAD" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "Notes from $prev"
+
       - name: Generate release notes
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --latest --strip header --output RELEASE_NOTES.md
+          args: ${{ steps.prev.outputs.range }} --tag ${{ github.ref_name }} --strip header --output RELEASE_NOTES.md
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           body_path: RELEASE_NOTES.md
+          prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
+          # Never let a beta become "latest": the in-app updater installs whatever is latest.
+          make_latest: ${{ steps.ver.outputs.prerelease == 'true' && 'false' || 'true' }}
           files: |
             packaging/innosetup/Output/ReportFlow-Setup-*.exe
             dist/*.zip
 
       # Keep the tracked CHANGELOG.md true to its own header: regenerate the FULL history
       # and commit it back to main (the tag checkout is detached, so switch explicitly).
+      # Not for betas: they may be tagged off a feature branch, and the changelog lists them
+      # under their stable release anyway (cliff.toml ignore_tags).
       - name: Switch to main for changelog commit
+        if: steps.ver.outputs.prerelease != 'true'
         run: |
           git fetch origin main
           git switch -C main origin/main
 
       - name: Regenerate full CHANGELOG.md
+        if: steps.ver.outputs.prerelease != 'true'
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
           args: --output CHANGELOG.md
 
       - name: Commit CHANGELOG.md to main
+        if: steps.ver.outputs.prerelease != 'true'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
