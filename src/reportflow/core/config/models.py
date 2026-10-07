@@ -61,7 +61,8 @@ class SmtpConfig(_Base):
 class UiSettings(_Base):
     api_base_url: str = "http://127.0.0.1:8787"
     # Check GitHub for a newer release when the UI starts (skipped silently when offline).
-    check_updates_on_startup: bool = True
+    # Off by default (owner's call, 0.11): updates are looked for on request (Help menu).
+    check_updates_on_startup: bool = False
 
 
 class EmailSettings(_Base):

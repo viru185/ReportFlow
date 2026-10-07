@@ -225,3 +225,9 @@ def test_all_addresses_dedupes():
         bcc=["c@x.com"],
     )
     assert r.all_addresses() == ["a@x.com", "b@x.com", "c@x.com"]
+
+
+def test_update_check_on_startup_is_off_by_default():
+    from reportflow.core.config.models import UiSettings
+
+    assert UiSettings().check_updates_on_startup is False

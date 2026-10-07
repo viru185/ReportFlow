@@ -260,7 +260,7 @@ class SettingsDialog(QDialog):
         self.log_retention.setValue(int(app_cfg.get("log_retention_days", 30)))
 
         ui_cfg = cfg.get("ui", {})
-        self.check_updates.setChecked(bool(ui_cfg.get("check_updates_on_startup", True)))
+        self.check_updates.setChecked(bool(ui_cfg.get("check_updates_on_startup", False)))
         self.debug_logging.setChecked(bool(app_cfg.get("debug_logging", False)))
 
         self._app_section_base: dict[str, Any] = app_cfg

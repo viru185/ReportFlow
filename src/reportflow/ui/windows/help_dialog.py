@@ -273,11 +273,16 @@ retried automatically — they stay visible in the history.</p>
 </ul>
 
 <h2 id="updates">Updates</h2>
-<p>The app checks GitHub for a newer version at startup (only when the internet is
-reachable; toggle in Settings). You can also run <b>Help → Check for updates…</b> at any
-time. When an update exists you see the version and release notes — nothing installs until
-you click <b>Update now</b>; then the download shows its progress and the installer
-upgrades automatically, preserving all jobs, settings, and logs.</p>
+<p>Run <b>Help → Check for updates…</b> to look for a newer version on GitHub. To have the
+app look automatically each time it starts, tick <b>Check for updates when the app
+starts</b> in File → Settings (off by default; skipped silently when offline). When an
+update exists you see the version and release notes — nothing installs until you click
+<b>Update now</b>; then the download shows its progress and the installer upgrades
+automatically, preserving all jobs, settings, and logs.</p>
+<p><b>Beta versions</b> (e.g. <code>0.11.0-beta.1</code>) are published on GitHub as
+<i>pre-releases</i> for testing new features. The update check never offers them; install a
+beta by hand from the GitHub releases page. Someone running a beta is offered the final
+release when it comes out.</p>
 
 <h2 id="advanced">Advanced options</h2>
 <ul>
