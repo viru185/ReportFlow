@@ -289,10 +289,10 @@ def test_schedule_widget_round_trip(qtbot):
     qtbot.addWidget(w)
 
     w.load(["0 6 * * MON,WED", "30 18 * * MON,WED"])
-    spec = w.to_spec()
-    assert spec.mode == "weekly"
-    assert spec.weekdays == ["MON", "WED"]
-    assert spec.times == ["06:00", "18:30"]
+    [rule] = w.to_rules()
+    assert rule.kind == "weekly"
+    assert rule.weekdays == ["MON", "WED"]
+    assert rule.times == ["06:00", "18:30"]
     assert w.to_crons() == ["0 6 * * MON,WED", "30 18 * * MON,WED"]
 
 
@@ -302,6 +302,7 @@ def test_schedule_widget_manual_default(qtbot):
     w = ScheduleWidget()
     qtbot.addWidget(w)
     assert w.to_crons() == []
+    assert not w.manual_hint.isHidden()
 
 
 def test_schedule_widget_advanced_fallback(qtbot):
@@ -310,8 +311,46 @@ def test_schedule_widget_advanced_fallback(qtbot):
     w = ScheduleWidget()
     qtbot.addWidget(w)
     w.load(["*/5 * * * *"])
-    assert w.to_spec().mode == "advanced"
+    assert [r.kind for r in w.to_rules()] == ["cron"]
     assert w.to_crons() == ["*/5 * * * *"]
+
+
+def test_schedule_widget_combines_rules_and_deletes_in_one_click(qtbot):
+    from PySide6.QtCore import QTime
+    from PySide6.QtWidgets import QPushButton
+
+    from reportflow.ui.schedule_compile import ScheduleRule
+    from reportflow.ui.windows.schedule_widget import ScheduleWidget
+
+    w = ScheduleWidget()
+    qtbot.addWidget(w)
+    daily = w.add_rule(ScheduleRule(kind="daily"))
+    daily.time_edit.setTime(QTime(6, 0))
+    daily._add_time()
+    daily.time_edit.setTime(QTime(18, 0))
+    daily._add_time()
+    sunday = w.add_rule(ScheduleRule(kind="weekly"))
+    sunday.weekday_checks["SUN"].setChecked(True)
+    sunday.time_edit.setTime(QTime(10, 0))
+    sunday._add_time()
+    assert w.to_crons() == ["0 6 * * *", "0 18 * * *", "0 10 * * SUN"]
+    assert w.summary.text() == "Daily at 06:00, 18:00; Weekly Sun at 10:00"
+
+    # Each time chip deletes itself — no "select, then Remove selected".
+    chip = next(b for b in daily.findChildren(QPushButton) if b.text().startswith("18:00"))
+    chip.click()
+    assert daily.times() == ["06:00"]
+
+    # A whole rule goes with its own Delete.
+    delete = next(b for b in sunday.findChildren(QPushButton) if "Delete" in b.text())
+    delete.click()
+    assert w.to_crons() == ["0 6 * * *"]
+
+    # An overlap is explained right under the rules, and blocks saving.
+    clash = w.add_rule(ScheduleRule(kind="weekly", weekdays=["SUN"], times=["06:00"]))
+    assert "already in the daily schedule" in w.summary.text()
+    clash.remove_requested.emit(clash)
+    assert w.summary.text() == "Daily at 06:00"
 
 
 # -- main window ------------------------------------------------------------------
