@@ -40,7 +40,8 @@ _XL_ERRORS = 16  # xlErrors
 _NO_CELLS_FOUND_HRESULT = -2146827284  # 0x800A03EC — SpecialCells matched nothing
 _ERROR_SAMPLE_LIMIT = 200  # cap cells scanned when collecting distinct error texts
 
-_XL_SHEET_VERY_HIDDEN = 2  # xlSheetVeryHidden
+_XL_SHEET_HIDDEN = 0  # xlSheetHidden — recipients can unhide it
+_XL_SHEET_VERY_HIDDEN = 2  # xlSheetVeryHidden — only VBA can unhide it
 
 # Adaptive settle: keep recalculating until every selected sheet's populated-cell count is
 # unchanged AND at least back to its opening baseline (the template's cached values). PI
@@ -231,10 +232,10 @@ class ExcelRun:
         # (e.g. PI DataLink under a service account) — surfaced in the failure message.
         self.failed_addins: list[str] = []
         # Per-sheet populated counts captured at open (the template's cached values) —
-        # the settle loop's "expected shape" for each selected sheet.
+        # the settle loop's "expected shape" for each selected sheet of the OPEN workbook.
         self.baseline_counts: dict[str, int] = {}
-        # Deliver-anyway notes when settling gave up (sheets still lagging/changing);
-        # the runner merges these into the run's warnings.
+        # Deliver-anyway notes when settling gave up (sheets still lagging/changing) for the
+        # open workbook; the runner merges these into the run's warnings.
         self.settle_warnings: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------------
@@ -482,6 +483,7 @@ class ExcelRun:
         # refresh, a selected sheet holding fewer values than it OPENED with means async
         # data (PI archive pulls) hasn't caught up yet — keep waiting, then warn.
         self.baseline_counts = _count_values_by_sheet(book, sheet_names)
+        self.settle_warnings = []  # per-workbook, like the baselines
         logger.info("Opening populated-cell baselines: {}", self.baseline_counts)
         # The fragile startup+open is done; let other worker processes start their Excel now.
         self._release_startup_lock()
@@ -823,6 +825,27 @@ class ExcelRun:
             logger.info("Exported PDF: {}", pdf_path)
             produced.append(pdf_path)
         return produced
+
+    def hide_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
+        """Hide included sheets the job marked Hidden (normal hidden, unhide-able).
+
+        Runs AFTER PDF export (Excel cannot export a hidden sheet) and after
+        collapse_selection (which must activate only visible sheets).
+        """
+        for name in sheet_names:
+            try:
+                book.sheets[name].api.Visible = _XL_SHEET_HIDDEN
+                logger.info("Hid sheet in output: {!r}", name)
+            except Exception as e:  # noqa: BLE001 — e.g. Excel refusing to hide the last sheet
+                logger.warning("Could not hide sheet {!r}: {}", name, e)
+
+    @staticmethod
+    def close_book(book: xw.Book) -> None:
+        """Close a finished (or abandoned) workbook so the next one starts clean."""
+        try:
+            book.close()
+        except Exception as e:  # noqa: BLE001 — teardown closes leftovers anyway
+            logger.debug("Closing workbook failed: {}", e)
 
     def save_output(self, book: xw.Book, output_xlsx_path: Path) -> Path:
         """Save-as to the output path. The SOURCE file is never written.

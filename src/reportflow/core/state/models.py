@@ -31,7 +31,9 @@ class RunRecord(BaseModel):
     duration_seconds: float | None = None
     exit_code: int | None = None
 
+    # First output workbook (kept for 'open last report' and pre-0.11 rows) + all of them.
     output_xlsx: str | None = None
+    output_xlsx_paths: list[str] = Field(default_factory=list)
     pdf_paths: list[str] = Field(default_factory=list)
 
     error_summary: str | None = None

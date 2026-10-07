@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS runs (
     duration_seconds REAL,
     exit_code       INTEGER,
     output_xlsx     TEXT,
+    output_xlsx_paths TEXT NOT NULL DEFAULT '[]',
     pdf_paths       TEXT NOT NULL DEFAULT '[]',
     error_summary   TEXT,
     warnings        TEXT NOT NULL DEFAULT '[]',
@@ -44,6 +45,8 @@ _MIGRATIONS = [
     # warnings existed on the model since 0.6.2 but was never persisted — run history read
     # back empty lists after a service restart. Backfilled as '[]'.
     "ALTER TABLE runs ADD COLUMN warnings TEXT NOT NULL DEFAULT '[]'",
+    # 0.11: several workbooks per job -> several output files per run.
+    "ALTER TABLE runs ADD COLUMN output_xlsx_paths TEXT NOT NULL DEFAULT '[]'",
 ]
 
 
@@ -75,18 +78,19 @@ class RunStore:
                 """
                 INSERT INTO runs (run_id, job_name, trigger, status, is_test, started_at,
                                   finished_at, duration_seconds, exit_code, output_xlsx,
-                                  pdf_paths, error_summary, warnings, worker_log_path,
-                                  email_sent, email_note)
+                                  output_xlsx_paths, pdf_paths, error_summary, warnings,
+                                  worker_log_path, email_sent, email_note)
                 VALUES (:run_id, :job_name, :trigger, :status, :is_test, :started_at,
                         :finished_at, :duration_seconds, :exit_code, :output_xlsx,
-                        :pdf_paths, :error_summary, :warnings, :worker_log_path,
-                        :email_sent, :email_note)
+                        :output_xlsx_paths, :pdf_paths, :error_summary, :warnings,
+                        :worker_log_path, :email_sent, :email_note)
                 ON CONFLICT(run_id) DO UPDATE SET
                     status=excluded.status,
                     finished_at=excluded.finished_at,
                     duration_seconds=excluded.duration_seconds,
                     exit_code=excluded.exit_code,
                     output_xlsx=excluded.output_xlsx,
+                    output_xlsx_paths=excluded.output_xlsx_paths,
                     pdf_paths=excluded.pdf_paths,
                     error_summary=excluded.error_summary,
                     warnings=excluded.warnings,
@@ -110,6 +114,7 @@ class RunStore:
             "duration_seconds": r.duration_seconds,
             "exit_code": r.exit_code,
             "output_xlsx": r.output_xlsx,
+            "output_xlsx_paths": json.dumps(r.output_xlsx_paths),
             "pdf_paths": json.dumps(r.pdf_paths),
             "error_summary": r.error_summary,
             "warnings": json.dumps(r.warnings),
@@ -131,6 +136,9 @@ class RunStore:
             duration_seconds=row["duration_seconds"],
             exit_code=row["exit_code"],
             output_xlsx=row["output_xlsx"],
+            # Pre-0.11 rows only have the single output column.
+            output_xlsx_paths=json.loads(row["output_xlsx_paths"] or "[]")
+            or ([row["output_xlsx"]] if row["output_xlsx"] else []),
             pdf_paths=json.loads(row["pdf_paths"]),
             error_summary=row["error_summary"],
             warnings=json.loads(row["warnings"] or "[]"),

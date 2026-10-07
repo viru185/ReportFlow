@@ -27,7 +27,14 @@ from loguru import logger
 from reportflow.core import paths
 from reportflow.core.config.models import AppConfig, JobConfig
 from reportflow.core.email import send_report
-from reportflow.core.ipc import RunStatus, WorkerRequest, read_result, write_request
+from reportflow.core.ipc import (
+    RunStatus,
+    SheetTask,
+    WorkbookTask,
+    WorkerRequest,
+    read_result,
+    write_request,
+)
 from reportflow.core.state import RunRecord, RunStore, RunTrigger
 
 _DRY_RUN_NOTE = "not sent — build only"
@@ -93,30 +100,50 @@ def default_worker_command() -> list[str]:
 DEFAULT_OUTPUT_STEM = "{job}_{date}"
 
 
-def _substitute_tokens(text: str, *, job_name: str, run_id: str, now: datetime) -> str:
-    """Expand {date}/{datetime}/{job}/{run_id} in an output name. {sheet} is left for the
-    worker (one PDF per sheet)."""
+def _substitute_tokens(
+    text: str, *, job_name: str, run_id: str, now: datetime, workbook: str = ""
+) -> str:
+    """Expand {date}/{datetime}/{job}/{run_id}/{workbook} in an output name. {sheet} is
+    left for the worker (one PDF per sheet)."""
     text = text.replace("{date}", now.strftime("%Y%m%d"))
     text = text.replace("{datetime}", now.strftime("%Y%m%d_%H%M%S"))
     text = text.replace("{job}", job_name)
     text = text.replace("{run_id}", run_id)
+    text = text.replace("{workbook}", workbook)
     return text
 
 
-def resolve_output_paths(job: JobConfig, *, run_id: str, now: datetime) -> tuple[Path, Path | None]:
-    """Derive the concrete output .xlsx path and the {sheet}-tokenized PDF pattern.
+def resolve_output_paths(
+    job: JobConfig, *, run_id: str, now: datetime
+) -> list[tuple[Path, Path | None]]:
+    """Per workbook: the concrete output .xlsx path and the {sheet}-tokenized PDF pattern.
 
-    Folder: ``job.output_dir``, or the input file's folder when unset. Filename stem:
-    ``job.output_name`` (tokens expanded), or ``{job}_{date}``. PDFs always get a per-sheet
-    suffix; the ``{sheet}`` token is resolved by the worker.
+    Folder: ``job.output_dir``, or each input file's own folder when unset. Filename stem:
+    ``job.output_name`` (tokens expanded), or the default. With several workbooks the stem
+    must tell them apart, so ``_{workbook}`` (the input file's name) is appended when the
+    pattern lacks it. PDFs always get a per-sheet suffix, resolved by the worker; the PDF
+    pattern is None when no sheet of that workbook wants a PDF.
     """
-    base = Path(job.output_dir) if job.output_dir else Path(job.input_excel_path).parent
-    stem = _substitute_tokens(
-        job.output_name or DEFAULT_OUTPUT_STEM, job_name=job.name, run_id=run_id, now=now
-    )
-    output_xlsx = base / f"{stem}.xlsx"
-    output_pdf = base / f"{stem}_{{sheet}}.pdf" if job.generate_pdf else None
-    return output_xlsx, output_pdf
+    pattern = job.output_name or DEFAULT_OUTPUT_STEM
+    if len(job.workbooks) > 1 and "{workbook}" not in pattern:
+        pattern += "_{workbook}"
+    taken: set[str] = set()
+    resolved: list[tuple[Path, Path | None]] = []
+    for wb in job.workbooks:
+        source = Path(wb.input_excel_path)
+        base = Path(job.output_dir) if job.output_dir else source.parent
+        stem = _substitute_tokens(
+            pattern, job_name=job.name, run_id=run_id, now=now, workbook=source.stem
+        )
+        # Two inputs with the same file name (from different folders) must not overwrite
+        # each other's output.
+        unique, n = stem, 2
+        while str(base / unique).casefold() in taken:
+            unique, n = f"{stem}_{n}", n + 1
+        taken.add(str(base / unique).casefold())
+        output_pdf = base / f"{unique}_{{sheet}}.pdf" if any(s.pdf for s in wb.sheets) else None
+        resolved.append((base / f"{unique}.xlsx", output_pdf))
+    return resolved
 
 
 class Launcher:
@@ -245,21 +272,26 @@ class Launcher:
         is_test: bool,
     ) -> WorkerRequest:
         timeout = job.timeout_seconds or config.app.default_timeout_seconds
-        out_xlsx, out_pdf = resolve_output_paths(job, run_id=run_id, now=now)
+        outputs = resolve_output_paths(job, run_id=run_id, now=now)
+        workbooks = [
+            WorkbookTask(
+                input_excel_path=wb.input_excel_path,
+                output_xlsx_path=out_xlsx,
+                output_pdf_path=out_pdf,
+                sheets=[SheetTask(name=s.name, pdf=s.pdf, hidden=s.hidden) for s in wb.sheets],
+                unselected_sheets=wb.unselected_sheets,
+            )
+            for wb, (out_xlsx, out_pdf) in zip(job.workbooks, outputs, strict=True)
+        ]
         return WorkerRequest(
             run_id=run_id,
             job_name=job.name,
-            input_excel_path=job.input_excel_path,
-            output_xlsx_path=out_xlsx,
-            output_pdf_path=out_pdf,
-            sheet_names=job.sheet_names,
+            workbooks=workbooks,
+            continue_on_workbook_failure=job.on_workbook_failure == "send_partial",
             freeze_values=job.freeze_values,
-            generate_pdf=job.generate_pdf,
             post_refresh_wait_seconds=job.post_refresh_wait_seconds,
             fail_if_sheet_empty=job.fail_if_sheet_empty,
             fail_if_sheet_has_errors=job.fail_if_sheet_has_errors,
-            keep_only_selected_sheets=job.keep_only_selected_sheets,
-            unselected_sheets_mode=job.unselected_sheets_mode,
             blank_out_values=job.blank_out_values,
             timeout_seconds=timeout,
             is_test=is_test,
@@ -344,7 +376,8 @@ class Launcher:
             record.error_summary = "worker produced no result (crashed)"
         else:
             record.status = result.status if exit_code == 0 else RunStatus.FAILED
-            record.output_xlsx = str(result.output_xlsx) if result.output_xlsx else None
+            record.output_xlsx_paths = [str(p) for p in result.output_xlsx_paths]
+            record.output_xlsx = record.output_xlsx_paths[0] if record.output_xlsx_paths else None
             record.pdf_paths = [str(p) for p in result.pdf_paths]
             record.warnings = list(result.warnings)
             if result.duration_seconds is not None:
@@ -371,10 +404,7 @@ class Launcher:
         elif record.status is not RunStatus.SUCCESS:
             record.email_note = "not sent — run did not succeed"
         else:
-            attachments: list[Path] = []
-            if record.output_xlsx:
-                attachments.append(Path(record.output_xlsx))
-            attachments.extend(Path(p) for p in record.pdf_paths)
+            attachments = [Path(p) for p in [*record.output_xlsx_paths, *record.pdf_paths]]
             context = self._email_context(job, record)
             kind = (
                 "test recipient(s) — job is in Testing"
@@ -402,6 +432,7 @@ class Launcher:
             "finished_at": record.finished_at,
             "duration_seconds": _format_duration(record.duration_seconds),
             "sheet_names": job.sheet_names,
+            "workbooks": [Path(wb.input_excel_path).name for wb in job.workbooks],
             "hostname": os.environ.get("COMPUTERNAME", "host"),
             "is_test": record.is_test,
             "warnings": list(record.warnings),

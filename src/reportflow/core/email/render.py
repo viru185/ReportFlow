@@ -58,6 +58,9 @@ def sample_context(job: JobConfig | None = None) -> dict[str, Any]:
         "finished_at": "2026-07-07T06:00:12",
         "duration_seconds": 12.0,
         "sheet_names": (job.sheet_names if job else ["Summary", "Detail"]),
+        "workbooks": (
+            [Path(wb.input_excel_path).name for wb in job.workbooks] if job else ["Sales.xlsx"]
+        ),
         "hostname": "REPORTFLOW-HOST",
         "is_test": True,
     }

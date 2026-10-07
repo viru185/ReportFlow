@@ -7,9 +7,12 @@ from reportflow.core.config.models import (
     EmailSettings,
     JobConfig,
     Recipients,
+    SheetOptions,
     SmtpConfig,
     TestSettings,
     UiSettings,
+    WorkbookConfig,
+    migrate_legacy_job,
 )
 
 __all__ = [
@@ -18,9 +21,12 @@ __all__ = [
     "EmailSettings",
     "JobConfig",
     "Recipients",
+    "SheetOptions",
     "SmtpConfig",
     "TestSettings",
     "UiSettings",
+    "WorkbookConfig",
+    "migrate_legacy_job",
     "ConfigError",
     "load_config",
     "save_config",

@@ -76,23 +76,90 @@ class TestSettings(_Base):
     developer_bundle_recipients: list[EmailStr] = Field(default_factory=list)
 
 
+UnselectedSheets = Literal["remove", "hide", "keep"]
+
+
+class SheetOptions(_Base):
+    """One INCLUDED sheet: refreshed, checked, frozen — and optionally PDF'd / hidden."""
+
+    name: str
+    pdf: bool = True
+    # Hidden in the OUTPUT workbook (normal hidden — recipients can unhide it). The sheet is
+    # still refreshed and frozen, and can still get a PDF: export runs before hiding.
+    hidden: bool = False
+
+
+class WorkbookConfig(_Base):
+    """One input workbook of a job and what its output copy keeps."""
+
+    input_excel_path: Path
+    sheets: list[SheetOptions] = Field(min_length=1)
+    # The sheets NOT included: "remove" deletes them (smaller file, but can break defined
+    # names/charts that referenced them -> Office may refuse to open it); "hide" makes them
+    # very-hidden (references intact, always openable); "keep" leaves them visible.
+    unselected_sheets: UnselectedSheets = "remove"
+
+    @property
+    def sheet_names(self) -> list[str]:
+        return [s.name for s in self.sheets]
+
+    @model_validator(mode="after")
+    def _sheets_make_sense(self) -> WorkbookConfig:
+        label = Path(self.input_excel_path).name
+        names = [s.name.casefold() for s in self.sheets]
+        if len(set(names)) != len(names):
+            raise ValueError(f"{label}: a sheet is listed twice")
+        # Excel cannot save a workbook with no visible sheet — and a report nobody can see
+        # is pointless. Not-included sheets may be removed, so only included ones count.
+        if all(s.hidden for s in self.sheets):
+            raise ValueError(
+                f"{label}: at least one included sheet must stay visible (untick Hidden on one)"
+            )
+        return self
+
+
+def migrate_legacy_job(data: dict) -> dict:
+    """Pre-0.11 single-workbook job keys -> one ``workbooks`` entry (returns a new dict).
+
+    Legacy: ``input_excel_path`` + ``sheet_names`` + job-wide ``generate_pdf`` +
+    ``keep_only_selected_sheets``/``unselected_sheets_mode``. Used by the JobConfig
+    validator (config files, imports) and by the UI when loading an old-shaped job.
+    """
+    if "workbooks" in data or "input_excel_path" not in data:
+        return data
+    data = dict(data)
+    pdf = bool(data.pop("generate_pdf", True))
+    keep_only = bool(data.pop("keep_only_selected_sheets", True))
+    mode = data.pop("unselected_sheets_mode", "remove")
+    data["workbooks"] = [
+        {
+            "input_excel_path": data.pop("input_excel_path"),
+            "sheets": [{"name": n, "pdf": pdf} for n in data.pop("sheet_names", None) or []],
+            "unselected_sheets": mode if keep_only else "keep",
+        }
+    ]
+    return data
+
+
 class JobConfig(_Base):
     name: str
     enabled: bool = True
 
-    input_excel_path: Path
+    # One or more input workbooks; a run builds all of them and sends ONE email.
+    workbooks: list[WorkbookConfig] = Field(min_length=1)
+    # With several workbooks: "fail_run" = any failure fails the run and nothing is sent;
+    # "send_partial" = email what succeeded, with a warning naming the failed workbook(s).
+    on_workbook_failure: Literal["fail_run", "send_partial"] = "fail_run"
+
     email_template_path: Path | None = None
 
-    # Output location: a folder (empty -> next to the input file) plus an optional filename
-    # stem (empty -> "{job}_{date}"). Concrete .xlsx/.pdf paths are derived at launch time;
-    # PDFs get an automatic per-sheet suffix.
+    # Output location: a folder (empty -> next to each input file) plus an optional filename
+    # stem (empty -> the launcher's default). Concrete .xlsx/.pdf paths are derived at launch
+    # time; PDFs get an automatic per-sheet suffix.
     output_dir: Path | None = None
     output_name: str | None = None
 
-    sheet_names: list[str] = Field(min_length=1)
-
     freeze_values: bool = True
-    generate_pdf: bool = True
 
     # Zero or more 5-field cron expressions; empty = manual-only. Multiple entries support
     # e.g. several run-times per day (one APScheduler trigger is registered per entry).
@@ -110,12 +177,6 @@ class JobConfig(_Base):
     # report is delivered anyway; use "Blank out values" below to strip specific error
     # strings from the output.
     fail_if_sheet_has_errors: bool = False
-    # Only the selected sheets remain in the output workbook (source is never touched).
-    keep_only_selected_sheets: bool = True
-    # How to drop the non-selected sheets from the OUTPUT: "remove" deletes them (smaller
-    # file, but can break defined names/charts that referenced them → Office may refuse to
-    # open it); "hide" makes them very-hidden (references stay intact, always openable).
-    unselected_sheets_mode: Literal["remove", "hide"] = "remove"
     # Cell values blanked out of the OUTPUT after saving (e.g. PI DataLink error strings
     # like "Tag not found", "No Data", "#REF!").
     blank_out_values: list[str] = Field(default_factory=list)
@@ -133,13 +194,32 @@ class JobConfig(_Base):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_send_report_email(cls, data: object) -> object:
+    def _migrate_legacy(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        data = migrate_legacy_job(data)  # pre-0.11 single workbook -> workbooks[0]
         # Pre-0.8 configs have send_report_email instead of stage: True meant "emails
         # production on real runs", which maps to live; False/absent maps to testing.
-        if isinstance(data, dict) and "send_report_email" in data:
+        if "send_report_email" in data:
+            data = dict(data)
             legacy = data.pop("send_report_email")
             data.setdefault("stage", "live" if legacy else "testing")
         return data
+
+    @property
+    def sheet_names(self) -> list[str]:
+        """Every included sheet across all workbooks (email context, summaries)."""
+        return [name for wb in self.workbooks for name in wb.sheet_names]
+
+    @model_validator(mode="after")
+    def _distinct_workbooks(self) -> JobConfig:
+        seen: set[str] = set()
+        for wb in self.workbooks:
+            key = str(wb.input_excel_path).casefold()
+            if key in seen:
+                raise ValueError(f"the same workbook is added twice: {wb.input_excel_path}")
+            seen.add(key)
+        return self
 
     @field_validator("name")
     @classmethod

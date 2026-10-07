@@ -361,7 +361,9 @@ class MainWindow(QMainWindow):
             parts.append(f"last: {status_text} {ago}" if ago else f"last: {status_text}")
         else:
             parts.append("no runs yet")
-        parts.append(f"{len(job.get('sheet_names') or [])} sheet(s)")
+        sheets = f"{job.get('sheet_count') or 0} sheet(s)"
+        workbooks = int(job.get("workbook_count") or 1)
+        parts.append(f"{workbooks} files · {sheets}" if workbooks > 1 else sheets)
         detail = QLabel(" · ".join(parts))
         detail.setProperty("muted", True)
         info.addWidget(detail)
