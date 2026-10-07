@@ -192,6 +192,12 @@ class RunStore:
             cur = conn.execute(query, keep)
         return cur.rowcount
 
+    def rename_job(self, old_name: str, new_name: str) -> int:
+        """Re-point a renamed job's history at its new name. Returns the rows moved."""
+        with self._connect() as conn:
+            cur = conn.execute("UPDATE runs SET job_name=? WHERE job_name=?", (new_name, old_name))
+        return cur.rowcount
+
     def latest_failure_for_job(self, job_name: str) -> RunRecord | None:
         """The last failed run is preserved for visibility even after later successes."""
         with self._connect() as conn:

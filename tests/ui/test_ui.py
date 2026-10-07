@@ -237,7 +237,8 @@ def test_editor_loads_existing_job(qtbot):
     qtbot.addWidget(dlg)
 
     assert dlg.name.text() == "daily"
-    assert dlg.name.isReadOnly()  # name is the key
+    assert not dlg.name.isReadOnly()  # renaming is allowed (history/template follow)
+    assert dlg.original_name() == "daily"
     assert dlg.output_dir.text() == "C:/reports"
     assert dlg.prod_cc.text() == "ops@corp.example.com"
     assert dlg._checked_sheet_names() == ["Summary"]
@@ -563,6 +564,21 @@ def test_main_window_enabled_card_not_dimmed_and_has_pause(qtbot):
     assert "⏸ Pause" in texts
     buttons = [b.text() for b in win.jobs_container.findChildren(QPushButton)]
     assert not any("Resume" in t for t in buttons)
+
+
+def test_main_window_rename_saves_under_the_original_name(qtbot, monkeypatch):
+    from reportflow.ui.windows import main_window as mw
+
+    api = FakeApi(jobs=[_sample_job_dict()])
+    win = mw.MainWindow(api)
+    qtbot.addWidget(win)
+    dlg = mw.JobEditorDialog(api, api.get_job("daily")["job"], win)
+    qtbot.addWidget(dlg)
+    dlg.name.setText("daily sales")
+    win._save(dlg, create=False)
+    name, payload = api.updated_job
+    assert name == "daily" and payload["name"] == "daily sales"
+    assert "Renamed" in win.statusBar().currentMessage()
 
 
 def test_main_window_pause_and_resume_flip_enabled(qtbot):

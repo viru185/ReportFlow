@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -390,11 +391,56 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.put("/jobs/{name}")
     def update_job(name: str, job: JobConfig) -> dict[str, Any]:
+        """Replace a job. A different ``job.name`` renames it: history and the job's own
+        email template follow the new name."""
         logger.info("API: update job {!r}", name)
-        _require_job(name)
-        jobs = [job if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
-        _save_jobs_or_400(svc(), jobs)
-        return {"ok": True, "name": job.name}
+        current = _require_job(name)
+        if job.name == current.name:
+            jobs = [job if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
+            _save_jobs_or_400(svc(), jobs)
+            return {"ok": True, "name": job.name}
+        return _rename_job(current, job)
+
+    def _rename_job(current: JobConfig, job: JobConfig) -> dict[str, Any]:
+        st = svc()
+        logger.info("API: rename job {!r} -> {!r}", current.name, job.name)
+        clash = st.config.job(job.name)
+        if clash is not None and clash.name != current.name:
+            raise HTTPException(status_code=409, detail=f"job already exists: {job.name}")
+        if current.name in st.launcher.inflight_job_names():
+            # A queued/running run still writes history under the old name.
+            raise HTTPException(
+                status_code=409, detail=f"{current.name} is running — rename it when it finishes"
+            )
+        # The per-job template file is named after the job; a linked external file isn't.
+        old_tpl = _job_template_path(current)
+        moves_template = (
+            job.email_template_path is not None
+            and Path(job.email_template_path) == old_tpl
+            and old_tpl.exists()
+        )
+        new_tpl = _job_template_path(job)
+        # Windows paths are case-insensitive: a case-only rename is the same file.
+        same_file = str(old_tpl).casefold() == str(new_tpl).casefold()
+        if moves_template:
+            if not same_file:
+                shutil.copyfile(old_tpl, new_tpl)  # copy first: a failed save loses nothing
+            job = job.model_copy(update={"email_template_path": new_tpl})
+        jobs = [job if j.name == current.name else j for j in st.config.jobs]
+        try:
+            _save_jobs_or_400(st, jobs)
+        except HTTPException:
+            if moves_template and not same_file:
+                new_tpl.unlink(missing_ok=True)
+            raise
+        if moves_template:
+            if same_file:
+                os.replace(old_tpl, new_tpl)  # just the letter case
+            else:
+                old_tpl.unlink(missing_ok=True)
+        moved = st.run_store.rename_job(current.name, job.name)
+        logger.info("Renamed job {!r} -> {!r} ({} history row(s))", current.name, job.name, moved)
+        return {"ok": True, "name": job.name, "renamed_from": current.name}
 
     @app.delete("/jobs/{name}")
     def delete_job(name: str) -> dict[str, Any]:

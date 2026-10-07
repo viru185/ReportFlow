@@ -37,7 +37,9 @@ The background <b>service</b> runs jobs on schedule; this app is the control pan
 <h2 id="jobs">Creating &amp; editing jobs</h2>
 <ol>
 <li>Click <b>New Job</b>.</li>
-<li>Give the job a unique <b>name</b> (also used in output filenames).</li>
+<li>Give the job a unique <b>name</b> (also used in output filenames). You can rename it
+    later in <b>✎ Edit</b> — its run history and email template move with it (not while a
+    run of it is in progress).</li>
 <li>Browse to the <b>Input Excel file</b> (.xlsx / .xlsm). The sheet list fills in
     automatically — tick the sheets this job should process. Selection is stored by sheet
     <i>name</i>, so reordering sheets in the workbook is safe.</li>
