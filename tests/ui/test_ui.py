@@ -649,18 +649,115 @@ def test_duplicate_prefills_editor_as_fresh_testing_job(qtbot):
         enabled=False,
         email_template_path="C:/ProgramData/ReportFlow/templates/jobs/daily.html",
     )
-    dlg = JobEditorDialog(FakeApi(), None, prefill=source)
+    dlg = JobEditorDialog(FakeApi(), None, prefill=source, prefill_template="<p>{{ today }}</p>")
     qtbot.addWidget(dlg)
 
     assert dlg.name.text() == "" and not dlg.name.isReadOnly()  # fresh, editable name
     assert dlg.stage.currentData() == "testing" and not dlg.stage.isEnabled()
-    assert dlg.enabled.isChecked()
+    assert not dlg.enabled.isChecked()  # copied as-is (it was paused)
     assert dlg.output_dir.text() == "C:/reports"  # settings copied
     dlg.name.setText("daily_copy")
     payload = dlg.payload()
     assert payload["stage"] == "testing"
-    assert "email_template_path" not in payload  # template never shared between jobs
-    assert "not copied" in dlg.template_status.text()
+    assert "email_template_path" not in payload  # the FILE is never shared between jobs…
+    assert dlg.template_html() == "<p>{{ today }}</p>"  # …but its content is copied
+    assert "copied from daily" in dlg.template_status.text()
+
+
+def _every_field_job():
+    """A job with a NON-default value in every JobConfig field."""
+    from reportflow.core.config.models import JobConfig
+
+    values = {
+        "name": "src",
+        "enabled": False,
+        "workbooks": [
+            {
+                "input_excel_path": "C:/a.xlsx",
+                "sheets": [
+                    {"name": "Summary", "pdf": False, "hidden": False},
+                    {"name": "Raw", "pdf": True, "hidden": True},
+                ],
+                "unselected_sheets": "hide",
+            },
+            {
+                "input_excel_path": "C:/b.xlsx",
+                "sheets": [{"name": "Detail", "pdf": True, "hidden": False}],
+                "unselected_sheets": "keep",
+            },
+        ],
+        "on_workbook_failure": "send_partial",
+        "email_template_path": "C:/ProgramData/ReportFlow/templates/jobs/src.html",
+        "output_dir": "C:/reports",
+        "output_name": "{job}_{time}",
+        "freeze_values": False,
+        "schedule_crons": ["0 6 * * *", "0 10 * * SUN"],
+        "timeout_seconds": 2700,
+        "concurrency_group": "pi",
+        "post_refresh_wait_seconds": 120,
+        "fail_if_sheet_empty": False,
+        "fail_if_sheet_has_errors": True,
+        "blank_out_values": ["Tag not found"],
+        "subject": "Daily {{ today }}",
+        "prod": {"to": ["boss@corp.example.com"], "cc": ["c@corp.example.com"], "bcc": []},
+        "test": {"to": ["dev@corp.example.com"], "cc": [], "bcc": ["b@corp.example.com"]},
+        "stage": "live",
+        "notes": "notes",
+    }
+    # A new JobConfig field must be added above — or Duplicate could silently drop it.
+    assert set(values) == set(JobConfig.model_fields), set(JobConfig.model_fields) ^ set(values)
+    return JobConfig.model_validate(values)
+
+
+def test_duplicate_copies_every_job_field(qtbot):
+    from reportflow.core.config.models import JobConfig
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    source = _every_field_job()
+    dlg = JobEditorDialog(
+        FakeApi(), None, prefill=source.model_dump(mode="json"), prefill_template="<p>x</p>"
+    )
+    qtbot.addWidget(dlg)
+    dlg.name.setText("copy")
+    copy = JobConfig.model_validate(dlg.payload())
+
+    # Only these differ by design: a new name, Testing first, and its own template file.
+    expected = source.model_copy(
+        update={"name": "copy", "stage": "testing", "email_template_path": None}
+    )
+    assert copy == expected
+    assert dlg.template_html() == "<p>x</p>"
+
+
+def test_editor_round_trips_every_job_field(qtbot):
+    """Opening a job and saving it unchanged must not alter anything."""
+    from reportflow.core.config.models import JobConfig
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    source = _every_field_job()
+    dlg = JobEditorDialog(FakeApi(), source.model_dump(mode="json"))
+    qtbot.addWidget(dlg)
+    assert JobConfig.model_validate(dlg.payload()) == source
+
+
+def test_main_window_duplicate_fetches_the_template(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from reportflow.ui.windows import main_window as mw
+
+    api = FakeApi(jobs=[_sample_job_dict()])
+    api.get_email_template = lambda name: {"content": f"<p>{name}</p>", "exists": True}
+    seen = {}
+
+    def fake_exec(dlg):
+        seen["template"] = dlg.template_html()
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(mw.JobEditorDialog, "exec", fake_exec)
+    win = mw.MainWindow(api)
+    qtbot.addWidget(win)
+    win._duplicate_job("daily")
+    assert seen["template"] == "<p>daily</p>"
 
 
 def test_main_window_go_live_confirms_and_calls_api(qtbot, monkeypatch):

@@ -126,8 +126,9 @@ click:</p>
 <li><b>📂 Open last report</b> — Explorer opens with the last successful report
     pre-selected.</li>
 <li><b>✎ Edit</b> / <b>Logs</b> — the job editor and that job's run history.</li>
-<li><b>⧉ Duplicate</b> — a new job pre-filled from this one (fresh name required, starts
-    in Testing, uses the default email template).</li>
+<li><b>⧉ Duplicate</b> — a new job with <i>everything</i> copied from this one — workbooks,
+    sheet choices, output, schedules, recipients, advanced options and the email template.
+    Only two things differ: you give it a new name, and it starts in Testing.</li>
 <li><b>⏸ Pause</b> — pause scheduling. A paused job is unmistakable: the whole card dims
     with a grey <b>⏸ PAUSED</b> pill, and a one-click <b>▸ Resume</b> button appears on the
     card. Manual runs still work while paused.</li>

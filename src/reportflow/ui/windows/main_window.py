@@ -584,13 +584,15 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Last report no longer exists: {path}")
 
     def _duplicate_job(self, name: str) -> None:
-        """New job pre-filled from an existing one (fresh name, starts in Testing)."""
+        """New job pre-filled with EVERYTHING from an existing one, template included
+        (fresh name, starts in Testing)."""
         try:
             job = self._api.get_job(name)["job"]
+            template = self._api.get_email_template(name).get("content") or None
         except ApiError as e:
             QMessageBox.warning(self, "Duplicate failed", str(e))
             return
-        dlg = JobEditorDialog(self._api, None, self, prefill=job)
+        dlg = JobEditorDialog(self._api, None, self, prefill=job, prefill_template=template)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._save(dlg, create=True)
 
