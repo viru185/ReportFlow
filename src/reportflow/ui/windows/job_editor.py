@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.core.config.models import migrate_legacy_job
+from reportflow.core.email.render import template_error
 from reportflow.core.output_names import (
     DEFAULT_OUTPUT_STEM,
     expand_output_name,
@@ -307,7 +308,12 @@ class JobEditorDialog(QDialog):
         email_form = QFormLayout(email_tab)
 
         self.subject = QLineEdit()
-        self.subject.setToolTip("Email subject; Testing-stage runs are prefixed [TEST].")
+        self.subject.setPlaceholderText("e.g. Daily production report — {{ today }}")
+        self.subject.setToolTip(
+            "Email subject; Testing-stage runs are prefixed [TEST]. Placeholders work here "
+            "too — e.g. {{ today }}, {{ yesterday }}, {{ month }}. Help → Email placeholders "
+            "lists them all."
+        )
         # Lifecycle stage. New jobs always start in Testing (the combo is locked on create —
         # promotion happens from the job card's "Go live" after a verified run); editing a
         # job exposes it so a live job can be moved back to Testing.
@@ -751,6 +757,9 @@ class JobEditorDialog(QDialog):
                     f"{wb.label}: at least one included sheet must stay visible — untick "
                     "Hidden on one of them."
                 )
+        subject_problem = template_error(self.subject.text())
+        if subject_problem:
+            return None, f"The Subject has a placeholder typo: {subject_problem}"
         if not _split_csv(self.prod_to.text()):
             return None, "Prod: To is required."
         if not _split_csv(self.test_to.text()):

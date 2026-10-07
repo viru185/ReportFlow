@@ -169,3 +169,58 @@ def test_dev_log_bundle_includes_operator_note(smtp_server, tmp_path):
     assert "MURI sheet came out empty" in subject
     body = msg.get_body(preferencelist=("plain",)).get_content()
     assert "MURI sheet came out empty" in body
+
+
+def test_subject_placeholders_are_expanded(smtp_server, tmp_path):
+    from datetime import datetime
+
+    from reportflow.core.email.render import date_context
+
+    handler, port = smtp_server
+    job = _job().model_copy(update={"subject": "R&D report — {{ today }}"})
+    ctx = {**_ctx(), **date_context(datetime(2026, 10, 7, 6, 15))}
+
+    send_report(_config(port), job, ctx, [], is_test=True)
+
+    from email import policy
+
+    msg = email.message_from_bytes(handler.envelopes[0][1], policy=policy.default)
+    assert msg["Subject"] == "[TEST] R&D report — 07-Oct-2026"  # not HTML-escaped
+
+
+def test_broken_subject_template_still_sends_as_written():
+    from reportflow.core.email.render import render_subject, template_error
+
+    assert render_subject("Report {{ today", {"today": "x"}) == "Report {{ today"
+    assert template_error("Report {{ today") is not None
+    assert template_error("Report {{ today }}") is None
+
+
+def test_date_placeholders():
+    from datetime import datetime
+
+    from reportflow.core.email.render import date_context
+
+    ctx = date_context(datetime(2026, 3, 1, 6, 15))  # the 1st: previous month is February
+    assert ctx["today"] == "01-Mar-2026"
+    assert ctx["yesterday"] == "28-Feb-2026"
+    assert ctx["now"] == "01-Mar-2026 06:15"
+    assert ctx["weekday"] == "Sunday"
+    assert ctx["month"] == "March 2026"
+    assert ctx["previous_month"] == "February 2026"
+    assert ctx["week_number"] == "9"
+    assert ctx["run_date"].strftime("%d/%m/%Y") == "01/03/2026"
+    jan = date_context(datetime(2026, 1, 1))
+    assert jan["previous_month"] == "December 2025" and jan["yesterday"] == "31-Dec-2025"
+
+
+def test_every_documented_placeholder_has_a_sample_value():
+    """The preview (and the Help examples) must never show a blank for a listed placeholder."""
+    from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
+
+    ctx = sample_context()
+    for group, label, token, _ in PLACEHOLDERS:
+        if group == "Blocks":
+            render_email(token, ctx)  # must at least render
+            continue
+        assert render_email(token, ctx).strip(), f"{label} ({token}) renders empty"

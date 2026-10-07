@@ -2,9 +2,86 @@
 
 from __future__ import annotations
 
+import html
+from datetime import datetime
+
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
 
 from reportflow import __about__ as about
+from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
+
+
+def _placeholder_html() -> str:
+    """The placeholder reference, generated from the same list the template editor uses."""
+    sample = sample_context(now=datetime(2026, 10, 7, 6, 15))  # stable examples
+    rows = []
+    for group, label, token, about_it in PLACEHOLDERS:
+        example = "" if group == "Blocks" else render_email(token, sample)
+        rows.append(
+            f"<tr><td><code>{html.escape(token)}</code></td><td>{html.escape(example)}</td>"
+            f"<td>{html.escape(label)} — {html.escape(about_it)}</td></tr>"
+        )
+
+    def code(text: str) -> str:
+        return f"<code>{html.escape(text)}</code>"
+
+    recipes = [
+        (
+            "A dated subject",
+            code("Daily production report — {{ today }}"),
+            "Daily production report — 07-Oct-2026",
+        ),
+        (
+            "Yesterday's data (a report run in the morning)",
+            code("Production for {{ yesterday }} is attached."),
+            "Production for 06-Oct-2026 is attached.",
+        ),
+        (
+            "A monthly report run on the 1st",
+            code("The {{ previous_month }} summary is attached."),
+            "The September 2026 summary is attached.",
+        ),
+        ("Your own date format", code("{{ run_date.strftime('%d/%m/%Y') }}"), "07/10/2026"),
+        (
+            "Only when the run has warnings",
+            code("{% if warnings %}Please note {{ warning_count }} warning(s).{% endif %}"),
+            "(nothing when there are none)",
+        ),
+        (
+            "List the attached files",
+            code("<ul>{% for f in attachments %}<li>{{ f }}</li>{% endfor %}</ul>"),
+            "a bullet per file",
+        ),
+    ]
+    recipe_rows = "".join(
+        f"<tr><td>{what}</td><td>{snippet}</td><td>{html.escape(result)}</td></tr>"
+        for what, snippet, result in recipes
+    )
+    return (
+        '<h2 id="placeholders">Email placeholders</h2>'
+        "<p>A placeholder is a name in double curly braces — like <code>{{ today }}</code> — "
+        "that ReportFlow replaces with the real value when it sends the email. They work in "
+        "the <b>email body</b> (Email tab → <b>Edit email template…</b>; click one in the "
+        "list on the right to insert it) and in the job's <b>Subject</b>. Click "
+        "<b>Preview</b> in the template editor to see the result. Dates are the date the "
+        "run <i>started</i>.</p>"
+        '<table border="1" cellpadding="4" cellspacing="0">'
+        "<tr><th>Placeholder</th><th>Example</th><th>What it is</th></tr>"
+        + "".join(rows)
+        + "</table>"
+        "<p><b>Recipes</b></p>"
+        '<table border="1" cellpadding="4" cellspacing="0">'
+        "<tr><th>For</th><th>Write</th><th>Gives</th></tr>" + recipe_rows + "</table>"
+        "<p><b>Good to know:</b> spell a placeholder exactly as listed (lower case, with the "
+        "underscores) — an unknown name comes out empty. Date format codes for "
+        "<code>strftime</code>: <code>%d</code> day, <code>%m</code> month number, "
+        "<code>%b</code> Oct, <code>%B</code> October, <code>%Y</code> 2026, "
+        "<code>%A</code> Wednesday, <code>%H:%M</code> 06:15.</p>"
+    )
+
+
+_PLACEHOLDER_HTML = _placeholder_html()
 
 _HELP_HTML = f"""
 <h1>{about.NAME} — Help Guide</h1>
@@ -15,6 +92,7 @@ _HELP_HTML = f"""
 <a href="#output">Output files</a> ·
 <a href="#schedule">Scheduling</a> ·
 <a href="#email">Email &amp; templates</a> ·
+<a href="#placeholders">Email placeholders</a> ·
 <a href="#runs">Running &amp; test runs</a> ·
 <a href="#logs">Logs &amp; history</a> ·
 <a href="#settings">Settings (SMTP &amp; more)</a> ·
@@ -100,8 +178,11 @@ emailed is decided by the job's stage:</b></p>
 </ul>
 <p>Click <b>Edit email template…</b> to author the email body in-app: <b>Simple</b> mode
 (plain text + placeholder buttons) or <b>HTML</b> mode (full control), with a live preview.
-Placeholders like <code>{{{{ job_name }}}}</code>, <code>{{{{ status }}}}</code> and
-<code>{{{{ run_id }}}}</code> are filled in at send time.</p>
+Placeholders like <code>{{{{ today }}}}</code>, <code>{{{{ job_name }}}}</code> and
+<code>{{{{ status }}}}</code> are filled in at send time — in the body and in the Subject. See
+<a href="#placeholders">Email placeholders</a> for the full list and examples.</p>
+
+{_PLACEHOLDER_HTML}
 
 <h2 id="runs">Running a job — everything is one click</h2>
 <p>Each job card has two run buttons; the job's stage answers "who gets the email":</p>
@@ -290,7 +371,8 @@ server is unreachable; Send emails the same bundle to the configured support add
 
 
 class HelpDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, anchor: str | None = None) -> None:
+        """``anchor`` opens the guide at that section (e.g. "placeholders")."""
         super().__init__(parent)
         self.setWindowTitle(f"{about.NAME} — Help")
         self.resize(680, 640)
@@ -307,3 +389,6 @@ class HelpDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(browser)
         layout.addWidget(buttons)
+        if anchor:
+            # After the first layout pass — before it the anchor has no position yet.
+            QTimer.singleShot(0, lambda: browser.scrollToAnchor(anchor))

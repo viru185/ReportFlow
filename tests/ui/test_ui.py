@@ -990,6 +990,46 @@ def test_email_template_dialog_simple_wrap_and_preview(qtbot):
     assert "Sample Job" in dlg.preview.toHtml()
 
 
+def test_email_template_dialog_placeholder_list_inserts_on_click(qtbot):
+    from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
+
+    dlg = EmailTemplateDialog(existing_html="<p>x</p>")
+    qtbot.addWidget(dlg)
+    items = [dlg.placeholders.item(i) for i in range(dlg.placeholders.count())]
+    today = next(i for i in items if i.text().startswith("Today — "))  # shows its value
+    headers = [i.text() for i in items if not i.data(0x0100)]
+    assert headers == ["Dates", "Run", "Files", "Blocks"]
+
+    dlg.html_edit.moveCursor(dlg.html_edit.textCursor().MoveOperation.End)
+    dlg._on_placeholder_clicked(today)
+    assert dlg.result_html().endswith("{{ today }}")
+    dlg._on_placeholder_clicked(items[0])  # a heading inserts nothing
+    assert dlg.result_html().endswith("{{ today }}")
+
+
+def test_help_has_placeholder_guide_and_opens_at_it(qtbot):
+    from reportflow.ui.windows.help_dialog import HelpDialog
+
+    dlg = HelpDialog(anchor="placeholders")
+    qtbot.addWidget(dlg)
+    text = dlg.browser.toPlainText()
+    assert "Email placeholders" in text
+    assert "{{ yesterday }}" in text and "07-Oct-2026" in text
+    assert "Daily production report — 07-Oct-2026" in text  # a recipe with its result
+
+
+def test_editor_rejects_a_broken_subject_placeholder(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi(), _sample_job_dict())
+    qtbot.addWidget(dlg)
+    dlg.subject.setText("Daily — {{ today }}")
+    assert dlg._validation_error() is None
+    dlg.subject.setText("Daily — {{ today")
+    _, message = dlg._validation_error()
+    assert "Subject" in message
+
+
 def test_email_template_dialog_html_mode(qtbot):
     from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 
