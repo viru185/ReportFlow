@@ -7,7 +7,8 @@ traffic should use them.
 
 Beta pre-releases are never offered: GitHub's "latest release" excludes pre-releases, and
 the release workflow never marks a beta latest. Someone who installed a beta by hand IS
-offered the final release of that version (0.11.0 is newer than 0.11.0b1).
+offered the final release of that version (0.11.0 is newer than 0.11.0-beta), and a
+later beta (0.11.1-beta) is newer than an earlier one.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ def parse_version(text: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-# "0.11.0", "v0.11.0-beta.2", "0.11.0b1" (PEP 440 spelling the installed app reports).
+# "0.11.0", "v0.11.0-beta", "0.11.0b0" (PEP 440 spelling the installed app may report).
 _VERSION_RE = re.compile(
     r"^[vV]?(?P<release>\d+(?:\.\d+)*)(?:[-.]?(?P<kind>alpha|beta|rc|a|b)[-.]?(?P<num>\d*))?",
     re.IGNORECASE,
@@ -58,7 +59,7 @@ _PRE_RANK = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "rc": 2}
 def version_key(text: str) -> tuple[tuple[int, ...], tuple[int, int, int]] | None:
     """Sortable key: release numbers, then pre-release ordering (alpha < beta < rc < final).
 
-    '0.11.0-beta.1' / '0.11.0b1' -> ((0, 11, 0), (0, 1, 1)); '0.11.0' -> ((0, 11, 0), (1, 0, 0)).
+    '0.11.0-beta' / '0.11.0b0' -> ((0, 11, 0), (0, 1, 0)); '0.11.0' -> ((0, 11, 0), (1, 0, 0)).
     None for junk.
     """
     match = _VERSION_RE.match(text.strip())

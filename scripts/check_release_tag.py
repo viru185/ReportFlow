@@ -2,9 +2,9 @@
 
 The app reads its version from the package metadata, so a tag that doesn't match would
 publish an installer reporting the wrong version. Compared as PEP 440 versions: the tag
-``v0.11.0-beta.1`` matches ``version = "0.11.0-beta.1"`` (or the normalized ``0.11.0b1``).
+``v0.11.0-beta`` matches ``version = "0.11.0-beta"`` (or the normalized ``0.11.0b0``).
 
-Usage: python scripts/check_release_tag.py v0.11.0-beta.1
+Usage: python scripts/check_release_tag.py v0.11.0-beta
 """
 
 from __future__ import annotations

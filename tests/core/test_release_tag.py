@@ -18,6 +18,9 @@ _spec.loader.exec_module(check)
     ("tag", "version", "ok"),
     [
         ("v0.11.0", "0.11.0", True),
+        ("v0.11.0-beta", "0.11.0-beta", True),  # the house style: betas are not numbered
+        ("v0.11.0-beta", "0.11.0b0", True),
+        ("v0.11.1-beta", "0.11.0-beta", False),
         ("v0.11.0-beta.1", "0.11.0-beta.1", True),
         ("v0.11.0-beta.1", "0.11.0b1", True),  # the normalized spelling is the same version
         ("v0.11.0-beta.2", "0.11.0b1", False),
