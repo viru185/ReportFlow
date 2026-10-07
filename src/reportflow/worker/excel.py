@@ -599,12 +599,12 @@ class ExcelRun:
                 self.settle_warnings.append(
                     f"sheet '{name}' has {count} populated cells but the workbook opened "
                     f"with {baseline} — async data (e.g. PI) may not have finished; raise "
-                    "'Extra wait after refresh' for this job"
+                    "'Wait for add-in data' (Edit → Advanced) for this job"
                 )
         if not self.settle_warnings:
             self.settle_warnings.append(
                 f"data was still changing when the settle budget (+{int(_SETTLE_GRACE_SECONDS)}s "
-                "grace) elapsed — output may be incomplete; raise 'Extra wait after refresh'"
+                "grace) elapsed — output may be incomplete; raise 'Wait for add-in data'"
             )
         for warning in self.settle_warnings:
             logger.warning("{}", warning)

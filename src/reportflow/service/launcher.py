@@ -59,6 +59,11 @@ def _format_duration(seconds: float | None) -> str:
     return str(int(seconds)) if float(seconds).is_integer() else f"{seconds:.1f}"
 
 
+def _format_limit(seconds: int) -> str:
+    """900 -> "15 min", 90 -> "90s" — time limits are set in minutes in the UI."""
+    return f"{seconds // 60} min" if seconds % 60 == 0 else f"{seconds}s"
+
+
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
@@ -355,7 +360,11 @@ class Launcher:
 
         if timed_out:
             record.status = RunStatus.TIMED_OUT
-            record.error_summary = f"timed out after {request.timeout_seconds}s"
+            # Say what to do: the usual cause is simply a big report (lots of PI data).
+            record.error_summary = (
+                f"timed out after {_format_limit(request.timeout_seconds)} (the job's time "
+                "limit). If the report is just large, raise Time limit in Edit → Advanced."
+            )
         elif result is None:
             record.status = RunStatus.CRASHED
             record.error_summary = "worker produced no result (crashed)"

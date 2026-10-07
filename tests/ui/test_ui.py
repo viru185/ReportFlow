@@ -815,6 +815,11 @@ def test_settings_dialog_loads_and_collects(qtbot):
     dlg._save()
     assert api.saved_settings["smtp"]["host"] == "smtp.new.com"
     assert api.saved_settings["app"]["api_port"] == 8787  # preserved from base
+    # The default time limit is edited in minutes and stored in seconds.
+    assert dlg.default_timeout.value() == 15
+    dlg.default_timeout.setValue(40)
+    dlg._save()
+    assert api.saved_settings["app"]["default_timeout_seconds"] == 2400
 
 
 def test_email_template_dialog_simple_wrap_and_preview(qtbot):
@@ -905,7 +910,33 @@ def test_help_dialog_builds(qtbot):
     text = dlg.browser.toPlainText()
     assert "Help Guide" in text
     assert "Concurrency group" in text
-    assert "Timeout" in text
+    assert "Time limit" in text and "Wait for add-in data" in text
+
+
+def test_editor_time_limit_in_minutes_with_visible_help(qtbot):
+    from PySide6.QtWidgets import QLabel
+
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi())
+    qtbot.addWidget(dlg)
+    # "Default" names the actual Settings default (900 s), not just "(use default)".
+    assert dlg.timeout.specialValueText() == "Default (15 min)"
+    assert dlg.payload()["timeout_seconds"] is None
+    dlg.timeout.setValue(45)
+    assert dlg.payload()["timeout_seconds"] == 2700
+    # The explanation is on screen, not only in a tooltip.
+    texts = [w.text() for w in dlg.findChildren(QLabel)]
+    assert any("raise this if runs end as Timed out" in t for t in texts)
+    assert any("Raise it if sheets arrive partly empty" in t for t in texts)
+
+    # An older job stored in seconds keeps its exact value unless the limit is changed.
+    old = JobEditorDialog(FakeApi(), dict(_sample_job_dict(), timeout_seconds=90))
+    qtbot.addWidget(old)
+    assert old.timeout.value() == 2  # shown rounded up
+    assert old.payload()["timeout_seconds"] == 90
+    old.timeout.setValue(30)
+    assert old.payload()["timeout_seconds"] == 1800
 
 
 def test_editor_stage_and_refresh_wait(qtbot):
