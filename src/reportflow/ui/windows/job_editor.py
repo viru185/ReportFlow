@@ -39,6 +39,11 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.core.config.models import migrate_legacy_job
+from reportflow.core.output_names import (
+    DEFAULT_OUTPUT_STEM,
+    expand_output_name,
+    overwrites_same_day,
+)
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.fs_util import open_start_dir
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
@@ -244,10 +249,11 @@ class JobEditorDialog(QDialog):
         dir_row.addWidget(browse_dir)
 
         self.output_name = QLineEdit()
-        self.output_name.setPlaceholderText("{job}_{date}")
+        self.output_name.setPlaceholderText(DEFAULT_OUTPUT_STEM)
         self.output_name.setToolTip(
-            "Optional filename (without extension). Placeholders: {job}, {date}, "
-            "{datetime}, {run_id}, {workbook}. Leave empty for {job}_{date}."
+            "Optional filename (without extension). Placeholders: {job}, {date} (20261007), "
+            "{time} (061500), {datetime} (20261007_061500), {run_id}, {workbook} (the input "
+            f"file's name). Leave empty for {DEFAULT_OUTPUT_STEM}."
         )
         self.output_name.textChanged.connect(self._update_output_example)
 
@@ -640,23 +646,26 @@ class JobEditorDialog(QDialog):
         self._update_output_example()
 
     def _update_output_example(self) -> None:
-        job = self.name.text().strip() or "job"
-        now = datetime.now()
-        stem = self.output_name.text().strip() or "{job}_{date}"
+        pattern = self.output_name.text().strip() or DEFAULT_OUTPUT_STEM
         multi = len(self._workbooks) > 1
-        if multi and "{workbook}" not in stem:
-            stem += "_{workbook}"  # mirrors the launcher: several outputs need distinct names
+        if multi and "{workbook}" not in pattern:
+            pattern += "_{workbook}"  # mirrors the launcher: several outputs need distinct names
         current = self.input_excel.text().strip()
-        stem = stem.replace("{job}", job).replace("{date}", now.strftime("%Y%m%d"))
-        stem = stem.replace("{datetime}", now.strftime("%Y%m%d_%H%M%S"))
-        stem = stem.replace("{run_id}", "a1b2c3")
-        stem = stem.replace("{workbook}", Path(current).stem if current else "workbook")
+        stem = expand_output_name(
+            pattern,
+            job_name=self.name.text().strip() or "job",
+            run_id="a1b2c3",
+            now=datetime.now(),
+            workbook=Path(current).stem if current else "workbook",
+        )
         folder = self.output_dir.text().strip() or "(input file's folder)"
         example = f"→ {folder}\\{stem}.xlsx"
         if any(row.include and row.pdf for row in self._rows()):
             example += f", {stem}_<sheet>.pdf"
         if multi:
             example += f" — one per workbook ({len(self._workbooks)})"
+        if overwrites_same_day(pattern):
+            example += "\n⚠ A second run on the same day overwrites the first — add {time}."
         self.output_example.setText(example)
 
     def _edit_template(self) -> None:

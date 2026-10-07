@@ -272,6 +272,11 @@ def test_editor_output_example_updates(qtbot):
     dlg.name.setText("sales")
     dlg.output_name.setText("{job}_custom")
     assert "sales_custom.xlsx" in dlg.output_example.text()
+    assert "overwrites" in dlg.output_example.text()  # no time token -> same-day warning
+    dlg.output_name.setText("{job}_{date}_{time}")
+    assert "overwrites" not in dlg.output_example.text()
+    dlg.output_name.clear()  # the default carries the time
+    assert "overwrites" not in dlg.output_example.text()
 
 
 # -- schedule widget -------------------------------------------------------------

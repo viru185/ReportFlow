@@ -151,9 +151,29 @@ def test_resolve_output_paths_defaults_next_to_input(tmp_path):
     job = _job(tmp_path, output_dir=None, output_name=None)
     now = datetime(2026, 7, 7, 6, 0, 0)
     [(xlsx, pdf)] = resolve_output_paths(job, run_id="abc", now=now)
-    # input is tmp_path/t.xlsx -> outputs land next to it with the default stem
-    assert xlsx == tmp_path / "daily_20260707.xlsx"
-    assert pdf == tmp_path / "daily_20260707_{sheet}.pdf"
+    # input is tmp_path/t.xlsx -> outputs land next to it with the default stem, which
+    # carries the time so a second run on the same day doesn't overwrite the first
+    assert xlsx == tmp_path / "daily_20260707_060000.xlsx"
+    assert pdf == tmp_path / "daily_20260707_060000_{sheet}.pdf"
+
+
+def test_output_name_tokens():
+    from datetime import datetime
+
+    from reportflow.core.output_names import expand_output_name, overwrites_same_day
+
+    now = datetime(2026, 10, 7, 6, 15, 30)
+    name = expand_output_name(
+        "{job}-{date}-{time}-{datetime}-{run_id}-{workbook}",
+        job_name="Sales",
+        run_id="r1",
+        now=now,
+        workbook="Plant A",
+    )
+    assert name == "Sales-20261007-061530-20261007_061530-r1-Plant A"
+    assert overwrites_same_day("{job}_{date}")
+    assert not overwrites_same_day("{job}_{date}_{time}")
+    assert not overwrites_same_day("{job}_{datetime}")
 
 
 def test_resolve_output_paths_no_pdf_when_no_sheet_wants_one(tmp_path):
