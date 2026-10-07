@@ -153,22 +153,39 @@ class FakeApi:
 
 
 def _check_all(dialog):
+    """Include every sheet of the workbook shown in the editor."""
     from PySide6.QtCore import Qt
 
-    for i in range(dialog.sheets.count()):
-        dialog.sheets.item(i).setCheckState(Qt.CheckState.Checked)
+    for r in range(dialog.sheets.rowCount()):
+        dialog.sheets.item(r, 1).setCheckState(Qt.CheckState.Checked)
+
+
+def _sheet_cell(dialog, sheet, col):
+    """The sheet table's checkbox item for ``sheet`` in column 1 Include / 2 PDF / 3 Hidden."""
+    for r in range(dialog.sheets.rowCount()):
+        if dialog.sheets.item(r, 0).text() == sheet:
+            return dialog.sheets.item(r, col)
+    raise AssertionError(f"no row for sheet {sheet!r}")
 
 
 def _sample_job_dict():
+    # Doubles as the API's job (editor) and its summary (dashboard card).
     return {
         "name": "daily",
         "enabled": True,
         "stage": "testing",
         "prod_recipients": ["boss@corp.example.com"],
-        "input_excel_path": "C:/t.xlsx",
+        "workbooks": [
+            {
+                "input_excel_path": "C:/t.xlsx",
+                "sheets": [{"name": "Summary", "pdf": True, "hidden": False}],
+                "unselected_sheets": "remove",
+            }
+        ],
+        "workbook_count": 1,
+        "sheet_count": 1,
         "output_dir": "C:/reports",
         "output_name": "{job}_{date}",
-        "sheet_names": ["Summary"],
         "schedule_crons": ["0 6 * * *", "0 18 * * *"],
         "prod": {"to": ["boss@corp.example.com"], "cc": ["ops@corp.example.com"]},
         "test": {"to": ["dev@corp.example.com"]},
@@ -198,10 +215,13 @@ def test_editor_builds_payload_with_new_fields(qtbot):
     dlg.schedule.load(["0 6 * * *"])
 
     payload = dlg.payload()
-    assert payload["input_excel_path"] == "C:/t.xlsx"
+    [wb] = payload["workbooks"]
+    assert wb["input_excel_path"] == "C:/t.xlsx"
     assert payload["output_dir"] == "C:/reports"
     assert payload["output_name"] is None  # left empty -> default stem
-    assert payload["sheet_names"] == ["Summary", "Detail"]
+    assert [s["name"] for s in wb["sheets"]] == ["Summary", "Detail"]
+    assert all(s["pdf"] and not s["hidden"] for s in wb["sheets"])  # PDF on, visible
+    assert payload["on_workbook_failure"] == "fail_run"
     assert payload["schedule_crons"] == ["0 6 * * *"]
     assert payload["prod"]["to"] == ["boss@corp.example.com", "mgr@corp.example.com"]
     assert payload["test"]["cc"] == ["qa@corp.example.com"]
@@ -239,7 +259,7 @@ def test_editor_new_job_discovery_checks_all_sheets(qtbot):
     assert dlg._checked_sheet_names() == ["Summary", "Detail"]
 
     # A deliberate partial selection survives re-discovery (no re-check-all).
-    dlg.sheets.item(1).setCheckState(Qt.CheckState.Unchecked)
+    _sheet_cell(dlg, "Detail", 1).setCheckState(Qt.CheckState.Unchecked)
     dlg._discover_sheets()
     assert dlg._checked_sheet_names() == ["Summary"]
 
@@ -304,6 +324,17 @@ def test_main_window_dashboard_cards(qtbot):
     # one job card + trailing stretch
     assert win.jobs_layout.count() == 2
     assert "Connected" in win.conn_label.text()
+
+
+def test_main_window_card_counts_files_and_sheets(qtbot):
+    from PySide6.QtWidgets import QLabel
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    multi = dict(_sample_job_dict(), workbook_count=2, sheet_count=7)
+    win = MainWindow(FakeApi(jobs=[multi]))
+    qtbot.addWidget(win)
+    assert any("2 files · 7 sheet(s)" in w.text() for w in win.findChildren(QLabel))
 
 
 def test_main_window_failure_count(qtbot):
@@ -919,25 +950,18 @@ def test_editor_advanced_output_safety_fields(qtbot):
     dlg.prod_to.setText("a@x.com")
     dlg.test_to.setText("b@x.com")
 
-    # Defaults: empty-check on, error-strict OFF (deliver), Non-selected sheets -> Remove.
+    # Defaults: empty-check on, error-strict OFF (deliver), sheets not included -> Remove.
     payload = dlg.payload()
     assert payload["fail_if_sheet_empty"] is True
     assert payload["fail_if_sheet_has_errors"] is False
-    assert payload["keep_only_selected_sheets"] is True
-    assert payload["unselected_sheets_mode"] == "remove"
+    assert payload["workbooks"][0]["unselected_sheets"] == "remove"
     assert payload["post_refresh_wait_seconds"] == 10
     assert payload["blank_out_values"] == []
 
-    # The single dropdown maps to the two config fields for all three options.
-    dlg.nonselected_mode.setCurrentIndex(dlg.nonselected_mode.findData("hide"))
-    payload = dlg.payload()
-    assert payload["keep_only_selected_sheets"] is True
-    assert payload["unselected_sheets_mode"] == "hide"
-
-    dlg.nonselected_mode.setCurrentIndex(dlg.nonselected_mode.findData("keep"))
-    payload = dlg.payload()
-    assert payload["keep_only_selected_sheets"] is False  # keep-all -> don't prune
-    assert payload["unselected_sheets_mode"] == "remove"  # mode is moot but stays valid
+    # One dropdown covers "keep or remove" and "if kept, hidden or visible".
+    for key in ("hide", "keep", "remove"):
+        dlg.nonselected_mode.setCurrentIndex(dlg.nonselected_mode.findData(key))
+        assert dlg.payload()["workbooks"][0]["unselected_sheets"] == key
 
     dlg.blank_values.setText("Tag not found, #REF!")
     dlg.fail_if_empty.setChecked(False)
@@ -946,20 +970,115 @@ def test_editor_advanced_output_safety_fields(qtbot):
     assert payload["fail_if_sheet_empty"] is False
 
 
-def test_editor_nonselected_dropdown_round_trips_from_saved_fields(qtbot):
+def test_editor_loads_legacy_single_workbook_job(qtbot):
+    """A pre-0.11 job dict (one file, job-wide flags) still opens correctly."""
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
-    # keep_only_selected_sheets False -> "keep"
-    job = dict(_sample_job_dict(), keep_only_selected_sheets=False, unselected_sheets_mode="remove")
+    legacy = {k: v for k, v in _sample_job_dict().items() if k != "workbooks"}
+    legacy.update(input_excel_path="C:/t.xlsx", sheet_names=["Summary"], generate_pdf=False)
+
+    job = dict(legacy, keep_only_selected_sheets=False, unselected_sheets_mode="remove")
     dlg = JobEditorDialog(FakeApi(), job)
     qtbot.addWidget(dlg)
     assert dlg.nonselected_mode.currentData() == "keep"
+    assert dlg.input_excel.text() == "C:/t.xlsx"
+    assert dlg.payload()["workbooks"][0]["sheets"] == [
+        {"name": "Summary", "pdf": False, "hidden": False}
+    ]
 
-    # keep_only True + hide -> "hide"
-    job2 = dict(_sample_job_dict(), keep_only_selected_sheets=True, unselected_sheets_mode="hide")
+    job2 = dict(legacy, keep_only_selected_sheets=True, unselected_sheets_mode="hide")
     dlg2 = JobEditorDialog(FakeApi(), job2)
     qtbot.addWidget(dlg2)
     assert dlg2.nonselected_mode.currentData() == "hide"
+
+
+def test_editor_per_sheet_pdf_and_hidden(qtbot):
+    from PySide6.QtCore import Qt
+
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi(sheets=["Summary", "Detail", "Raw"]))
+    qtbot.addWidget(dlg)
+    dlg.input_excel.setText("C:/t.xlsx")
+    dlg._discover_sheets()
+    _sheet_cell(dlg, "Detail", 2).setCheckState(Qt.CheckState.Unchecked)  # no PDF
+    _sheet_cell(dlg, "Raw", 3).setCheckState(Qt.CheckState.Checked)  # hidden
+    sheets = dlg.payload()["workbooks"][0]["sheets"]
+    assert sheets == [
+        {"name": "Summary", "pdf": True, "hidden": False},
+        {"name": "Detail", "pdf": False, "hidden": False},
+        {"name": "Raw", "pdf": True, "hidden": True},
+    ]
+
+    # Excluding a sheet greys out its PDF/Hidden boxes and drops it from the payload.
+    _sheet_cell(dlg, "Raw", 1).setCheckState(Qt.CheckState.Unchecked)
+    assert not _sheet_cell(dlg, "Raw", 2).flags() & Qt.ItemFlag.ItemIsEnabled
+    assert [s["name"] for s in dlg.payload()["workbooks"][0]["sheets"]] == ["Summary", "Detail"]
+
+    # Clicking a column title ticks/unticks the whole column (included sheets only).
+    dlg._toggle_column(2)
+    assert _sheet_cell(dlg, "Detail", 2).checkState() == Qt.CheckState.Checked
+    dlg._toggle_column(2)
+    assert _sheet_cell(dlg, "Summary", 2).checkState() == Qt.CheckState.Unchecked
+    assert _sheet_cell(dlg, "Raw", 2).checkState() == Qt.CheckState.Checked  # excluded: untouched
+
+
+def test_editor_requires_one_visible_sheet(qtbot):
+    from PySide6.QtCore import Qt
+
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi(), _sample_job_dict())
+    qtbot.addWidget(dlg)
+    assert dlg._validation_error() is None
+    _sheet_cell(dlg, "Summary", 3).setCheckState(Qt.CheckState.Checked)  # hide the only one
+    tab, message = dlg._validation_error()
+    assert tab == 0 and "must stay visible" in message
+
+
+def test_editor_multiple_workbooks(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    api = FakeApi(sheets=["Summary", "Detail"])
+    dlg = JobEditorDialog(api, _sample_job_dict())
+    qtbot.addWidget(dlg)
+    assert not dlg.workbook_tabs.tabsClosable()  # one workbook: nothing to remove
+    assert not dlg._output_form.isRowVisible(dlg.on_failure)
+
+    dlg._add_workbook("C:/data/Stock.xlsx")  # switches to it and reads its sheets
+    assert dlg.workbook_tabs.count() == 2 and dlg.workbook_tabs.tabText(1) == "Stock.xlsx"
+    assert dlg.input_excel.text() == "C:/data/Stock.xlsx"
+    assert dlg._checked_sheet_names() == ["Summary", "Detail"]
+    assert dlg.workbook_tabs.tabsClosable()
+    assert dlg._output_form.isRowVisible(dlg.on_failure)
+    dlg.on_failure.setCurrentIndex(dlg.on_failure.findData("send_partial"))
+    assert "_Stock" in dlg.output_example.text()  # outputs get told apart by workbook
+
+    # Switching tabs keeps each workbook's own state.
+    dlg.workbook_tabs.setCurrentIndex(0)
+    assert dlg.input_excel.text() == "C:/t.xlsx"
+    assert dlg._checked_sheet_names() == ["Summary"]
+    payload = dlg.payload()
+    assert [w["input_excel_path"] for w in payload["workbooks"]] == [
+        "C:/t.xlsx",
+        "C:/data/Stock.xlsx",
+    ]
+    assert payload["on_workbook_failure"] == "send_partial"
+
+    # The same file twice is refused at save.
+    dlg.workbook_tabs.setCurrentIndex(1)
+    dlg.input_excel.setText("C:/t.xlsx")
+    tab, message = dlg._validation_error()
+    assert tab == 1 and "twice" in message
+
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    dlg._remove_workbook(1)
+    assert dlg.workbook_tabs.count() == 1 and len(dlg.payload()["workbooks"]) == 1
+    assert not dlg.workbook_tabs.tabsClosable()
 
 
 def test_settings_debug_toggle_saves(qtbot):

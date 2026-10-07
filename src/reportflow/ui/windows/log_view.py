@@ -172,10 +172,11 @@ class RunHistoryDialog(QDialog):
         )
         duration = r.get("duration_seconds")
         took = f" · took {duration:.0f}s" if isinstance(duration, int | float) else ""
+        outputs = r.get("output_xlsx_paths") or ([r["output_xlsx"]] if r.get("output_xlsx") else [])
         self.details.setText(
             f"<b>{r['run_id']}</b> · trigger: {r.get('trigger')} · test: {r.get('is_test')}<br>"
             f"started: {r.get('started_at')} · finished: {r.get('finished_at') or '—'}{took}<br>"
-            f"output: {r.get('output_xlsx') or '—'}<br>"
+            f"output: {'<br>&nbsp;&nbsp;'.join(outputs) or '—'}<br>"
             f"email: {r.get('email_note') or '—'}"
             f"{('<br>error: ' + r['error_summary']) if r.get('error_summary') else ''}"
             f"{warn_line}"

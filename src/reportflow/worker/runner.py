@@ -4,6 +4,10 @@ The runner ALWAYS produces a ``result.json`` (success or failure) and never lets
 exception escape without first recording it. The Excel teardown is guaranteed by
 ``ExcelRun`` regardless of how the body exits.
 
+A job may have several workbooks: they are built one after another in the same Excel
+session. A genuine failure of one either fails the run (default) or, when the job allows
+partial delivery, is skipped with a warning.
+
 Transient COM failures (Excel/DCOM briefly unavailable — common when several workers
 activate Excel at once) are retried with a fresh session, because the worker's output is
 idempotent. This is an internal transient retry only; a genuine job failure (missing sheet,
@@ -15,13 +19,19 @@ from __future__ import annotations
 import os
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
 
-from reportflow.core.ipc import RunStatus, WorkerRequest, WorkerResult, write_result
+from reportflow.core.ipc import (
+    RunStatus,
+    WorkbookTask,
+    WorkerRequest,
+    WorkerResult,
+    write_result,
+)
 from reportflow.core.logging_setup import add_run_log, remove_sink
 from reportflow.worker.cleanup import blank_out_values
 from reportflow.worker.excel import (
@@ -52,54 +62,92 @@ def _is_machine_account() -> bool:
 
 @dataclass
 class _Attempt:
-    output_xlsx: Path | None = None
-    pdf_paths: list[Path] | None = None
-    warnings: list[str] | None = None
+    output_xlsx_paths: list[Path] = field(default_factory=list)
+    pdf_paths: list[Path] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    failed_workbooks: list[str] = field(default_factory=list)
     excel_pid: int | None = None
     excel_pid_reaped: bool = False
 
 
+def _build_workbook(
+    run: ExcelRun, request: WorkerRequest, task: WorkbookTask
+) -> tuple[Path, list[Path], list[str]]:
+    """Open -> refresh -> check -> freeze -> PDFs -> tidy -> save one workbook.
+
+    Returns ``(output_xlsx, pdf_paths, warnings)``. Raises on a failure of this workbook.
+    """
+    names = task.sheet_names
+    book = run.open_workbook(task.input_excel_path, names)
+    try:
+        run.refresh_and_wait(book, names, request.post_refresh_wait_seconds)
+        # Scan BEFORE freeze, while add-in formulas are still present. By default we
+        # DELIVER the report and just warn about error cells; strict mode fails instead.
+        # #NAME? still gets the pointed add-in/account hint in the strict message.
+        findings = run.scan_error_cells(book, names)
+        if findings and request.fail_if_sheet_has_errors:
+            raise ExcelJobError(format_error_cell_message(findings, run.failed_addins, _account()))
+        warnings = [*run.settle_warnings]  # e.g. a sheet still below its opening baseline
+        if findings:
+            warnings.extend(format_error_cell_warnings(findings))
+        if request.freeze_values:
+            run.freeze_sheets(book, names)
+        if request.fail_if_sheet_empty:
+            run.validate_sheets_not_empty(book, names)
+        if task.unselected_sheets != "keep":
+            run.drop_unselected_sheets(book, names, mode=task.unselected_sheets)
+        pdf_paths: list[Path] = []
+        pdf_sheets = [s.name for s in task.sheets if s.pdf]
+        if pdf_sheets and task.output_pdf_path is not None:
+            # Before hide_sheets: Excel cannot export a hidden sheet.
+            pdf_paths = run.export_pdfs(book, pdf_sheets, task.output_pdf_path)
+        # Leave the file tidy: A1 selected everywhere, first visible sheet active
+        # (PasteSpecial's whole-range selection would otherwise persist into the file).
+        run.collapse_selection(book, [s.name for s in task.sheets if not s.hidden])
+        hidden = [s.name for s in task.sheets if s.hidden]
+        if hidden:
+            run.hide_sheets(book, hidden)
+        output = run.save_output(book, task.output_xlsx_path)
+    finally:
+        run.close_book(book)
+    return output, pdf_paths, warnings
+
+
 def _execute_once(request: WorkerRequest, deadline: float, outcome: _Attempt) -> None:
-    """Run the full Excel flow in one fresh session, mutating ``outcome``.
+    """Run every workbook in one fresh Excel session, mutating ``outcome``.
 
     ``outcome`` is caller-owned so the reaped-PID accounting survives even when this raises.
     """
     run = ExcelRun(deadline=deadline)
+    multi = len(request.workbooks) > 1
     try:
         with run:
-            book = run.open_workbook(request.input_excel_path, request.sheet_names)
-            run.refresh_and_wait(book, request.sheet_names, request.post_refresh_wait_seconds)
-            # Scan BEFORE freeze, while add-in formulas are still present. By default we
-            # DELIVER the report and just warn about error cells; strict mode fails instead.
-            # #NAME? still gets the pointed add-in/account hint in the strict message.
-            findings = run.scan_error_cells(book, request.sheet_names)
-            if findings and request.fail_if_sheet_has_errors:
-                raise ExcelJobError(
-                    format_error_cell_message(findings, run.failed_addins, _account())
-                )
-            warnings = [*run.settle_warnings]  # e.g. a sheet still below its opening baseline
-            if findings:
-                warnings.extend(format_error_cell_warnings(findings))
-            if warnings:
-                outcome.warnings = warnings
-            if request.freeze_values:
-                run.freeze_sheets(book, request.sheet_names)
-            if request.fail_if_sheet_empty:
-                run.validate_sheets_not_empty(book, request.sheet_names)
-            if request.keep_only_selected_sheets:
-                run.drop_unselected_sheets(
-                    book, request.sheet_names, mode=request.unselected_sheets_mode
-                )
-            if request.generate_pdf and request.output_pdf_path is not None:
-                outcome.pdf_paths = run.export_pdfs(
-                    book, request.sheet_names, request.output_pdf_path
-                )
-            # Leave the file tidy: A1 selected everywhere, first selected sheet active
-            # (PasteSpecial's whole-range selection would otherwise persist into the file).
-            run.collapse_selection(book, request.sheet_names)
-            outcome.output_xlsx = run.save_output(book, request.output_xlsx_path)
-        if outcome.output_xlsx is not None and request.blank_out_values:
-            blank_out_values(outcome.output_xlsx, request.blank_out_values)
+            for task in request.workbooks:
+                label = task.input_excel_path.name
+                try:
+                    output, pdfs, warnings = _build_workbook(run, request, task)
+                except Exception as exc:
+                    # Transient COM trouble retries the whole session (outputs are
+                    # idempotent); only a genuine failure of THIS workbook may be skipped.
+                    if is_transient_com_error(exc):
+                        raise
+                    if not request.continue_on_workbook_failure:
+                        if multi:  # name the workbook so the run history is actionable
+                            raise ExcelJobError(f"{label}: {exc}") from exc
+                        raise
+                    logger.error("Workbook {} failed, continuing with the rest: {}", label, exc)
+                    outcome.failed_workbooks.append(label)
+                    outcome.warnings.append(f"workbook {label!r} failed — not attached: {exc}")
+                    continue
+                outcome.output_xlsx_paths.append(output)
+                outcome.pdf_paths.extend(pdfs)
+                # With several workbooks, say which one a sheet warning belongs to.
+                outcome.warnings.extend(f"{label}: {w}" if multi else w for w in warnings)
+        if not outcome.output_xlsx_paths:
+            raise ExcelJobError("every workbook failed: " + "; ".join(outcome.warnings))
+        if request.blank_out_values:
+            for output in outcome.output_xlsx_paths:
+                blank_out_values(output, request.blank_out_values)
     finally:
         outcome.excel_pid = run.excel_pid
         outcome.excel_pid_reaped = run.excel_pid_reaped
@@ -113,7 +161,7 @@ def run_job(request: WorkerRequest) -> WorkerResult:
     status = RunStatus.FAILED
     message = ""
     error_detail: str | None = None
-    result_attempt = _Attempt(pdf_paths=[])
+    result_attempt = _Attempt()
 
     logger.info(
         "Run {} starting for job {!r} (test={})", request.run_id, request.job_name, request.is_test
@@ -131,11 +179,11 @@ def run_job(request: WorkerRequest) -> WorkerResult:
     try:
         for attempt in range(1, _MAX_COM_ATTEMPTS + 1):
             deadline = time.monotonic() + request.timeout_seconds
-            result_attempt = _Attempt(pdf_paths=[])
+            result_attempt = _Attempt()
             try:
                 _execute_once(request, deadline, result_attempt)
                 status = RunStatus.SUCCESS
-                warns = result_attempt.warnings or []
+                warns = result_attempt.warnings
                 message = f"completed with {len(warns)} warning(s)" if warns else "completed"
                 logger.info("Run {} succeeded (attempt {})", request.run_id, attempt)
                 break
@@ -161,9 +209,10 @@ def run_job(request: WorkerRequest) -> WorkerResult:
             run_id=request.run_id,
             status=status,
             message=message,
-            output_xlsx=result_attempt.output_xlsx,
-            pdf_paths=result_attempt.pdf_paths or [],
-            warnings=result_attempt.warnings or [],
+            output_xlsx_paths=result_attempt.output_xlsx_paths,
+            pdf_paths=result_attempt.pdf_paths,
+            warnings=result_attempt.warnings,
+            failed_workbooks=result_attempt.failed_workbooks,
             started_at=started.isoformat(timespec="seconds"),
             finished_at=finished.isoformat(timespec="seconds"),
             duration_seconds=round((finished - started).total_seconds(), 3),

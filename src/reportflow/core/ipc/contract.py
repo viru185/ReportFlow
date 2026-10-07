@@ -26,22 +26,42 @@ class _IpcBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class SheetTask(_IpcBase):
+    """An included sheet. ``pdf``: export it; ``hidden``: hide it in the saved output."""
+
+    name: str
+    pdf: bool = True
+    hidden: bool = False
+
+
+class WorkbookTask(_IpcBase):
+    """One input workbook -> one output copy (plus per-sheet PDFs)."""
+
+    input_excel_path: Path
+    output_xlsx_path: Path
+    # ``{sheet}``-tokenized pattern; None when no sheet of this workbook wants a PDF.
+    output_pdf_path: Path | None = None
+    sheets: list[SheetTask] = Field(min_length=1)
+    unselected_sheets: Literal["remove", "hide", "keep"] = "remove"
+
+    @property
+    def sheet_names(self) -> list[str]:
+        return [s.name for s in self.sheets]
+
+
 class WorkerRequest(_IpcBase):
     run_id: str
     job_name: str
 
-    input_excel_path: Path
-    output_xlsx_path: Path
-    output_pdf_path: Path | None = None
+    workbooks: list[WorkbookTask] = Field(min_length=1)
+    # False: the first failing workbook fails the run. True: skip it with a warning and
+    # deliver the rest (the run still fails when EVERY workbook failed).
+    continue_on_workbook_failure: bool = False
 
-    sheet_names: list[str] = Field(min_length=1)
     freeze_values: bool = True
-    generate_pdf: bool = True
     post_refresh_wait_seconds: int = Field(default=10, ge=0)
     fail_if_sheet_empty: bool = True
     fail_if_sheet_has_errors: bool = False
-    keep_only_selected_sheets: bool = True
-    unselected_sheets_mode: Literal["remove", "hide"] = "remove"
     blank_out_values: list[str] = Field(default_factory=list)
 
     timeout_seconds: int = Field(gt=0)
@@ -58,8 +78,11 @@ class WorkerResult(_IpcBase):
     status: RunStatus
     message: str = ""
 
-    output_xlsx: Path | None = None
+    # One output workbook per successfully built input workbook, in job order.
+    output_xlsx_paths: list[Path] = Field(default_factory=list)
     pdf_paths: list[Path] = Field(default_factory=list)
+    # Input file names skipped under continue_on_workbook_failure (their reason is a warning).
+    failed_workbooks: list[str] = Field(default_factory=list)
 
     started_at: str | None = None  # ISO-8601
     finished_at: str | None = None  # ISO-8601

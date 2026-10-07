@@ -28,6 +28,7 @@ FAKE = str(Path(__file__).parent / "fake_worker.py")
 
 
 def _job(tmp_path: Path, **over) -> JobConfig:
+    # Legacy single-workbook keys on purpose: they also exercise the config migration.
     base = dict(
         name="daily",
         input_excel_path=tmp_path / "t.xlsx",
@@ -39,7 +40,7 @@ def _job(tmp_path: Path, **over) -> JobConfig:
         test=Recipients(to=["dev@corp.example.com"]),
     )
     base.update(over)
-    return JobConfig(**base)
+    return JobConfig(**{k: v for k, v in base.items() if v is not None})
 
 
 def _config(job: JobConfig, *, smtp_port: int = 25, timeout: int = 30) -> AppConfig:
@@ -139,7 +140,7 @@ def test_resolve_output_paths_with_folder_and_stem(tmp_path):
 
     job = _job(tmp_path, output_dir=tmp_path / "reports", output_name="{job}_{date}")
     now = datetime(2026, 7, 7, 6, 0, 0)
-    xlsx, pdf = resolve_output_paths(job, run_id="abc", now=now)
+    [(xlsx, pdf)] = resolve_output_paths(job, run_id="abc", now=now)
     assert xlsx == tmp_path / "reports" / "daily_20260707.xlsx"
     assert pdf == tmp_path / "reports" / "daily_20260707_{sheet}.pdf"
 
@@ -149,19 +150,89 @@ def test_resolve_output_paths_defaults_next_to_input(tmp_path):
 
     job = _job(tmp_path, output_dir=None, output_name=None)
     now = datetime(2026, 7, 7, 6, 0, 0)
-    xlsx, pdf = resolve_output_paths(job, run_id="abc", now=now)
+    [(xlsx, pdf)] = resolve_output_paths(job, run_id="abc", now=now)
     # input is tmp_path/t.xlsx -> outputs land next to it with the default stem
     assert xlsx == tmp_path / "daily_20260707.xlsx"
     assert pdf == tmp_path / "daily_20260707_{sheet}.pdf"
 
 
-def test_resolve_output_paths_no_pdf_when_disabled(tmp_path):
+def test_resolve_output_paths_no_pdf_when_no_sheet_wants_one(tmp_path):
     from datetime import datetime
 
-    job = _job(tmp_path, generate_pdf=False)
-    xlsx, pdf = resolve_output_paths(job, run_id="abc", now=datetime(2026, 7, 7))
+    job = _job(tmp_path, generate_pdf=False)  # legacy flag -> every sheet pdf=False
+    [(xlsx, pdf)] = resolve_output_paths(job, run_id="abc", now=datetime(2026, 7, 7))
     assert xlsx.name.endswith(".xlsx")
     assert pdf is None
+
+
+def _two_workbooks(tmp_path, second: Path | None = None) -> list[dict]:
+    return [
+        {"input_excel_path": tmp_path / "Sales.xlsx", "sheets": [{"name": "Summary"}]},
+        {
+            "input_excel_path": second or tmp_path / "Stock.xlsx",
+            "sheets": [{"name": "Detail", "pdf": False}],
+        },
+    ]
+
+
+def test_resolve_output_paths_multi_workbook_names_each_output(tmp_path):
+    from datetime import datetime
+
+    job = JobConfig(
+        name="daily",
+        workbooks=_two_workbooks(tmp_path),
+        output_dir=tmp_path / "out",
+        output_name="{job}_{date}",
+        prod=Recipients(to=["boss@corp.example.com"]),
+        test=Recipients(to=["dev@corp.example.com"]),
+    )
+    outputs = resolve_output_paths(job, run_id="abc", now=datetime(2026, 7, 7))
+    # Several outputs must not overwrite each other: _{workbook} is appended automatically.
+    assert [x.name for x, _ in outputs] == [
+        "daily_20260707_Sales.xlsx",
+        "daily_20260707_Stock.xlsx",
+    ]
+    assert outputs[0][1] is not None and outputs[1][1] is None  # Stock wants no PDF
+
+
+def test_resolve_output_paths_same_file_name_in_two_folders(tmp_path):
+    from datetime import datetime
+
+    other = tmp_path / "other" / "Sales.xlsx"
+    job = JobConfig(
+        name="daily",
+        workbooks=_two_workbooks(tmp_path, second=other),
+        output_dir=tmp_path / "out",
+        prod=Recipients(to=["boss@corp.example.com"]),
+        test=Recipients(to=["dev@corp.example.com"]),
+    )
+    outputs = resolve_output_paths(job, run_id="abc", now=datetime(2026, 7, 7))
+    first, second = (x.name for x, _ in outputs)
+    assert first != second and second == first.replace(".xlsx", "_2.xlsx")
+
+
+def test_multi_workbook_run_attaches_every_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    job = _job(
+        tmp_path,
+        input_excel_path=None,
+        sheet_names=None,
+        workbooks=_two_workbooks(tmp_path),
+        on_workbook_failure="send_partial",
+    )
+    launcher = _launcher(tmp_path, _config(job))
+    request, _ = launcher._prepare(_config(job), job, RunTrigger.DRY_RUN)
+    assert request.continue_on_workbook_failure is True
+    assert [w.input_excel_path.name for w in request.workbooks] == ["Sales.xlsx", "Stock.xlsx"]
+
+    rec = launcher.run_job_by_name("daily", RunTrigger.DRY_RUN)
+    assert rec.status is RunStatus.SUCCESS
+    assert len(rec.output_xlsx_paths) == 2 and rec.output_xlsx == rec.output_xlsx_paths[0]
+    assert all(Path(p).exists() for p in rec.output_xlsx_paths)
+    assert len(rec.pdf_paths) == 1  # only Sales' Summary asked for a PDF
+    stored = launcher.run_store.get(rec.run_id)
+    assert stored is not None and stored.output_xlsx_paths == rec.output_xlsx_paths
+    assert launcher._email_context(job, rec)["workbooks"] == ["Sales.xlsx", "Stock.xlsx"]
 
 
 def test_testing_stage_run_emails_test_recipients(tmp_path, monkeypatch):

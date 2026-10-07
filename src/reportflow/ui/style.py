@@ -139,7 +139,7 @@ QPushButton[accent="true"]:hover {{
     background: {ACCENT_HOVER};
 }}
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QTextBrowser, QListWidget,
-QTimeEdit {{
+QTimeEdit, QTableWidget {{
     background: {FIELD_BG};
     color: {TEXT};
     border: 1px solid {BORDER};
@@ -172,6 +172,26 @@ QListWidget::item:selected {{
     background: {ACCENT};
     color: #ffffff;
 }}
+QTableWidget {{
+    gridline-color: {BORDER};
+}}
+QTableWidget::item {{
+    color: {TEXT};
+}}
+QTableWidget::item:disabled {{
+    color: {TEXT_MUTED};
+}}
+QHeaderView::section {{
+    background: {CARD_BG};
+    color: {TEXT_MUTED};
+    border: none;
+    border-bottom: 1px solid {BORDER};
+    padding: 3px 6px;
+}}
+QTableCornerButton::section {{
+    background: {CARD_BG};
+    border: none;
+}}
 QCheckBox, QRadioButton {{
     color: {TEXT};
     background: transparent;
@@ -180,24 +200,30 @@ QCheckBox, QRadioButton {{
 QCheckBox:disabled, QRadioButton:disabled {{
     color: {TEXT_MUTED};
 }}
-QCheckBox::indicator, QGroupBox::indicator, QListView::indicator {{
+QCheckBox::indicator, QGroupBox::indicator, QListView::indicator, QTableView::indicator {{
     width: 16px;
     height: 16px;
     border: 1px solid {TEXT_MUTED};
     border-radius: 4px;
     background: {FIELD_BG};
 }}
-QCheckBox::indicator:hover, QGroupBox::indicator:hover, QListView::indicator:hover {{
+QCheckBox::indicator:hover, QGroupBox::indicator:hover, QListView::indicator:hover,
+QTableView::indicator:hover {{
     border-color: {ACCENT_HOVER};
 }}
-QCheckBox::indicator:checked, QGroupBox::indicator:checked, QListView::indicator:checked {{
+QCheckBox::indicator:checked, QGroupBox::indicator:checked, QListView::indicator:checked,
+QTableView::indicator:checked {{
     background: {ACCENT};
     border-color: {ACCENT};
     image: url("{_CHECK_URL}");
 }}
-QCheckBox::indicator:disabled, QListView::indicator:disabled {{
+QCheckBox::indicator:disabled, QListView::indicator:disabled, QTableView::indicator:disabled {{
     border-color: {BORDER};
     background: {CARD_BG};
+}}
+QTableView::indicator:checked:disabled {{
+    /* a not-applicable cell (e.g. PDF of a sheet that isn't included) must not read "on" */
+    image: none;
 }}
 QRadioButton::indicator {{
     width: 16px;
