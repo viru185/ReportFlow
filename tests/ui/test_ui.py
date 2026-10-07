@@ -394,6 +394,49 @@ def test_main_window_card_menu_delete_action_wired(qtbot, monkeypatch):
     assert api.deleted_job == "daily"
 
 
+def test_main_window_refresh_keeps_open_card_menu(qtbot, monkeypatch):
+    """The 4 s auto-refresh must not rebuild the cards while a ⋯ menu is open (it used
+    to delete the card — and the open menu with it — under the user's cursor)."""
+    from PySide6.QtWidgets import QApplication
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    api = FakeApi(jobs=[_sample_job_dict()])
+    win = MainWindow(api)
+    qtbot.addWidget(win)
+    rebuilds = []
+    original_populate = win._populate
+
+    def counting_populate(jobs):
+        rebuilds.append(1)
+        original_populate(jobs)
+
+    monkeypatch.setattr(win, "_populate", counting_populate)
+
+    api._jobs = [dict(_sample_job_dict(), last_status="failed")]  # data changed meanwhile
+    monkeypatch.setattr(QApplication, "activePopupWidget", staticmethod(lambda: object()))
+    win.refresh()
+    assert rebuilds == []  # deferred while the menu is open
+    assert win.card_failures[1].text() == "1"  # header stats still update
+
+    monkeypatch.setattr(QApplication, "activePopupWidget", staticmethod(lambda: None))
+    _card_menu(win).aboutToHide.emit()
+    qtbot.waitUntil(lambda: rebuilds == [1])  # the pending rebuild runs once it closes
+
+
+def test_main_window_refresh_skips_identical_rebuild(qtbot, monkeypatch):
+    from reportflow.ui.windows.main_window import MainWindow
+
+    win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))
+    qtbot.addWidget(win)
+    rebuilds = []
+    monkeypatch.setattr(win, "_populate", lambda jobs: rebuilds.append(1))
+    win.refresh()  # may rebuild once if the minute rolled over since the constructor
+    rebuilds.clear()
+    win.refresh()
+    assert rebuilds == []  # nothing changed -> no teardown/rebuild
+
+
 def test_main_window_live_card_hides_go_live(qtbot):
     from PySide6.QtWidgets import QLabel, QPushButton
 

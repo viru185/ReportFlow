@@ -16,6 +16,7 @@ from typing import Any
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QFrame,
@@ -94,6 +95,10 @@ class MainWindow(QMainWindow):
         self._api = api or ApiClient()
         self._connected = False
         self._update_thread: _UpdateCheckThread | None = None
+        # Card rebuild bookkeeping: skip identical rebuilds, and defer them while a popup
+        # (a card's ⋯ menu) is open — rebuilding destroys the menu under the cursor.
+        self._cards_signature: str | None = None
+        self._refresh_pending = False
         self.setWindowTitle(about.NAME)
         self.resize(920, 620)
         self._build_menu()
@@ -266,7 +271,28 @@ class MainWindow(QMainWindow):
                 f"Connected · v{status.get('version')} · "
                 f"{len(status.get('scheduled_jobs', []))} trigger(s) scheduled"
             )
+
+        if QApplication.activePopupWidget() is not None:
+            # A card's ⋯ menu is open: the 4 s rebuild used to delete the card (and with
+            # it the menu) out from under the user. Rebuild once the menu closes instead.
+            self._refresh_pending = True
+            return
+        self._refresh_pending = False
+        # Relative texts ("5m ago", "next: today 18:00") change by the minute and a running
+        # card's elapsed badge by the second — fold those into the signature so an idle
+        # dashboard isn't torn down and rebuilt every 4 s for nothing.
+        running = any((j.get("last_status") or "") == "running" for j in jobs)
+        clock = datetime.now().strftime("%Y%m%d%H%M%S" if running else "%Y%m%d%H%M")
+        signature = repr((clock, jobs))
+        if signature == self._cards_signature:
+            return
+        self._cards_signature = signature
         self._populate(jobs)
+
+    def _on_card_menu_closed(self) -> None:
+        if self._refresh_pending:
+            # Deferred so the menu finishes closing (and its action fires) first.
+            QTimer.singleShot(0, self.refresh)
 
     def _populate(self, jobs: list[dict]) -> None:
         # Clear existing cards (keep the trailing stretch).
@@ -421,6 +447,7 @@ class MainWindow(QMainWindow):
             menu.addAction("⏸ Pause", lambda *_: self._set_enabled(job_name, False))
         menu.addSeparator()
         menu.addAction("🗑 Delete", lambda *_: self._delete_job(job_name))
+        menu.aboutToHide.connect(self._on_card_menu_closed)
         more.setMenu(menu)
         lay.addWidget(more)
 
