@@ -415,3 +415,14 @@ def test_run_history_persisted(tmp_path, monkeypatch):
     stored = launcher.run_store.get(rec.run_id)
     assert stored is not None and stored.status is RunStatus.SUCCESS
     assert launcher.run_store.latest_for_job("daily").run_id == rec.run_id
+
+
+def test_missing_linked_template_is_a_warning_not_a_silent_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    job = _job(tmp_path, stage="live", email_template_path=tmp_path / "moved-away.html")
+    launcher = _launcher(tmp_path, _config(job, smtp_port=1))
+
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
+
+    assert rec.status is RunStatus.SUCCESS
+    assert any("email template not found" in w for w in rec.warnings)

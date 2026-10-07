@@ -144,6 +144,12 @@ class FakeApi:
     def get_email_template(self, job_name):
         return {"content": "", "exists": False}
 
+    def check_email_template(self, path):
+        self.checked_template = path
+        if "unreachable" in path:
+            raise ApiError("the ReportFlow service cannot read " + path, 400)
+        return {"ok": True}
+
     def put_email_template(self, job_name, content):
         self.saved_template = (job_name, content)
         return {"ok": True}
@@ -1488,3 +1494,94 @@ def test_status_colors_cover_all_run_states():
         assert status.value in STATUS_COLORS, f"missing status color for {status.value}"
     assert status_colors(None) == STATUS_COLORS["never"]
     assert status_colors("unknown-thing") == STATUS_COLORS["never"]
+
+
+def test_email_template_dialog_load_and_keep_linked(qtbot, tmp_path):
+    from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
+
+    tpl = tmp_path / "mine.html"
+    tpl.write_text("<p>Hi {{ today }}</p>", encoding="utf-8")
+    checked = []
+    dlg = EmailTemplateDialog(check_path=checked.append)
+    qtbot.addWidget(dlg)
+    assert not dlg.keep_linked.isEnabled()  # nothing to link to yet
+
+    dlg.load_file(str(tpl))  # import: content lands in the HTML editor
+    assert dlg.result_html() == "<p>Hi {{ today }}</p>"
+    assert dlg.linked_path() is None and "copy" in dlg.file_label.text()
+
+    dlg.keep_linked.setChecked(True)
+    assert dlg.linked_path() == str(tpl)
+    assert dlg.html_edit.isReadOnly()  # the FILE is the template now
+    assert not dlg.tabs.isTabEnabled(dlg.tabs.indexOf(dlg.simple_edit))
+    dlg._on_save()
+    assert checked == [str(tpl)]  # the service was asked before linking
+
+
+def test_email_template_dialog_refuses_a_link_the_service_cannot_read(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: shown.append(a[2])))
+
+    def deny(path):
+        raise RuntimeError("the ReportFlow service cannot read it")
+
+    dlg = EmailTemplateDialog("<p>x</p>", linked_path="C:/Users/me/mine.html", check_path=deny)
+    qtbot.addWidget(dlg)
+    assert dlg.keep_linked.isChecked() and dlg.linked_path() == "C:/Users/me/mine.html"
+    dlg._on_save()
+    assert dlg.result() != dlg.DialogCode.Accepted
+    assert shown and "untick 'Keep linked'" in shown[0]
+
+
+def test_editor_saves_a_linked_template_path(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QDialog
+
+    from reportflow.ui.windows import job_editor as je
+
+    tpl = tmp_path / "mine.html"
+    tpl.write_text("<p>{{ job_name }}</p>", encoding="utf-8")
+
+    def accept_linked(dlg):
+        dlg.load_file(str(tpl))
+        dlg.keep_linked.setChecked(True)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(je.EmailTemplateDialog, "exec", accept_linked)
+    dlg = je.JobEditorDialog(FakeApi(), _sample_job_dict())
+    qtbot.addWidget(dlg)
+    dlg._edit_template()
+    assert dlg.payload()["email_template_path"] == str(tpl)
+    assert dlg.template_html() is None  # nothing to upload: the file IS the template
+    assert "Linked to mine.html" in dlg.template_status.text()
+
+
+def test_editor_detects_an_existing_link_on_load(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    api = FakeApi()
+    api.get_email_template = lambda name: {
+        "content": "<p>x</p>",
+        "linked": True,
+        "path": "\\\\share\\reports\\daily.html",
+    }
+    job = dict(_sample_job_dict(), email_template_path="\\\\share\\reports\\daily.html")
+    dlg = JobEditorDialog(api, job)
+    qtbot.addWidget(dlg)
+    assert "Linked to" in dlg.template_status.text()
+    assert dlg.payload()["email_template_path"] == "\\\\share\\reports\\daily.html"
+
+
+def test_duplicate_of_a_linked_job_links_the_same_file(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(
+        FakeApi(), None, prefill=_sample_job_dict(), prefill_template_link="S:/reports/daily.html"
+    )
+    qtbot.addWidget(dlg)
+    dlg.name.setText("copy")
+    assert dlg.payload()["email_template_path"] == "S:/reports/daily.html"
+    assert dlg.template_html() is None

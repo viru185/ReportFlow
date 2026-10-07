@@ -411,6 +411,13 @@ class Launcher:
         elif record.status is not RunStatus.SUCCESS:
             record.email_note = "not sent — run did not succeed"
         else:
+            template = job.email_template_path
+            if template is not None and not Path(template).exists():
+                # A linked template file that moved/vanished: send with the default rather
+                # than not at all — but say so on the run instead of failing silently.
+                note = f"email template not found: {template} — sent with the default template"
+                logger.warning("Run {}: {}", record.run_id, note)
+                record.warnings.append(note)
             attachments = [Path(p) for p in [*record.output_xlsx_paths, *record.pdf_paths]]
             context = self._email_context(job, record)
             kind = (

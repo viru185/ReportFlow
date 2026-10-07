@@ -404,7 +404,8 @@ def test_email_template_get_put(client):
     assert saved_path.read_text(encoding="utf-8") == html
 
     got = c.get("/jobs/daily/email-template").json()
-    assert got == {"content": html, "exists": True}
+    assert got["content"] == html and got["exists"] is True
+    assert got["linked"] is False  # its own per-job file, not a linked one
     # the job now points at the per-job template file
     assert c.get("/jobs/daily").json()["job"]["email_template_path"] == str(saved_path)
 
@@ -477,3 +478,27 @@ def test_rename_only_letter_case(client):
     names = [j["name"] for j in c.get("/jobs").json()]
     assert names == ["Daily"]
     assert c.get("/jobs/Daily/email-template").json()["content"] == "<p>x</p>"
+
+
+def test_template_check_and_linked_flag(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    good = tmp_path / "mine.html"
+    good.write_text("<p>{{ today }}</p>", encoding="utf-8")
+    broken = tmp_path / "broken.html"
+    broken.write_text("<p>{{ today </p>", encoding="utf-8")
+
+    assert c.post("/email/template-check", json={"path": str(good)}).json() == {"ok": True}
+    missing = c.post("/email/template-check", json={"path": str(tmp_path / "nope.html")})
+    assert missing.status_code == 400 and "cannot read" in missing.json()["detail"]
+    bad = c.post("/email/template-check", json={"path": str(broken)})
+    assert bad.status_code == 400 and "does not render" in bad.json()["detail"]
+
+    payload = dict(_job_payload(tmp_path), email_template_path=str(good))
+    c.post("/jobs", json=payload)
+    got = c.get("/jobs/daily/email-template").json()
+    assert got["linked"] is True and got["path"] == str(good)
+    assert got["content"] == "<p>{{ today }}</p>"
+
+    c.put("/jobs/daily/email-template", json={"content": "<p>own</p>"})  # back to its own copy
+    assert c.get("/jobs/daily/email-template").json()["linked"] is False
