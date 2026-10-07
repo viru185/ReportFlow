@@ -5,6 +5,11 @@
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
 #endif
+; Windows file versions are numeric only, so a beta (0.11.0-beta.1) passes its numeric part
+; (0.11.0) separately; a stable version is already numeric.
+#ifndef MyAppNumericVersion
+  #define MyAppNumericVersion MyAppVersion
+#endif
 #define MyAppName "ReportFlow"
 #define MyServiceName "ReportFlow"
 #define MyAppPublisher "ReportFlow"
@@ -14,6 +19,7 @@ AppId={{7F3C6A20-9B4E-4E2A-9C1D-REPORTFLOW01}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
+VersionInfoVersion={#MyAppNumericVersion}
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
