@@ -184,15 +184,20 @@ upgrades automatically, preserving all jobs, settings, and logs.</p>
 
 <h2 id="advanced">Advanced options</h2>
 <ul>
-<li><b>Timeout</b> — the maximum seconds a run may take. If Excel hangs, the service kills
-    the run at the timeout and marks it <i>Timed out</i>. Leave 0 to use the default.</li>
+<li><b>Time limit</b> (minutes) — the longest a whole run may take, start to finish (all
+    workbooks). When it is reached the run is stopped and marked <i>Timed out</i>; nothing is
+    emailed. <b>Default</b> uses File → Settings → <i>Default time limit</i> (15&nbsp;min out
+    of the box). <b>If a report times out because it is simply big</b> — e.g. it pulls a lot
+    of PI data and needs 20+ minutes — raise the limit (30–60&nbsp;min is common for such
+    reports). The run history's error line says the same.</li>
+<li><b>Wait for add-in data</b> (up to N seconds) — Excel can report the refresh as done
+    while an add-in such as <b>PI DataLink</b> is still filling cells. ReportFlow keeps
+    checking for up to this long and <i>moves on as soon as the data stops changing</i>, so a
+    larger value only costs time when the data really is still arriving. Raise it (e.g.
+    60–300&nbsp;s) if sheets arrive partly empty. This wait counts toward the time limit.</li>
 <li><b>Concurrency group</b> — jobs sharing the same group name run one-at-a-time instead
     of in parallel (useful when several jobs hit the same slow database). Leave empty for
     normal parallel behavior.</li>
-<li><b>Extra wait after refresh</b> — additional seconds to wait after the data refresh
-    before freezing/exporting. Set this (e.g. 30–120&nbsp;s) when the workbook loads data
-    through an Excel add-in such as <b>PI DataLink</b> that keeps filling cells after the
-    normal calculation finishes.</li>
 <li><b>Freeze formulas</b> — converts formulas to plain values on the selected sheets in
     the <i>output copy</i>, so recipients see numbers even without your data connections.</li>
 <li><b>Fail if a sheet comes out empty</b> (default on) — a run whose selected sheet has
@@ -242,8 +247,9 @@ should show <code>Executing as DOMAIN\\your_pi_user</code> (no trailing <code>$<
 longer block delivery — the report is sent and the errors appear as a <i>warning</i> on the
 run (blank them out with the <b>Blank out values</b> list, or fail on them by ticking the
 strict option). If a sheet comes out only partly filled, the add-in's data was still arriving
-when ReportFlow froze it — raise <b>Extra wait after refresh</b> (ReportFlow already waits
-adaptively up to that budget and logs when data is still changing at the end).</p>
+when ReportFlow froze it — raise <b>Wait for add-in data</b> (Advanced tab; ReportFlow already
+waits adaptively up to that budget and logs when data is still changing at the end). If the
+run instead ends as <i>Timed out</i>, raise the <b>Time limit</b>.</p>
 <p><b>"Cannot be opened" report.</b> If a delivered report trips Office's
 "Office has detected a problem with this file", the sheet-removal step likely broke a chart or
 defined name that pointed at a removed tab. Switch that job's <b>Unselected sheets</b> to

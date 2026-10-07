@@ -106,6 +106,7 @@ class JobEditorDialog(QDialog):
         self._template_html: str | None = None  # authored in-app; caller saves it after job save
         self._existing_template_path: str | None = None
         self._workbooks: list[_WorkbookState] = [_WorkbookState()]
+        self._loaded_timeout_seconds: int | None = None
         self._current_wb = 0
         self._syncing = False  # guards widget signals while the editor fills widgets itself
         self.setWindowTitle("Edit Job" if self._editing else "New Job")
@@ -353,13 +354,23 @@ class JobEditorDialog(QDialog):
         adv_hint.setProperty("muted", True)
         adv_form.addRow(adv_hint)
 
+        # The two run-time knobs carry an always-visible one-line explanation: users hit a
+        # 20+ minute PI report timing out and never found the tooltip that said what to do.
+        default_minutes = self._default_timeout_minutes()
         self.timeout = QSpinBox()
-        self.timeout.setRange(0, 86400)
-        self.timeout.setSpecialValueText("(use default)")
-        self.timeout.setSuffix(" s")
+        self.timeout.setRange(0, 24 * 60)
+        self.timeout.setSuffix(" min")
+        self.timeout.setSpecialValueText(
+            f"Default ({default_minutes} min)" if default_minutes else "Default (from Settings)"
+        )
         self.timeout.setToolTip(
-            "Maximum seconds a run may take. If Excel hangs, the run is killed at this limit "
-            "and marked Timed out. 0 = use the default from Settings."
+            "The longest a run may take, start to finish (all workbooks). When it is "
+            "reached the run is stopped and marked Timed out. 0 = the default from "
+            "File → Settings."
+        )
+        timeout_help = self._help_label(
+            "Stops the whole run after this long and marks it Timed out. A big report that "
+            "pulls a lot of PI data can need 20–60 min — raise this if runs end as Timed out."
         )
         self.group = QLineEdit()
         self.group.setToolTip(
@@ -369,13 +380,19 @@ class JobEditorDialog(QDialog):
         )
         self.post_refresh_wait = QSpinBox()
         self.post_refresh_wait.setRange(0, 3600)
+        self.post_refresh_wait.setPrefix("up to ")
         self.post_refresh_wait.setSuffix(" s")
-        self.post_refresh_wait.setSpecialValueText("(none)")
+        self.post_refresh_wait.setSpecialValueText("Don't wait")
         self.post_refresh_wait.setValue(10)
         self.post_refresh_wait.setToolTip(
-            "Extra wait after the data refresh completes, before freezing/exporting. Use "
-            "this when the workbook relies on Excel add-ins that load data asynchronously "
-            "— e.g. PI DataLink — and the output would otherwise capture incomplete data."
+            "Add-ins such as PI DataLink keep filling cells after Excel reports the refresh "
+            "as done. ReportFlow keeps checking for up to this long and moves on as soon as "
+            "the data stops changing. This time counts toward the time limit."
+        )
+        wait_help = self._help_label(
+            "After Excel finishes calculating, keep waiting — up to this long — while PI "
+            "DataLink is still filling cells; moves on as soon as the data stops changing. "
+            "Raise it if sheets arrive partly empty."
         )
         self.fail_if_empty = QCheckBox("Fail the run if an included sheet comes out empty")
         self.fail_if_empty.setChecked(True)
@@ -401,9 +418,13 @@ class JobEditorDialog(QDialog):
         self.notes = QPlainTextEdit()
         self.notes.setToolTip("Free-form description of this job.")
 
-        adv_form.addRow("Timeout", self.timeout)
+        for spin in (self.timeout, self.post_refresh_wait):
+            spin.setMaximumWidth(220)  # a number, not a text field — keep it compact
+        adv_form.addRow("Time limit", self.timeout)
+        adv_form.addRow("", timeout_help)
+        adv_form.addRow("Wait for add-in data", self.post_refresh_wait)
+        adv_form.addRow("", wait_help)
         adv_form.addRow("Concurrency group", self.group)
-        adv_form.addRow("Extra wait after refresh", self.post_refresh_wait)
         adv_form.addRow("", self.fail_if_empty)
         adv_form.addRow("", self.fail_if_errors)
         adv_form.addRow("Blank out values", self.blank_values)
@@ -424,6 +445,21 @@ class JobEditorDialog(QDialog):
         outer.addWidget(self.tabs)
         outer.addWidget(buttons)
         self._refresh_workbook_chrome()
+
+    @staticmethod
+    def _help_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setProperty("muted", True)
+        label.setWordWrap(True)
+        return label
+
+    def _default_timeout_minutes(self) -> int | None:
+        """The Settings default, so "Default" says what it means (None if unreachable)."""
+        try:
+            seconds = int(self._api.get_config().get("app", {}).get("default_timeout_seconds"))
+        except (ApiError, TypeError, ValueError):
+            return None
+        return max(1, -(-seconds // 60))
 
     # -- workbooks -----------------------------------------------------------------
 
@@ -749,7 +785,7 @@ class JobEditorDialog(QDialog):
             "output_name": self.output_name.text().strip() or None,
             "freeze_values": self.freeze.isChecked(),
             "schedule_crons": self.schedule.to_crons(),
-            "timeout_seconds": self.timeout.value() or None,
+            "timeout_seconds": self._timeout_seconds(),
             "concurrency_group": self.group.text().strip() or None,
             "post_refresh_wait_seconds": self.post_refresh_wait.value(),
             "fail_if_sheet_empty": self.fail_if_empty.isChecked(),
@@ -773,6 +809,16 @@ class JobEditorDialog(QDialog):
         if self._existing_template_path:
             data["email_template_path"] = self._existing_template_path
         return data
+
+    def _timeout_seconds(self) -> int | None:
+        minutes = self.timeout.value()
+        if not minutes:
+            return None
+        # Untouched: keep the stored value exactly (older jobs were set in seconds).
+        loaded = self._loaded_timeout_seconds
+        if loaded and -(-loaded // 60) == minutes:
+            return loaded
+        return minutes * 60
 
     def template_html(self) -> str | None:
         """The in-app authored template source, or None when unchanged."""
@@ -808,7 +854,10 @@ class JobEditorDialog(QDialog):
         self.output_name.setText(job.get("output_name") or "")
         self.freeze.setChecked(job.get("freeze_values", True))
         self.schedule.load(job.get("schedule_crons") or [])
-        self.timeout.setValue(job.get("timeout_seconds") or 0)
+        self._loaded_timeout_seconds = job.get("timeout_seconds") or None
+        self.timeout.setValue(
+            -(-self._loaded_timeout_seconds // 60) if self._loaded_timeout_seconds else 0
+        )
         self.group.setText(job.get("concurrency_group") or "")
         self.post_refresh_wait.setValue(job.get("post_refresh_wait_seconds") or 0)
         self.fail_if_empty.setChecked(job.get("fail_if_sheet_empty", True))

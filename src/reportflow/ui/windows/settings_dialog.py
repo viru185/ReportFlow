@@ -138,10 +138,12 @@ class SettingsDialog(QDialog):
         self.max_concurrency.setRange(1, 32)
         self.max_concurrency.setToolTip("Maximum number of jobs allowed to run at the same time.")
         self.default_timeout = QSpinBox()
-        self.default_timeout.setRange(30, 86400)
-        self.default_timeout.setSuffix(" s")
+        self.default_timeout.setRange(1, 24 * 60)
+        self.default_timeout.setSuffix(" min")
         self.default_timeout.setToolTip(
-            "Default per-run time limit; a hung run is killed when it exceeds this."
+            "The longest a run may take when its job leaves Time limit at Default. When it "
+            "is reached the run is stopped and marked Timed out — raise it (here, or per job "
+            "in Edit → Advanced) for big reports that pull a lot of PI data."
         )
         self.log_retention = QSpinBox()
         self.log_retention.setRange(1, 365)
@@ -159,7 +161,7 @@ class SettingsDialog(QDialog):
             "app picks it up on next start."
         )
         app_form.addRow("Max parallel runs", self.max_concurrency)
-        app_form.addRow("Default timeout", self.default_timeout)
+        app_form.addRow("Default time limit", self.default_timeout)
         app_form.addRow("Log retention", self.log_retention)
         app_form.addRow("", self.check_updates)
         app_form.addRow("", self.debug_logging)
@@ -253,7 +255,8 @@ class SettingsDialog(QDialog):
 
         app_cfg = cfg.get("app", {})
         self.max_concurrency.setValue(int(app_cfg.get("max_global_concurrency", 4)))
-        self.default_timeout.setValue(int(app_cfg.get("default_timeout_seconds", 900)))
+        # Stored in seconds; edited in minutes (rounded up so a limit never shrinks).
+        self.default_timeout.setValue(-(-int(app_cfg.get("default_timeout_seconds", 900)) // 60))
         self.log_retention.setValue(int(app_cfg.get("log_retention_days", 30)))
 
         ui_cfg = cfg.get("ui", {})
@@ -326,7 +329,7 @@ class SettingsDialog(QDialog):
             "app": {
                 **getattr(self, "_app_section_base", {}),
                 "max_global_concurrency": self.max_concurrency.value(),
-                "default_timeout_seconds": self.default_timeout.value(),
+                "default_timeout_seconds": self.default_timeout.value() * 60,
                 "log_retention_days": self.log_retention.value(),
                 "debug_logging": self.debug_logging.isChecked(),
             },

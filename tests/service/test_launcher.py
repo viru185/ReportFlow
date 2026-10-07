@@ -371,6 +371,8 @@ def test_timeout_kills_and_records_timed_out(tmp_path, monkeypatch):
 
     assert rec.status is RunStatus.TIMED_OUT
     assert "timed out" in (rec.error_summary or "")
+    # The history line says what to do about it.
+    assert "raise Time limit in Edit → Advanced" in (rec.error_summary or "")
 
 
 def test_warnings_surface_on_record_and_email_context(tmp_path, monkeypatch):
