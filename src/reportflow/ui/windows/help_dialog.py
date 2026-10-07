@@ -63,16 +63,22 @@ overwritten by a second run on the same day — the editor warns about that.</p>
 one <code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per selected sheet.</p>
 
 <h2 id="schedule">Scheduling</h2>
-<p>In the Schedule section, choose a mode:</p>
+<p>A job with no schedule is <b>manual</b> — it only runs when you click Run. Click
+<b>+ Add schedule</b> to run it automatically, and add <b>more than one</b> to combine them —
+for example <i>Daily at 06:00</i> plus <i>Weekly on Sunday at 10:00</i>. Each schedule is one
+of:</p>
 <ul>
-<li><b>Manual</b> — never runs automatically; use the Run/Test buttons.</li>
-<li><b>Daily</b> — runs every day at the times you add. Add several times (e.g. 06:00
-    and 18:00) for multiple runs per day.</li>
-<li><b>Weekly</b> — pick weekdays + times.</li>
-<li><b>Monthly</b> — pick days of the month (1–31) + times.</li>
-<li><b>Advanced (cron)</b> — full cron control, one expression per line
+<li><b>Daily</b> — every day at the times you add. Add several times (e.g. 06:00 and 18:00)
+    for multiple runs per day.</li>
+<li><b>Weekly</b> — tick the weekdays + add times.</li>
+<li><b>Monthly</b> — type the days of the month (e.g. <code>1, 15</code>) + add times.</li>
+<li><b>Custom (cron)</b> — full cron control, one expression per line
     (<code>minute hour day-of-month month day-of-week</code>).</li>
 </ul>
+<p>Pick a time and click <b>Add</b>; each added time shows as a chip — click its <b>✕</b> to
+remove it. <b>🗑 Delete</b> removes a whole schedule. Two schedules may not fire at the same
+moment (e.g. Daily 06:00 and Sunday 06:00) — that would run the job twice, so the editor
+refuses it and says why.</p>
 
 <h2 id="email">Email, recipients &amp; the Testing → Live lifecycle</h2>
 <p>Each job has two recipient sets: <b>Production</b> and <b>Test</b>. <i>To</i> is
