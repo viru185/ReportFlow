@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from reportflow.core import paths
@@ -85,7 +86,10 @@ def test_purge_everything_ignores_age_but_keeps_live_and_active(tmp_path):
 
 def test_purge_prunes_matching_db_rows(tmp_path):
     store = RunStore(tmp_path / "runs.db")
-    for run_id, started in (("a", "2026-01-01T06:00:00"), ("b", "2026-07-20T06:00:00")):
+    # Relative to today: a hardcoded "recent" date silently ages past the window.
+    old = (datetime.now() - timedelta(days=40)).isoformat(timespec="seconds")
+    recent = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    for run_id, started in (("a", old), ("b", recent)):
         store.upsert(
             RunRecord(
                 run_id=run_id,
