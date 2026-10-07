@@ -1,8 +1,11 @@
 # ReportFlow — project guide for Claude
 
 Windows desktop automation for Excel-based reporting, deployed at Aditya Birla / Hindalco.
-A job = "open this workbook, refresh its data, freeze formulas to values, export per-sheet
-PDFs, email the result — on a schedule".
+A job = "open these workbooks, refresh their data, freeze formulas to values, export per-sheet
+PDFs, email the result — on a schedule". A job has one or more workbooks
+(`JobConfig.workbooks`), each with per-sheet options (`SheetOptions`: pdf / hidden) and what
+happens to the sheets it doesn't include (`unselected_sheets`: remove / hide / keep). One run
+builds every workbook in ONE Excel session and sends ONE email.
 
 ## Architecture: three executables, one package
 
@@ -17,7 +20,9 @@ Single `src`-layout package `reportflow`, three entry points (see `pyproject.tom
 Flow: **UI → HTTP (localhost:8787) → Service → spawns one disposable Worker per run.**
 The UI never touches Excel or config directly — everything goes through `ui/api_client.py`.
 The service writes `request.json`, the worker writes `result.json` (`core/ipc/contract.py`
-is the schema; it is the contract between the two processes).
+is the schema; it is the contract between the two processes — `WorkerRequest.workbooks`
+in, `WorkerResult.output_xlsx_paths` out). Service and worker ship in one installer, so the
+contract can change freely; the CONFIG cannot — old job shapes must keep loading.
 
 - Data root: `%ProgramData%\ReportFlow` (config / logs / state / runs / templates) so the
   service and the interactive user resolve to the **same** dir — never `%APPDATA%`.
@@ -78,6 +83,22 @@ is the schema; it is the contract between the two processes).
 - **The old `send_report_email` checkbox is gone (0.8.0).** Legacy configs migrate via a
   `JobConfig` before-validator: `send_report_email=True` → `stage="live"`, else testing.
   Never re-add the key; never persist it.
+- **Pre-0.11 jobs are single-workbook** (`input_excel_path`, `sheet_names`, job-wide
+  `generate_pdf`, `keep_only_selected_sheets`/`unselected_sheets_mode`).
+  `core/config/models.py::migrate_legacy_job` turns them into `workbooks[0]` — used by the
+  JobConfig validator (config files, imports) and by the editor's `_load`. Never write the old
+  keys back.
+- **PDF before hiding.** Excel cannot export a hidden sheet, so per workbook the worker runs:
+  freeze → empty-check → drop/hide not-included sheets → PDFs → `collapse_selection` over the
+  VISIBLE included sheets → hide the included sheets marked Hidden → save
+  (`worker/runner.py::_build_workbook`). At least one included sheet must stay visible
+  (validated in the model and the editor).
+- **Overlapping schedule rules double-fire.** Each cron is its own APScheduler trigger, so
+  "daily 06:00" + "Sunday 06:00" would start two runs (two emails). `ui/schedule_compile.py::
+  compile_rules` refuses that; keep the check when touching schedules.
+- **Duplicate / editor round-trip guard.** `tests/ui/test_ui.py::_every_field_job` sets every
+  `JobConfig` field and asserts Duplicate and an open-and-save round trip lose nothing. A new
+  JobConfig field must be added there (the test fails until it is) — that's the point.
 - **Log/dir growth is bounded by `core/maintenance.py::purge_logs`** — startup + nightly
   (03:30) via APScheduler. `SchedulerService.rebuild()` wipes ALL jobs, so the maintenance
   job is re-registered inside `rebuild`; keep that invariant. Live per-process log files
@@ -110,15 +131,25 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pyt
 
 ## Release
 
-1. Bump `version` in `pyproject.toml` (single source).
+New features ship as a **beta first** (owner's workflow since 0.11):
+
+1. Bump `version` in `pyproject.toml` (single source) — `X.Y.Z-beta.N` for a beta, `X.Y.Z`
+   for the final release. `release.yml` fails if the tag disagrees
+   (`scripts/check_release_tag.py`).
 2. Gate green + `uv run pytest -m excel`.
 3. Validate the installer compiles:
    `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=X.Y.Z packaging\innosetup\reportflow.iss`
-4. Commit to `main`, tag `vX.Y.Z`, push both → GitHub Actions builds the installer and
-   publishes the release. The in-app updater reads the latest GitHub release and runs the
-   setup exe with `/SILENT` (so installer wizard pages, incl. the welcome page, never show
-   on that path). The workflow also regenerates `CHANGELOG.md` with git-cliff and commits
-   it back to `main` as the actions bot (`[skip ci]`) — don't edit that file by hand.
+   (a beta also needs `/DMyAppNumericVersion=X.Y.Z` — Windows file versions are numeric).
+4. **Beta:** tag `vX.Y.Z-beta.N` (any branch) and push it → published as a GitHub
+   **pre-release**, never "latest", no CHANGELOG commit. **Final:** merge to `main`, tag
+   `vX.Y.Z`, push both → normal release. The in-app updater reads the LATEST release (betas
+   are invisible to it) and runs the setup exe with `/SILENT` (so installer wizard pages,
+   incl. the welcome page, never show on that path). Release notes cover everything since
+   the last stable tag; beta tags are `ignore_tags` in `cliff.toml`. A final release
+   regenerates `CHANGELOG.md` and commits it to `main` as the actions bot (`[skip ci]`) —
+   don't edit that file by hand.
+
+Commits: author Viren Hirpara, **no co-author trailer**.
 
 Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-REPORTFLOW01}`
 (the uninstall registry key is that AppId + `_is1`).

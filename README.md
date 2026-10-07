@@ -79,27 +79,46 @@ and every field has a tooltip.
 
 Click **+ New Job**. The editor is organized in sections:
 
-**Input**
-- **Job name** — unique; also used in output filenames.
+**General**
+- **Job name** — unique; also used in output filenames. You can **rename** a job later — its
+  run history and email template follow the new name.
+- **Workbooks** — one tab per input Excel file; **+ Add workbook…** adds another. Every run
+  builds all of them and sends **one** email with every file attached.
 - **Input Excel file** — browse to the `.xlsx`/`.xlsm`. The app **discovers the sheet names**
-  automatically; tick the sheets to process. (Stored by *name*, so reordering sheets is safe.)
+  automatically. (Stored by *name*, so reordering sheets is safe.)
+- **Sheets** — one row per sheet: **Include** (refresh, check and freeze it), **PDF** (also
+  export it as its own PDF) and **Hidden** (keep it in the Excel file but hidden — recipients
+  can unhide it; it can still get a PDF). At least one included sheet must stay visible. Click
+  a column title to tick the whole column.
+- **Sheets not included** — *Remove them from the file* / *Keep them, hidden* (very-hidden,
+  references stay intact) / *Keep them, visible*.
 
 **Output**
 - **Output folder** — browse to where results are saved, or leave empty to save **next to the
   input file**.
-- **Filename** — optional stem; empty means `{job}_{date}`. Placeholders: `{job}`, `{date}`,
-  `{datetime}`, `{run_id}`. A live example shows the resulting names. Each run writes
-  `<name>.xlsx` plus one `<name>_<sheet>.pdf` per selected sheet.
-- **Freeze formulas to values** / **Generate PDF** toggles.
+- **Filename** — optional stem; empty means `{job}_{datetime}` (e.g. `Sales_20261007_061500`),
+  so a job that runs twice in one day never overwrites its earlier report. Placeholders:
+  `{job}`, `{date}`, `{time}`, `{datetime}`, `{run_id}`, `{workbook}`. With several workbooks
+  `_{workbook}` is added automatically. A live example shows the resulting names (and warns
+  when a custom name has no time). Each run writes `<name>.xlsx` per workbook plus one
+  `<name>_<sheet>.pdf` per sheet with PDF ticked.
+- **Freeze formulas to values**.
+- **If a workbook fails** (several workbooks only) — fail the whole run and send nothing
+  (default), or send the workbooks that worked with a warning naming the failed one.
 
-**Schedule** — visual builder: **Manual**, **Daily**, **Weekly** (weekday picker),
-**Monthly** (day-of-month picker), or **Advanced (cron)**. Add **multiple run times per day**
-(e.g. 06:00 and 18:00) in any preset mode.
+**Schedule** — no schedule = manual. **+ Add schedule** adds a **Daily**, **Weekly**,
+**Monthly** or **Custom (cron)** rule; add several to combine them — e.g. daily at 06:00
+*and* every Sunday at 10:00. Each run time is a chip with its own ✕, each rule its own
+Delete. Rules that would fire at the same moment are refused (the job would run twice).
 
-**Email** — subject, recipients, and the in-app template editor (next section).
+**Email** — subject (placeholders work here too, e.g. `Daily report — {{ today }}`),
+recipients, and the template editor (next section).
 
-**Advanced** (collapsed by default) — **Timeout** (max seconds before a hung run is killed)
-and **Concurrency group** (jobs sharing a group run one-at-a-time), plus notes.
+**Advanced** — **Time limit** (minutes; the run is stopped and marked *Timed out* after
+this — raise it for big PI reports that need 20+ minutes), **Wait for add-in data** (keep
+waiting up to N seconds while PI DataLink fills cells; moves on as soon as the data stops
+changing), **Concurrency group**, the empty/error-cell checks, **Blank out values**, notes.
+Each setting has a one-line explanation right under it.
 
 Only the input file, at least one sheet, and the **To** addresses are required. Everything
 optional can be left blank.
@@ -124,9 +143,19 @@ Each job has two recipient sets — **production** and **test** — each with **
   real **duration**.
 
 The email **body** is authored in-app: click **Edit email template…** in the job editor and
-write it in **Simple** mode (plain text + placeholder-insert buttons) or **HTML** mode, with a
-live **Preview** against sample data. The template is stored per job; leave it untouched to use
-the built-in default.
+write it in **Simple** mode (plain text) or **HTML** mode, with a live **Preview** against
+sample data. The template is stored per job; leave it untouched to use the built-in default.
+
+- **Placeholders** — a list beside the editor shows every placeholder with today's value; one
+  click inserts it. Dates (`{{ today }}`, `{{ yesterday }}`, `{{ now }}`, `{{ weekday }}`,
+  `{{ month }}`, `{{ previous_month }}`, `{{ week_number }}`, or any format via
+  `{{ run_date.strftime('%d/%m/%Y') }}`), run facts (job, status, stage, timings, warnings) and
+  files (attachments, workbooks, sheets). They work in the **Subject** too. **Help → Email
+  placeholders** has the full table and recipes.
+- **Load from file…** — use an `.html` file made elsewhere. By default a copy is saved with the
+  job; tick **Keep linked to this file** to have every run re-read it (the service must be able
+  to read it — the editor checks; if it later goes missing, the email uses the default template
+  and the run shows a warning).
 
 ### Run and schedule
 
@@ -150,9 +179,10 @@ reads `next: tomorrow 06:00 · last: success 2h ago · 4 sheet(s)`.
 Everything occasional lives behind the card's **⋯** menu (so daily actions stay one click):
 
 - **📂 Open last report** — Explorer opens with the last successful report pre-selected.
-- **✎ Edit** and **Logs** — the job editor / that job's run history.
-- **⧉ Duplicate** — a new job pre-filled from this one (fresh name, starts in Testing, own
-  email template).
+- **✎ Edit** and **Logs** — the job editor (including rename) / that job's run history.
+- **⧉ Duplicate** — a new job with *everything* copied — workbooks, sheet choices, schedules,
+  recipients, advanced options and the email template; only the name (new) and the stage
+  (Testing) differ.
 - **⏸ Pause** — pause scheduling. A paused job is unmissable: the whole card dims, a grey
   **⏸ PAUSED** pill appears, the schedule line reads *paused*, and a one-click **▸ Resume**
   button takes the promote button's slot. Manual runs still work while paused.
@@ -184,8 +214,8 @@ the left, application & service on the right):
   server without sending anything.
 - **Test & support email** — global test-run fallback recipients and the support address
   that receives diagnostic bundles.
-- **Application** — max parallel runs, default timeout, log retention, and the startup
-  update-check toggle.
+- **Application** — max parallel runs, default time limit (minutes), log retention, and the
+  startup update-check toggle (off by default).
 
 ### Import, export & updates
 
@@ -194,10 +224,11 @@ the left, application & service on the right):
   Overwrite / Skip / Import as copy.
 - **File → Export/Import settings…** — the same for application settings. The SMTP
   password never travels; re-enter it after importing.
-- **Updates** — the app checks GitHub for a newer release at startup (skipped when
-  offline; toggleable in Settings) and via **Help → Check for updates…**. Nothing installs
-  until you click **Update now**; the download shows progress and the installer upgrades
-  automatically, preserving jobs, settings, and logs.
+- **Updates** — **Help → Check for updates…** looks for a newer release on GitHub; tick the
+  startup check in Settings to have the app look on every start (off by default; skipped when
+  offline). Nothing installs until you click **Update now**; the download shows progress and
+  the installer upgrades automatically, preserving jobs, settings, and logs. **Beta**
+  pre-releases are never offered — install one by hand from the GitHub releases page.
 
 ### Workbooks using PI DataLink (or other Excel add-ins)
 
@@ -227,14 +258,15 @@ and PI access):
 delivery — the report is sent and the errors show as a *warning* on the run. Strip them with
 the **Blank out values** list (e.g. `#REF!, #N/A`), or tick *"Fail the run if a sheet has
 error cells (strict)"* to fail instead. If a sheet is only partly filled, the add-in's data
-was still arriving at freeze time — raise **Extra wait after refresh** (ReportFlow waits
-adaptively up to that budget and logs when data is still changing at the end).
+was still arriving at freeze time — raise **Wait for add-in data** (ReportFlow waits
+adaptively up to that budget and logs when data is still changing at the end). If the run
+instead ends as *Timed out*, raise the **Time limit**.
 
 **"Cannot be opened" output.** Removing non-selected sheets can break a chart/defined name that
 referenced them, and Office File Validation then blocks the file. ReportFlow purges broken
-`#REF!` defined names automatically; if a report still won't open, set that job's **Non-selected
-sheets** option (Advanced) to **Hide** — the others become very-hidden, references stay
-intact, and the file always opens. If the *input* file won't open by hand, it carries a
+`#REF!` defined names automatically; if a report still won't open, set that workbook's **Sheets
+not included** option (General tab) to **Keep them, hidden** — the others become very-hidden,
+references stay intact, and the file always opens. If the *input* file won't open by hand, it carries a
 Mark-of-the-Web: right-click → Properties → **Unblock** (or add its folder as a Trusted
 Location); reports still generate because the service opens files via automation.
 
@@ -253,7 +285,7 @@ Everything runtime lives under **`C:\ProgramData\ReportFlow\`**:
 ```
 config\reportflow.toml     application + SMTP + job definitions
 templates\email\default.html   default email body
-templates\jobs\<job>.html  per-job email templates authored in-app
+templates\jobs\<job>.html  per-job email templates authored in-app (or imported)
 logs\                      rolling per-process logs (ui, service, worker)
 state\runs.db              run history (SQLite)
 state\secrets\             encrypted secrets (DPAPI)
@@ -401,6 +433,9 @@ Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) and `packaging/nssm/nss
 # -> packaging\innosetup\Output\ReportFlow-Setup-0.1.0.exe
 ```
 
+For a beta, also pass the numeric part for the Windows file version:
+`/DMyAppVersion=0.11.0-beta.1 /DMyAppNumericVersion=0.11.0`.
+
 ### Project layout
 
 ```
@@ -445,6 +480,7 @@ username = "reportflow@corp.example.com"
 
 [ui]
 api_base_url = "http://127.0.0.1:8787"
+check_updates_on_startup = false
 
 [email]
 default_template_path = "email/default.html"   # relative to templates\
@@ -456,18 +492,25 @@ developer_bundle_recipients = ["dev-team@corp.example.com"]
 [[job]]
 name = "daily_sales"
 enabled = true
-input_excel_path = "C:/Templates/daily_sales.xlsx"
 email_template_path = 'C:/ProgramData/ReportFlow/templates/jobs/daily_sales.html'  # optional
-output_dir = "C:/Reports/daily_sales"     # optional; empty -> next to the input file
-output_name = "{job}_{date}"              # optional filename stem; PDFs get _<sheet> suffix
-sheet_names = ["Summary", "Detail"]       # names, not indexes
+output_dir = "C:/Reports/daily_sales"     # optional; empty -> next to each input file
+output_name = "{job}_{datetime}"          # optional filename stem; PDFs get _<sheet> suffix
+on_workbook_failure = "fail_run"          # or "send_partial" (several workbooks)
 freeze_values = true
-generate_pdf = true
-schedule_crons = ["0 6 * * MON-FRI", "0 18 * * MON-FRI"]   # one trigger per entry
-timeout_seconds = 1200
+schedule_crons = ["0 6 * * *", "0 10 * * SUN"]   # one trigger per entry (daily + Sunday)
+timeout_seconds = 2700                    # the editor shows minutes
+post_refresh_wait_seconds = 120
 concurrency_group = "reports"
-subject = "Daily Sales — {date}"
+subject = "Daily Sales — {{ today }}"     # placeholders work in the subject
 stage = "live"                            # "testing" (default) emails testers; "live" -> prod
+
+  [[job.workbooks]]                       # one or more; all go out in one email
+  input_excel_path = "C:/Templates/daily_sales.xlsx"
+  unselected_sheets = "remove"            # sheets not listed: "remove" | "hide" | "keep"
+  sheets = [                              # names, not indexes
+    { name = "Summary", pdf = true, hidden = false },
+    { name = "Detail",  pdf = false, hidden = true },
+  ]
 
   [job.prod]
   to  = ["managers@corp.example.com"]
@@ -497,7 +540,7 @@ Bound to `127.0.0.1` only.
 | `PUT /settings` | Update app/smtp/ui/email/test sections (jobs untouched). |
 | `GET/POST/DELETE /system/smtp-password` | Status / store / clear the DPAPI SMTP password. |
 | `GET /system/logs?process=&tail=` | Tail the Service/Worker/UI rolling log. |
-| `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD. |
+| `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD (a PUT with a new name renames the job; history + template follow). |
 | `POST /jobs/{name}/run` · `POST /jobs/{name}/dry-run` | Run per the job's stage / build only. |
 | `POST /jobs/{name}/stage` | Promote to live / demote to testing. |
 | `POST /system/purge-logs` | Delete old (or all) run folders, logs, bundles. |
@@ -505,6 +548,7 @@ Bound to `127.0.0.1` only.
 | `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs. |
 | `POST /workbook/sheets` | Discover sheet names (openpyxl, no COM). |
 | `POST /email/preview` | Render the email template with sample data. |
+| `POST /email/template-check` | Can the service read + render a template file (for linked templates)? |
 | `POST /system/send-dev-logs` | Email the redacted diagnostic bundle. |
 
 ### Design notes
@@ -528,9 +572,18 @@ Bound to `127.0.0.1` only.
 
 - **`.github/workflows/ci.yml`** (push/PR, `windows-latest`): `ruff check`, `ruff format
   --check`, `mypy`, `pytest -m "not excel"`, and Conventional-Commits linting on PRs.
-- **`.github/workflows/release.yml`** (tag `v*`): builds the three exes, fetches NSSM, compiles
-  the Inno Setup installer, generates the changelog with git-cliff, and publishes a GitHub
-  Release with the installer + zipped executables.
+- **`.github/workflows/release.yml`** (tag `v*`): checks the tag matches `pyproject.toml`,
+  builds the three exes, fetches NSSM, compiles the Inno Setup installer, writes release notes
+  with git-cliff (everything since the last stable tag), and publishes a GitHub Release with
+  the installer + zipped executables.
+
+**Beta first.** A new feature ships as a beta: set `version = "X.Y.Z-beta.N"` in
+`pyproject.toml` and push tag `vX.Y.Z-beta.N` (from any branch). It is published as a GitHub
+**pre-release**, never marked latest, so the in-app updater ignores it and testers install it
+by hand. When it's verified, set `version = "X.Y.Z"`, merge to `main` and push tag `vX.Y.Z`:
+that release is offered to everyone, its notes include the beta's changes, and the workflow
+commits the regenerated `CHANGELOG.md` to `main` (betas skip that step and get no changelog
+section of their own).
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/); the changelog is
 generated from history by [git-cliff](https://git-cliff.org/).

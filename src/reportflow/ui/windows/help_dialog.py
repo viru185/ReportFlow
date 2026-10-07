@@ -118,16 +118,30 @@ The background <b>service</b> runs jobs on schedule; this app is the control pan
 <li>Give the job a unique <b>name</b> (also used in output filenames). You can rename it
     later in <b>✎ Edit</b> — its run history and email template move with it (not while a
     run of it is in progress).</li>
-<li>Browse to the <b>Input Excel file</b> (.xlsx / .xlsm). The sheet list fills in
-    automatically — tick the sheets this job should process. Selection is stored by sheet
-    <i>name</i>, so reordering sheets in the workbook is safe.</li>
+<li>Browse to the <b>Input Excel file</b> (.xlsx / .xlsm). The sheet table fills in
+    automatically, every sheet included. Per sheet choose:
+    <b>Include</b> (refresh, check and freeze it), <b>PDF</b> (also export it as its own PDF)
+    and <b>Hidden</b> (keep it in the Excel file but hidden — recipients can unhide it; it can
+    still get a PDF). At least one included sheet must stay visible. Click a column title to
+    tick or untick it for every sheet. Sheets are stored by <i>name</i>, so reordering sheets
+    in the workbook is safe.</li>
+<li><b>Sheets not included</b> — what the output copy does with the sheets you didn't
+    include: <i>Remove them from the file</i> (smallest file, but can break charts/defined
+    names that referenced them, so Office may refuse to open the output), <i>Keep them,
+    hidden</i> (very-hidden: references stay intact and the file always opens, but the raw data
+    stays inside it) or <i>Keep them, visible</i>.</li>
+<li>More than one Excel file? <b>+ Add workbook…</b> adds another tab with its own file,
+    sheets and choices. Every run builds all of them and sends <b>one email</b> with every
+    file attached. On the Output tab, <b>If a workbook fails</b> decides whether one failing
+    workbook stops the whole run (default — nothing is sent) or the others are still sent
+    with a warning.</li>
 <li>Configure Output, Schedule, and Email in their sections (details below), then
     <b>Save</b>.</li>
 </ol>
-<p><b>What a run does:</b> opens the input file, refreshes external data / Power Query,
-waits for calculation, optionally freezes formulas to values on the selected sheets,
-exports one PDF per selected sheet using the workbook's own print layout, and saves the
-output Excel. The input file itself is never modified.</p>
+<p><b>What a run does:</b> for each workbook — opens the input file, refreshes external
+data / Power Query, waits for calculation, optionally freezes formulas to values on the
+included sheets, exports the PDFs using the workbook's own print layout, hides the sheets
+marked Hidden, and saves the output Excel. The input files themselves are never modified.</p>
 
 <h2 id="output">Output files</h2>
 <p>Pick an <b>Output folder</b> — or leave it empty to save next to the input file.
@@ -139,8 +153,10 @@ Available placeholders: <code>{{job}}</code>, <code>{{date}}</code> (20261007),
 <code>{{run_id}}</code>, <code>{{workbook}}</code> (the input file's name). A custom name
 without <code>{{time}}</code> / <code>{{datetime}}</code> / <code>{{run_id}}</code> is
 overwritten by a second run on the same day — the editor warns about that.</p>
-<p>Each run writes <code>&lt;filename&gt;.xlsx</code> plus, when <i>Generate PDF</i> is on,
-one <code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per selected sheet.</p>
+<p>Each run writes <code>&lt;filename&gt;.xlsx</code> per workbook plus one
+<code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per sheet with PDF ticked. With several
+workbooks, <code>_{{workbook}}</code> is added to the name automatically so their files never
+overwrite each other.</p>
 
 <h2 id="schedule">Scheduling</h2>
 <p>A job with no schedule is <b>manual</b> — it only runs when you click Run. Click
@@ -300,21 +316,15 @@ release when it comes out.</p>
 <li><b>Concurrency group</b> — jobs sharing the same group name run one-at-a-time instead
     of in parallel (useful when several jobs hit the same slow database). Leave empty for
     normal parallel behavior.</li>
-<li><b>Freeze formulas</b> — converts formulas to plain values on the selected sheets in
-    the <i>output copy</i>, so recipients see numbers even without your data connections.</li>
-<li><b>Fail if a sheet comes out empty</b> (default on) — a run whose selected sheet has
+<li><b>Freeze formulas</b> (Output tab) — converts formulas to plain values on the
+    included sheets in the <i>output copy</i>, so recipients see numbers even without your
+    data connections.</li>
+<li><b>Fail if a sheet comes out empty</b> (default on) — a run whose included sheet has
     no data fails loudly instead of emailing a blank report.</li>
 <li><b>Fail if a sheet has error cells (strict)</b> (default <i>off</i>) — by default a
     report with Excel errors (<code>#REF!</code>, <code>#N/A</code>, …) is still
     <b>delivered</b>, and the errors are listed as a <i>warning</i> on the run. Tick this only
     if you want any error cell to fail the run instead.</li>
-<li><b>Non-selected sheets</b> — one dropdown decides what the output copy does with the tabs
-    you did <i>not</i> select (the source is never modified):
-    <i>Keep all sheets</i> leaves every tab visible; <i>Remove</i> deletes them for a smaller
-    file (but can break defined names/charts that referenced them, so Office may refuse to open
-    the output); <i>Hide</i> keeps every sheet in the file but makes the non-selected ones
-    very-hidden — references stay intact so the file always opens, but the raw data stays
-    inside it. If a delivered report "cannot be opened", switch that job to <i>Hide</i>.</li>
 <li><b>Blank out values</b> — comma-separated cell values removed from the output after
     saving: error codes (<code>#REF!</code>, <code>#N/A</code>, <code>#NAME?</code>) or
     add-in strings like "Tag not found".</li>
@@ -354,10 +364,11 @@ waits adaptively up to that budget and logs when data is still changing at the e
 run instead ends as <i>Timed out</i>, raise the <b>Time limit</b>.</p>
 <p><b>"Cannot be opened" report.</b> If a delivered report trips Office's
 "Office has detected a problem with this file", the sheet-removal step likely broke a chart or
-defined name that pointed at a removed tab. Switch that job's <b>Unselected sheets</b> to
-<i>Hide</i> (Advanced tab) — the file will always open. If the <i>input</i> file shows the
-same message when you open it by hand, it carries a Mark-of-the-Web from being downloaded:
-right-click → Properties → <b>Unblock</b> (or add its folder as a Trusted Location).
+defined name that pointed at a removed tab. Switch that workbook's <b>Sheets not
+included</b> to <i>Keep them, hidden</i> (General tab) — the file will always open. If the
+<i>input</i> file shows the same message when you open it by hand, it carries a
+Mark-of-the-Web from being downloaded: right-click → Properties → <b>Unblock</b> (or add its
+folder as a Trusted Location).
 ReportFlow still generates reports from it because the service opens files via automation.</p>
 
 <h2 id="dryrun">Build only — check the report without emailing</h2>
