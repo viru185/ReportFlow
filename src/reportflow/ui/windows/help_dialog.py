@@ -51,9 +51,14 @@ output Excel. The input file itself is never modified.</p>
 
 <h2 id="output">Output files</h2>
 <p>Pick an <b>Output folder</b> — or leave it empty to save next to the input file.
-Optionally set a <b>Filename</b>; leave it empty for the default <code>{{job}}_{{date}}</code>.
-Available placeholders: <code>{{job}}</code>, <code>{{date}}</code>, <code>{{datetime}}</code>,
-<code>{{run_id}}</code>.</p>
+Optionally set a <b>Filename</b>; leave it empty for the default
+<code>{{job}}_{{datetime}}</code> (e.g. <code>Sales_20261007_061500</code>) — the run's time is
+part of the name, so a job that runs twice in one day never overwrites its earlier report.
+Available placeholders: <code>{{job}}</code>, <code>{{date}}</code> (20261007),
+<code>{{time}}</code> (061500), <code>{{datetime}}</code> (20261007_061500),
+<code>{{run_id}}</code>, <code>{{workbook}}</code> (the input file's name). A custom name
+without <code>{{time}}</code> / <code>{{datetime}}</code> / <code>{{run_id}}</code> is
+overwritten by a second run on the same day — the editor warns about that.</p>
 <p>Each run writes <code>&lt;filename&gt;.xlsx</code> plus, when <i>Generate PDF</i> is on,
 one <code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per selected sheet.</p>
 

@@ -35,6 +35,7 @@ from reportflow.core.ipc import (
     read_result,
     write_request,
 )
+from reportflow.core.output_names import DEFAULT_OUTPUT_STEM, expand_output_name
 from reportflow.core.state import RunRecord, RunStore, RunTrigger
 
 _DRY_RUN_NOTE = "not sent — build only"
@@ -97,22 +98,6 @@ def default_worker_command() -> list[str]:
     return [sys.executable, "-m", "reportflow.worker"]
 
 
-DEFAULT_OUTPUT_STEM = "{job}_{date}"
-
-
-def _substitute_tokens(
-    text: str, *, job_name: str, run_id: str, now: datetime, workbook: str = ""
-) -> str:
-    """Expand {date}/{datetime}/{job}/{run_id}/{workbook} in an output name. {sheet} is
-    left for the worker (one PDF per sheet)."""
-    text = text.replace("{date}", now.strftime("%Y%m%d"))
-    text = text.replace("{datetime}", now.strftime("%Y%m%d_%H%M%S"))
-    text = text.replace("{job}", job_name)
-    text = text.replace("{run_id}", run_id)
-    text = text.replace("{workbook}", workbook)
-    return text
-
-
 def resolve_output_paths(
     job: JobConfig, *, run_id: str, now: datetime
 ) -> list[tuple[Path, Path | None]]:
@@ -132,7 +117,7 @@ def resolve_output_paths(
     for wb in job.workbooks:
         source = Path(wb.input_excel_path)
         base = Path(job.output_dir) if job.output_dir else source.parent
-        stem = _substitute_tokens(
+        stem = expand_output_name(
             pattern, job_name=job.name, run_id=run_id, now=now, workbook=source.stem
         )
         # Two inputs with the same file name (from different folders) must not overwrite
