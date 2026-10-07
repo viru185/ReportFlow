@@ -17,7 +17,12 @@ from loguru import logger
 
 from reportflow.core import secrets
 from reportflow.core.config.models import AppConfig, JobConfig, Recipients, SmtpConfig
-from reportflow.core.email.render import html_to_text, render_email, resolve_template
+from reportflow.core.email.render import (
+    html_to_text,
+    render_email,
+    render_subject,
+    resolve_template,
+)
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 
 
@@ -47,7 +52,8 @@ def build_report_message(
 ) -> tuple[EmailMessage, list[str]]:
     recipients = resolve_recipients(job, config, is_test=is_test)
 
-    subject = job.subject or f"{job.name} report"
+    # Placeholders work in the subject too ("Daily report — {{ today }}").
+    subject = render_subject(job.subject or f"{job.name} report", context)
     if is_test:
         subject = f"[TEST] {subject}"
 

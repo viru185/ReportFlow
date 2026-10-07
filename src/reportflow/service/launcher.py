@@ -27,6 +27,7 @@ from loguru import logger
 from reportflow.core import paths
 from reportflow.core.config.models import AppConfig, JobConfig
 from reportflow.core.email import send_report
+from reportflow.core.email.render import date_context, render_subject
 from reportflow.core.ipc import (
     RunStatus,
     SheetTask,
@@ -429,20 +430,33 @@ class Launcher:
 
     @staticmethod
     def _email_context(job: JobConfig, record: RunRecord) -> dict:
-        return {
+        """Every documented placeholder (see ``core.email.render.PLACEHOLDERS``)."""
+        try:
+            started = datetime.fromisoformat(record.started_at or "")
+        except ValueError:
+            started = datetime.now()
+        attachments = [Path(p).name for p in [*record.output_xlsx_paths, *record.pdf_paths]]
+        context = {
             "job_name": job.name,
-            "subject": job.subject or f"{job.name} report",
             "status": str(record.status),
+            "stage": "Testing" if job.stage == "testing" else "Live",
             "run_id": record.run_id,
             "started_at": record.started_at,
             "finished_at": record.finished_at,
             "duration_seconds": _format_duration(record.duration_seconds),
             "sheet_names": job.sheet_names,
+            "sheet_count": len(job.sheet_names),
             "workbooks": [Path(wb.input_excel_path).name for wb in job.workbooks],
+            "attachments": attachments,
+            "attachment_count": len(attachments),
             "hostname": os.environ.get("COMPUTERNAME", "host"),
             "is_test": record.is_test,
             "warnings": list(record.warnings),
+            "warning_count": len(record.warnings),
+            **date_context(started),
         }
+        context["subject"] = render_subject(job.subject or f"{job.name} report", context)
+        return context
 
     @staticmethod
     def _tree_kill(pid: int) -> None:

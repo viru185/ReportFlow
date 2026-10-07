@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import html as html_mod
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -23,18 +26,9 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.core.config.defaults import DEFAULT_EMAIL_TEMPLATE
-from reportflow.core.email.render import render_email, sample_context
+from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
 
-_PLACEHOLDERS = [
-    ("Job name", "{{ job_name }}"),
-    ("Status", "{{ status }}"),
-    ("Run ID", "{{ run_id }}"),
-    ("Started", "{{ started_at }}"),
-    ("Finished", "{{ finished_at }}"),
-    ("Duration", "{{ duration_seconds }}"),
-    ("Sheets", '{{ sheet_names | join(", ") }}'),
-    ("Host", "{{ hostname }}"),
-]
+_TOKEN_ROLE = Qt.ItemDataRole.UserRole
 
 _SIMPLE_SCAFFOLD = """\
 <!doctype html>
@@ -83,22 +77,13 @@ class EmailTemplateDialog(QDialog):
 
         hint = QLabel(
             "Write the email body in <b>Simple</b> mode (plain text) or switch to "
-            "<b>HTML</b> for full control. Click a placeholder button to insert a value "
-            "that is filled in at send time."
+            "<b>HTML</b> for full control. Click a placeholder on the right to insert a value "
+            "that is filled in at send time (they work in the job's Subject too)."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        chips = QHBoxLayout()
-        chips.addWidget(QLabel("Insert:"))
-        for label, token in _PLACEHOLDERS:
-            btn = QPushButton(label)
-            btn.setToolTip(f"Insert {token}")
-            btn.clicked.connect(lambda *_, t=token: self._insert(t))
-            chips.addWidget(btn)
-        chips.addStretch()
-        layout.addLayout(chips)
-
+        body = QHBoxLayout()
         self.tabs = QTabWidget()
         self.simple_edit = QPlainTextEdit()
         self.simple_edit.setPlaceholderText(
@@ -110,7 +95,41 @@ class EmailTemplateDialog(QDialog):
         self.html_edit.setToolTip("Raw HTML template source (Jinja2 placeholders supported).")
         self.tabs.addTab(self.simple_edit, "Simple")
         self.tabs.addTab(self.html_edit, "HTML")
-        layout.addWidget(self.tabs, 2)
+        body.addWidget(self.tabs, 3)
+
+        # Placeholders: one click inserts; each shows what it turns into today.
+        side = QVBoxLayout()
+        side.addWidget(QLabel("<b>Placeholders</b> — click to insert"))
+        self.placeholders = QListWidget()
+        self.placeholders.setToolTip("Click a placeholder to insert it at the cursor.")
+        samples = sample_context()
+        group = ""
+        for item_group, label, token, about in PLACEHOLDERS:
+            if item_group != group:
+                group = item_group
+                header = QListWidgetItem(group)
+                header.setFlags(Qt.ItemFlag.NoItemFlags)  # a heading, not a placeholder
+                font = header.font()
+                font.setBold(True)
+                header.setFont(font)
+                self.placeholders.addItem(header)
+            try:
+                example = "" if group == "Blocks" else render_email(token, samples)
+            except Exception:  # noqa: BLE001 — a sample must never break the dialog
+                example = ""
+            text = f"{label} — {example}" if example else label
+            item = QListWidgetItem(text)
+            item.setData(_TOKEN_ROLE, token)
+            item.setToolTip(f"{token}\n{about}")
+            self.placeholders.addItem(item)
+        self.placeholders.itemClicked.connect(self._on_placeholder_clicked)
+        side.addWidget(self.placeholders, 1)
+        how_to = QLabel('<a href="#placeholders">How to use placeholders</a>')
+        how_to.setToolTip("Open the Help guide's placeholder section, with examples.")
+        how_to.linkActivated.connect(self._open_placeholder_help)
+        side.addWidget(how_to)
+        body.addLayout(side, 2)
+        layout.addLayout(body, 2)
 
         if existing_html.strip():
             self.html_edit.setPlainText(existing_html)
@@ -141,6 +160,16 @@ class EmailTemplateDialog(QDialog):
         layout.addWidget(buttons)
 
     # -- behavior ----------------------------------------------------------------
+
+    def _on_placeholder_clicked(self, item: QListWidgetItem) -> None:
+        token = item.data(_TOKEN_ROLE)
+        if token:
+            self._insert(token)
+
+    def _open_placeholder_help(self, *_: object) -> None:
+        from reportflow.ui.windows.help_dialog import HelpDialog
+
+        HelpDialog(self, anchor="placeholders").exec()
 
     def _insert(self, token: str) -> None:
         editor = (
