@@ -2,16 +2,24 @@
 
 The result is HTML template source (Jinja2 placeholders); Simple mode wraps the text into
 the default scaffold on save. The caller persists it via PUT /jobs/{name}/email-template.
+
+An .html file can be loaded instead: either imported (a copy is saved with the job, like
+in-app text) or kept LINKED — the job then points at the file and every run re-reads it, so
+edits made to the file outside ReportFlow are picked up. ``linked_path()`` reports that.
 """
 
 from __future__ import annotations
 
 import html as html_mod
+from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -27,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from reportflow.core.config.defaults import DEFAULT_EMAIL_TEMPLATE
 from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
+from reportflow.ui.fs_util import open_start_dir
 
 _TOKEN_ROLE = Qt.ItemDataRole.UserRole
 
@@ -66,11 +75,22 @@ class EmailTemplateDialog(QDialog):
         existing_html: str = "",
         job_name: str = "",
         parent: QWidget | None = None,
+        *,
+        linked_path: str | None = None,
+        check_path: Callable[[str], object] | None = None,
     ) -> None:
+        """``linked_path``: the job is linked to this file (opens in linked mode).
+        ``check_path(path)`` raises with a reason when the SERVICE can't use the file —
+        linking is only allowed once it passes."""
         super().__init__(parent)
         self.setWindowTitle(f"Email template — {job_name}" if job_name else "Email template")
-        self.resize(760, 620)
+        self.resize(820, 640)
+        self._check_path = check_path
+        self._file_path: str | None = linked_path
         self._build(existing_html)
+        if linked_path:
+            self.keep_linked.setChecked(True)
+        self._sync_link_ui()
 
     def _build(self, existing_html: str) -> None:
         layout = QVBoxLayout(self)
@@ -82,6 +102,26 @@ class EmailTemplateDialog(QDialog):
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        file_row = QHBoxLayout()
+        load = QPushButton("Load from file…")
+        load.setToolTip("Use an .html file you made elsewhere as this job's email body.")
+        load.clicked.connect(self._pick_file)
+        self.keep_linked = QCheckBox("Keep linked to this file")
+        self.keep_linked.setToolTip(
+            "Ticked: the job keeps pointing at the file and every run reads it again, so "
+            "edits you make to the file are used automatically. The ReportFlow service must "
+            "be able to read it (a shared folder works best).\n"
+            "Unticked: a copy is saved with the job; later edits to the file are ignored."
+        )
+        self.keep_linked.toggled.connect(self._sync_link_ui)
+        self.file_label = QLabel("")
+        self.file_label.setProperty("muted", True)
+        self.file_label.setWordWrap(True)
+        file_row.addWidget(load)
+        file_row.addWidget(self.keep_linked)
+        file_row.addWidget(self.file_label, 1)
+        layout.addLayout(file_row)
 
         body = QHBoxLayout()
         self.tabs = QTabWidget()
@@ -178,6 +218,48 @@ class EmailTemplateDialog(QDialog):
         editor.insertPlainText(token)
         editor.setFocus()
 
+    def _pick_file(self) -> None:
+        start = open_start_dir(self._file_path or "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load an email template", start, "HTML (*.html *.htm)"
+        )
+        if path:
+            self.load_file(path)
+
+    def load_file(self, path: str) -> None:
+        """Import ``path`` into the HTML editor (and remember it for "Keep linked")."""
+        try:
+            source = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            QMessageBox.warning(self, "Load from file", f"Could not read the file:\n{e}")
+            return
+        self._file_path = path
+        self.html_edit.setPlainText(source)
+        self.tabs.setCurrentWidget(self.html_edit)
+        self._sync_link_ui()
+
+    def _sync_link_ui(self) -> None:
+        linked = self.keep_linked.isChecked() and bool(self._file_path)
+        self.keep_linked.setEnabled(bool(self._file_path))
+        # Linked: the FILE is the template — edit it there, not here.
+        self.html_edit.setReadOnly(linked)
+        self.tabs.setTabEnabled(self.tabs.indexOf(self.simple_edit), not linked)
+        if linked:
+            self.tabs.setCurrentWidget(self.html_edit)
+            self.file_label.setText(
+                f"Linked to {self._file_path} — edit that file; every run reads it again."
+            )
+        elif self._file_path:
+            self.file_label.setText(f"Loaded from {Path(self._file_path).name} — saved as a copy.")
+        else:
+            self.file_label.setText("")
+
+    def linked_path(self) -> str | None:
+        """The linked file when "Keep linked" is ticked, else None (save a copy)."""
+        if self.keep_linked.isChecked() and self._file_path:
+            return self._file_path
+        return None
+
     def result_html(self) -> str:
         if self.tabs.currentWidget() is self.simple_edit:
             return _wrap_simple(self.simple_edit.toPlainText())
@@ -192,6 +274,18 @@ class EmailTemplateDialog(QDialog):
         self.preview.setHtml(rendered)
 
     def _on_save(self) -> None:
+        linked = self.linked_path()
+        if linked and self._check_path is not None:
+            try:
+                self._check_path(linked)
+            except Exception as e:  # noqa: BLE001 — the service's reason, shown to the user
+                QMessageBox.warning(
+                    self,
+                    "Can't link this file",
+                    f"{e}\n\nPut the file somewhere the ReportFlow service can read (e.g. a "
+                    "shared folder), or untick 'Keep linked' to save a copy instead.",
+                )
+                return
         source = self.result_html()
         if not source.strip():
             QMessageBox.warning(self, "Validation", "The template is empty.")

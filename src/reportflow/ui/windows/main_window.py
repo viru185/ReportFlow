@@ -588,11 +588,19 @@ class MainWindow(QMainWindow):
         (fresh name, starts in Testing)."""
         try:
             job = self._api.get_job(name)["job"]
-            template = self._api.get_email_template(name).get("content") or None
+            template = self._api.get_email_template(name)
         except ApiError as e:
             QMessageBox.warning(self, "Duplicate failed", str(e))
             return
-        dlg = JobEditorDialog(self._api, None, self, prefill=job, prefill_template=template)
+        linked = template.get("path") if template.get("linked") else None
+        dlg = JobEditorDialog(
+            self._api,
+            None,
+            self,
+            prefill=job,
+            prefill_template=None if linked else (template.get("content") or None),
+            prefill_template_link=linked,
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._save(dlg, create=True)
 

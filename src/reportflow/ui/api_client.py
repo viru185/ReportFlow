@@ -129,6 +129,10 @@ class ApiClient:
     def get_email_template(self, job_name: str) -> dict:
         return self._request("GET", f"/jobs/{job_name}/email-template")
 
+    def check_email_template(self, path: str) -> dict:
+        """Ask the service whether it can read + render a template file (ApiError if not)."""
+        return self._request("POST", "/email/template-check", json={"path": path})
+
     def put_email_template(self, job_name: str, content: str) -> dict:
         return self._request("PUT", f"/jobs/{job_name}/email-template", json={"content": content})
 

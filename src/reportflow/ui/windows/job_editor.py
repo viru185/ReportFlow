@@ -99,16 +99,20 @@ class JobEditorDialog(QDialog):
         *,
         prefill: dict[str, Any] | None = None,
         prefill_template: str | None = None,
+        prefill_template_link: str | None = None,
     ) -> None:
         """``job`` opens EDIT mode; ``prefill`` opens CREATE mode seeded from an existing
         job (Duplicate): everything copied except the name (fresh) and the stage (back to
         Testing). ``prefill_template`` is the source job's email template content — the copy
-        gets its own file with the same content."""
+        gets its own file with the same content; ``prefill_template_link`` instead means the
+        source is linked to a file of the user's, and the copy links to the same file."""
         super().__init__(parent)
         self._api = api
         self._editing = job is not None
         self._template_html: str | None = None  # authored in-app; caller saves it after job save
         self._existing_template_path: str | None = None
+        # A template file of the user's that the job stays linked to (re-read every run).
+        self._template_link: str | None = None
         self._workbooks: list[_WorkbookState] = [_WorkbookState()]
         self._loaded_timeout_seconds: int | None = None
         self._original_name: str | None = None  # EDIT mode: the name the job is stored under
@@ -121,10 +125,14 @@ class JobEditorDialog(QDialog):
             self._load(job)
         elif prefill:
             self._load(prefill)
-            self._apply_duplicate_mode(prefill.get("name", ""), prefill_template)
+            self._apply_duplicate_mode(
+                prefill.get("name", ""), prefill_template, prefill_template_link
+            )
         self._update_output_example()
 
-    def _apply_duplicate_mode(self, source: str, template: str | None) -> None:
+    def _apply_duplicate_mode(
+        self, source: str, template: str | None, template_link: str | None = None
+    ) -> None:
         """Duplicating is CREATE, not EDIT: everything is copied except the name (fresh)
         and the stage (a new job verifies in Testing first, like any other)."""
         self.setWindowTitle(f"New Job (duplicate of {source})" if source else "New Job")
@@ -132,10 +140,14 @@ class JobEditorDialog(QDialog):
         self.name.setFocus()
         self.stage.setCurrentIndex(self.stage.findData("testing"))
         self.stage.setEnabled(False)  # like any new job: promote from the card after a run
-        # The template FILE is never shared — two jobs editing one file would cross-wire —
-        # but its content is copied, and saved as the new job's own template.
+        # The job's OWN template file is never shared — two jobs editing one file would
+        # cross-wire — but its content is copied and saved as the new job's own template.
+        # A linked file of the user's is shared on purpose: both jobs follow its edits.
         self._existing_template_path = None
-        if template and template.strip():
+        if template_link:
+            self._template_link = template_link
+            self.template_status.setText(f"Linked to {Path(template_link).name}, like {source}.")
+        elif template and template.strip():
             self._template_html = template
             self.template_status.setText(f"Template copied from {source}.")
         else:
@@ -722,6 +734,7 @@ class JobEditorDialog(QDialog):
 
     def _edit_template(self) -> None:
         existing = self._template_html or ""
+        link = self._template_link
         if not existing and self._editing:
             try:
                 # Stored under the original name until a rename is saved.
@@ -729,10 +742,43 @@ class JobEditorDialog(QDialog):
                 existing = self._api.get_email_template(stored_as).get("content", "")
             except ApiError:
                 existing = ""
-        dlg = EmailTemplateDialog(existing, self.name.text().strip(), self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._template_html = dlg.result_html()
+        if link and not existing:
+            existing = self._read_link(link)
+        dlg = EmailTemplateDialog(
+            existing,
+            self.name.text().strip(),
+            self,
+            linked_path=link,
+            check_path=self._api.check_email_template,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        link = dlg.linked_path()
+        if link:
+            self._template_link, self._template_html = link, None
+            self.template_status.setText(f"Linked to {Path(link).name} — read on every run.")
+        else:
+            self._template_link, self._template_html = None, dlg.result_html()
             self.template_status.setText("Custom template ready — saved with the job.")
+
+    @staticmethod
+    def _read_link(path: str) -> str:
+        try:
+            return Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def _detect_template_link(self, name: str) -> None:
+        """Ask the service whether the saved template is a linked file of the user's."""
+        try:
+            info = self._api.get_email_template(name)
+        except ApiError:
+            return
+        if info.get("linked") and info.get("path"):
+            self._template_link = str(info["path"])
+            self.template_status.setText(
+                f"Linked to {Path(self._template_link).name} — read on every run."
+            )
 
     def _validation_error(self) -> tuple[int | None, str] | None:
         """``(tab_index, message)`` for the first problem, or None when the job is valid.
@@ -826,8 +872,11 @@ class JobEditorDialog(QDialog):
             },
             "notes": self.notes.toPlainText().strip(),
         }
-        # Preserve a previously configured template file path (payload rebuilds the job).
-        if self._existing_template_path:
+        # Preserve the template file (payload rebuilds the job): a linked file of the user's,
+        # else the job's own previously saved one.
+        if self._template_link:
+            data["email_template_path"] = self._template_link
+        elif self._existing_template_path:
             data["email_template_path"] = self._existing_template_path
         return data
 
@@ -897,6 +946,8 @@ class JobEditorDialog(QDialog):
         self._existing_template_path = job.get("email_template_path")
         if self._existing_template_path:
             self.template_status.setText("This job has a custom template.")
+            if self._editing:
+                self._detect_template_link(job.get("name", ""))
 
         prod = job.get("prod", {})
         self.prod_to.setText(_join_csv(prod.get("to")))

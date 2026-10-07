@@ -177,10 +177,17 @@ emailed is decided by the job's stage:</b></p>
     or exactly why nothing was sent.</li>
 </ul>
 <p>Click <b>Edit email template…</b> to author the email body in-app: <b>Simple</b> mode
-(plain text + placeholder buttons) or <b>HTML</b> mode (full control), with a live preview.
+(plain text) or <b>HTML</b> mode (full control), with a live preview.
 Placeholders like <code>{{{{ today }}}}</code>, <code>{{{{ job_name }}}}</code> and
 <code>{{{{ status }}}}</code> are filled in at send time — in the body and in the Subject. See
 <a href="#placeholders">Email placeholders</a> for the full list and examples.</p>
+<p><b>Using an .html file you made elsewhere:</b> click <b>Load from file…</b> in the template
+editor. By default a <i>copy</i> is saved with the job — later edits to the file are ignored.
+Tick <b>Keep linked to this file</b> instead to have every run read the file again, so your
+edits to it are picked up automatically. A linked file must be readable by the ReportFlow
+service (it runs under its own Windows account — a shared folder works best); the editor
+checks this when you save. If a linked file later goes missing, the email is still sent with
+the default template and the run shows a warning.</p>
 
 {_PLACEHOLDER_HTML}
 

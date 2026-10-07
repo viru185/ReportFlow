@@ -183,6 +183,10 @@ class SmtpTestRequest(BaseModel):
     password: str | None = None  # None/empty -> fall back to the stored secret
 
 
+class TemplateCheckRequest(BaseModel):
+    path: str
+
+
 class EmailTemplateUpdate(BaseModel):
     content: str
 
@@ -483,10 +487,14 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
     def get_email_template(name: str) -> dict[str, Any]:
         job = _require_job(name)
         # Prefer the job's configured template; fall back to the conventional per-job file.
-        path = Path(job.email_template_path) if job.email_template_path else _job_template_path(job)
+        own = _job_template_path(job)
+        path = Path(job.email_template_path) if job.email_template_path else own
+        # "Linked": the job points at the user's own file, re-read on every run.
+        linked = str(path).casefold() != str(own).casefold()
         if path.exists():
-            return {"content": path.read_text(encoding="utf-8"), "exists": True}
-        return {"content": "", "exists": False}
+            content = path.read_text(encoding="utf-8", errors="replace")
+            return {"content": content, "exists": True, "linked": linked, "path": str(path)}
+        return {"content": "", "exists": False, "linked": linked, "path": str(path)}
 
     @app.put("/jobs/{name}/email-template")
     def put_email_template(name: str, update: EmailTemplateUpdate) -> dict[str, Any]:
@@ -534,6 +542,23 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             return {"sheets": discover_sheets(Path(req.path))}
         except WorkbookError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/email/template-check")
+    def email_template_check(req: TemplateCheckRequest) -> dict[str, Any]:
+        """Can the SERVICE read and render this file? It runs as its own Windows account,
+        so a file the user can open may still be out of its reach."""
+        path = Path(req.path)
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise HTTPException(
+                status_code=400, detail=f"the ReportFlow service cannot read {path}: {e}"
+            ) from e
+        try:
+            render_email(source, sample_context())
+        except Exception as e:  # noqa: BLE001 — surface the template error to the author
+            raise HTTPException(status_code=400, detail=f"the template does not render: {e}") from e
+        return {"ok": True}
 
     @app.post("/email/preview")
     def email_preview(req: EmailPreviewRequest) -> dict[str, Any]:
