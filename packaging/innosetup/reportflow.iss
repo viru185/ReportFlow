@@ -105,6 +105,7 @@ Type: filesandordirs; Name: "{app}"
 [Code]
 var
   AccountPage: TInputQueryWizardPage;
+  ExistingService: Boolean;
 
 // Validate the entered service account against Windows before letting the wizard proceed.
 const
@@ -133,6 +134,21 @@ begin
     Result := v;
 end;
 
+function ServiceExists: Boolean; forward;
+
+function InitializeSetup: Boolean;
+begin
+  // Snapshot before [Run] installs a fresh service. A live ServiceExists check in
+  // HasServiceAccount would also suppress credentials on a first installation.
+  ExistingService := ServiceExists;
+  Result := True;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (AccountPage <> nil) and (PageID = AccountPage.ID) and ExistingService;
+end;
+
 procedure InitializeWizard;
 var
   Old: String;
@@ -142,7 +158,7 @@ begin
   if (Old <> '') and (Old <> '{#MyAppVersion}') then
     WizardForm.WelcomeLabel2.Caption :=
       'Upgrading {#MyAppName}: ' + Old + '  ->  {#MyAppVersion}.' + #13#10 +
-      'Your jobs, settings, and logs are preserved.' + #13#10#13#10 +
+      'Your jobs, settings, logs, and existing service account are preserved.' + #13#10#13#10 +
       WizardForm.WelcomeLabel2.Caption;
 
   // Optional service log-on account. VSTO / Windows-integrated add-ins such as PI DataLink
@@ -157,7 +173,7 @@ begin
   AccountPage.Add('User (DOMAIN\user or .\user):', False);
   AccountPage.Add('Password:', True);
   // Best-effort prefill with the current interactive user (the one who likely has PI DataLink).
-  if GetEnv('USERNAME') <> '' then
+  if (not ExistingService) and (GetEnv('USERNAME') <> '') then
     AccountPage.Values[0] := GetEnv('USERDOMAIN') + '\' + GetEnv('USERNAME');
 end;
 
@@ -192,7 +208,7 @@ begin
   // calls NextButtonClick for every page, and the account field is prefilled with the current
   // user + a BLANK password — so validation would fail with "credentials were rejected" and
   // abort the update. The existing service account is already configured; leave it untouched.
-  if WizardSilent then
+  if WizardSilent or ExistingService then
     exit;
   if (AccountPage <> nil) and (CurPageID = AccountPage.ID) then
   begin
@@ -212,16 +228,22 @@ end;
 
 function HasServiceAccount: Boolean;
 begin
-  // Never reconfigure the account on a silent upgrade: the field is prefilled with a
-  // passwordless user, so applying it would set NSSM ObjectName to a blank password and
-  // break the service. Credentials are only ever really entered in an interactive install.
-  Result := (not WizardSilent) and (Trim(AccountPage.Values[0]) <> '');
+  // Account credentials are applied ONLY on a fresh interactive installation.
+  // All upgrades preserve the SCM account and its stored password, including
+  // interactive upgrades and existing LocalSystem services.
+  Result := (not ExistingService) and (not WizardSilent) and
+    (Trim(AccountPage.Values[0]) <> '');
 end;
 
 function NssmObjectNameArgs(Param: String): String;
 begin
   // {code:...} scripted constants must take one String param. Quote both fields so spaces/
   // special characters survive; NSSM grants SeServiceLogonRight when setting ObjectName.
+  if ExistingService then
+  begin
+    Result := '';
+    exit;
+  end;
   Result := 'set {#MyServiceName} ObjectName "' + Trim(AccountPage.Values[0]) + '" "' +
     AccountPage.Values[1] + '"';
 end;
@@ -230,9 +252,15 @@ function ServiceExists: Boolean;
 var
   ResultCode: Integer;
 begin
-  // `sc query` returns 0 when the service exists.
-  Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query {#MyServiceName}',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  // Only ERROR_SERVICE_DOES_NOT_EXIST permits first-install account setup.
+  // An inspection failure must never be mistaken for a fresh installation.
+  if not Exec(ExpandConstant('{sys}\sc.exe'), 'query {#MyServiceName}',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    RaiseException('Cannot inspect the ReportFlow service. Setup has stopped.');
+  if (ResultCode <> 0) and (ResultCode <> 1060) then
+    RaiseException('Cannot determine whether the ReportFlow service exists. ' +
+      'Setup has stopped to preserve its account.');
+  Result := ResultCode = 0;
 end;
 
 function ServiceNotInstalled: Boolean;
