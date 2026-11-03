@@ -109,6 +109,130 @@ def test_run_now_completes(client):
     assert runs and runs[0]["run_id"] == run_id
     assert c.get(f"/runs/{run_id}/log").status_code == 200
 
+    # The card's "open last report" source: the summary points at the produced file.
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["last_output_xlsx"] and Path(summary["last_output_xlsx"]).exists()
+
+
+def test_summary_reports_next_run_for_scheduled_jobs(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    payload = dict(_job_payload(tmp_path), schedule_crons=["0 6 * * *"])
+    c.post("/jobs", json=payload)
+
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["next_run_at"]  # scheduler knows the next fire time
+
+    # Disabling unschedules -> no next run.
+    payload["enabled"] = False
+    c.put("/jobs/daily", json=payload)
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["next_run_at"] is None
+
+
+def _wait_done(c, run_id: str) -> str:
+    for _ in range(50):
+        status = c.get(f"/runs/{run_id}").json()["status"]
+        if status != "running":
+            return status
+        time.sleep(0.2)
+    return "running"
+
+
+def test_dry_run_completes_without_email(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+
+    run_id = c.post("/jobs/daily/dry-run").json()["run_id"]
+    assert _wait_done(c, run_id) == "success"
+
+    rec = c.get(f"/runs/{run_id}").json()
+    assert rec["trigger"] == "dry_run"
+    assert rec["email_sent"] is False
+    assert rec["email_note"] == "not sent — build only"
+
+
+def test_new_job_starts_in_testing_and_run_is_test_flagged(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+
+    assert c.get("/jobs/daily").json()["job"]["stage"] == "testing"
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["stage"] == "testing"
+    assert summary["prod_recipients"] == ["boss@corp.example.com"]
+
+    run_id = c.post("/jobs/daily/run").json()["run_id"]
+    _wait_done(c, run_id)
+    assert c.get(f"/runs/{run_id}").json()["is_test"] is True  # stage decides
+
+
+def test_stage_endpoint_promotes_and_persists(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+
+    resp = c.post("/jobs/daily/stage", json={"stage": "live"})
+    assert resp.status_code == 200 and resp.json()["stage"] == "live"
+    assert c.get("/jobs/daily").json()["job"]["stage"] == "live"
+
+    # Demote works too, and bad values are rejected.
+    assert c.post("/jobs/daily/stage", json={"stage": "testing"}).status_code == 200
+    assert c.post("/jobs/daily/stage", json={"stage": "nope"}).status_code == 422
+
+
+def test_legacy_test_endpoint_removed(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    assert c.post("/jobs/daily/test").status_code in (404, 405)
+
+
+def test_purge_logs_endpoint(client):
+    c, _ = client
+    from reportflow.core import paths
+
+    stale = paths.runs_dir() / "stalerun"
+    stale.mkdir(parents=True)
+    (stale / "worker.log").write_text("x", encoding="utf-8")
+
+    # Validation: must pass a window or all=true.
+    assert c.post("/system/purge-logs", json={}).status_code == 400
+
+    resp = c.post("/system/purge-logs", json={"all": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True and body["run_dirs"] >= 1
+    assert not stale.exists()
+
+
+def test_export_logs_writes_zip(client):
+    c, _ = client
+    resp = c.post("/system/export-logs")
+    assert resp.status_code == 200
+    bundle = Path(resp.json()["bundle"])
+    assert bundle.exists() and bundle.suffix == ".zip" and bundle.stat().st_size > 0
+
+
+def test_export_logs_carries_operator_note(client):
+    import json
+    import zipfile
+
+    c, _ = client
+    resp = c.post("/system/export-logs", json={"note": "OSI job failed on #REF!"})
+    assert resp.status_code == 200
+    with zipfile.ZipFile(Path(resp.json()["bundle"])) as zf:
+        meta = json.loads(zf.read("metadata.json"))
+    assert meta["note"] == "OSI job failed on #REF!"
+
+
+def test_status_reports_service_account(client):
+    c, _ = client
+    status = c.get("/system/status").json()
+    assert "service_account" in status
+    assert isinstance(status["service_account_is_system"], bool)
+
 
 def test_email_preview(client):
     c, _ = client
@@ -157,6 +281,39 @@ def test_smtp_test_failure_reports_reason(client):
     )
     assert resp.status_code == 400
     assert "could not connect" in resp.json()["detail"]
+
+
+def test_smtp_test_username_without_password_skips_login(client):
+    """Anonymous relays (port 25) must be testable even when a username is filled in
+    but no password exists — login is simply skipped."""
+    import socket
+
+    from aiosmtpd.controller import Controller
+
+    class _Ok:
+        async def handle_DATA(self, server, session, envelope):
+            return "250 OK"
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    controller = Controller(_Ok(), hostname="127.0.0.1", port=port)
+    controller.start()
+    try:
+        c, _ = client
+        resp = c.post(
+            "/system/smtp-test",
+            json={
+                "host": "127.0.0.1",
+                "port": port,
+                "use_starttls": False,
+                "username": "no-reply@corp.example.com",  # set, but no password anywhere
+            },
+        )
+        assert resp.status_code == 200 and resp.json()["ok"] is True
+    finally:
+        controller.stop()
 
 
 def test_smtp_test_requires_host(client):
@@ -247,7 +404,8 @@ def test_email_template_get_put(client):
     assert saved_path.read_text(encoding="utf-8") == html
 
     got = c.get("/jobs/daily/email-template").json()
-    assert got == {"content": html, "exists": True}
+    assert got["content"] == html and got["exists"] is True
+    assert got["linked"] is False  # its own per-job file, not a linked one
     # the job now points at the per-job template file
     assert c.get("/jobs/daily").json()["job"]["email_template_path"] == str(saved_path)
 
@@ -260,3 +418,87 @@ def test_multiple_crons_register_multiple_triggers(client):
 
     scheduled = c.get("/system/status").json()["scheduled_jobs"]
     assert sorted(scheduled) == ["daily#0", "daily#1"]
+
+
+def test_rename_job_moves_history_and_template(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    c.put("/jobs/daily/email-template", json={"content": "<p>{{ job_name }}</p>"})
+    run_id = c.post("/jobs/daily/dry-run").json()["run_id"]
+    assert _wait_done(c, run_id) == "success"
+    launcher = c.app.state.svc.launcher
+    for _ in range(50):  # the run thread lets go of the job just after the final status
+        if not launcher.inflight_job_names():
+            break
+        time.sleep(0.1)
+
+    job = c.get("/jobs/daily").json()["job"]
+    resp = c.put("/jobs/daily", json=dict(job, name="Daily Sales"))
+    assert resp.status_code == 200 and resp.json()["renamed_from"] == "daily"
+
+    assert c.get("/jobs/daily").status_code == 404
+    renamed = c.get("/jobs/Daily Sales").json()["job"]
+    assert renamed["email_template_path"].endswith("Daily Sales.html")
+    assert c.get("/jobs/Daily Sales/email-template").json()["content"] == "<p>{{ job_name }}</p>"
+    old_tpl = Path(job["email_template_path"])
+    assert not old_tpl.exists()  # moved, not duplicated
+    assert [r["run_id"] for r in c.get("/runs", params={"job": "Daily Sales"}).json()] == [run_id]
+    assert c.get("/runs", params={"job": "daily"}).json() == []
+
+
+def test_rename_refuses_existing_name_and_running_job(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    c.post("/jobs", json=dict(_job_payload(tmp_path), name="weekly"))
+    job = c.get("/jobs/daily").json()["job"]
+
+    resp = c.put("/jobs/daily", json=dict(job, name="WEEKLY"))
+    assert resp.status_code == 409 and "already exists" in resp.json()["detail"]
+
+    launcher = c.app.state.svc.launcher
+    launcher._inflight["r-queued"] = "daily"  # a run queued or in flight
+    try:
+        resp = c.put("/jobs/daily", json=dict(job, name="renamed"))
+        assert resp.status_code == 409 and "running" in resp.json()["detail"]
+    finally:
+        launcher._inflight.pop("r-queued")
+    assert c.get("/jobs/daily").status_code == 200  # nothing changed
+
+
+def test_rename_only_letter_case(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    c.put("/jobs/daily/email-template", json={"content": "<p>x</p>"})
+    job = c.get("/jobs/daily").json()["job"]
+
+    assert c.put("/jobs/daily", json=dict(job, name="Daily")).status_code == 200
+    names = [j["name"] for j in c.get("/jobs").json()]
+    assert names == ["Daily"]
+    assert c.get("/jobs/Daily/email-template").json()["content"] == "<p>x</p>"
+
+
+def test_template_check_and_linked_flag(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    good = tmp_path / "mine.html"
+    good.write_text("<p>{{ today }}</p>", encoding="utf-8")
+    broken = tmp_path / "broken.html"
+    broken.write_text("<p>{{ today </p>", encoding="utf-8")
+
+    assert c.post("/email/template-check", json={"path": str(good)}).json() == {"ok": True}
+    missing = c.post("/email/template-check", json={"path": str(tmp_path / "nope.html")})
+    assert missing.status_code == 400 and "cannot read" in missing.json()["detail"]
+    bad = c.post("/email/template-check", json={"path": str(broken)})
+    assert bad.status_code == 400 and "does not render" in bad.json()["detail"]
+
+    payload = dict(_job_payload(tmp_path), email_template_path=str(good))
+    c.post("/jobs", json=payload)
+    got = c.get("/jobs/daily/email-template").json()
+    assert got["linked"] is True and got["path"] == str(good)
+    assert got["content"] == "<p>{{ today }}</p>"
+
+    c.put("/jobs/daily/email-template", json={"content": "<p>own</p>"})  # back to its own copy
+    assert c.get("/jobs/daily/email-template").json()["linked"] is False

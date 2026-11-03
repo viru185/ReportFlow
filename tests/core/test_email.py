@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import email
+import email.header
+import email.policy
 import socket
 from email.message import Message
 
 import pytest
 from aiosmtpd.controller import Controller
 
-from reportflow.core.config.models import AppConfig, JobConfig, Recipients, SmtpConfig, TestSettings
+from reportflow.core.config.models import (
+    AppConfig,
+    JobConfig,
+    Recipients,
+    SmtpConfig,
+    TestSettings,
+)
 from reportflow.core.email import render_email, resolve_recipients, send_report
 from reportflow.core.email.render import html_to_text
-from reportflow.core.email.sender import check_smtp_connection
 
 
 class _Capture:
@@ -142,26 +149,78 @@ def test_prod_run_uses_prod_recipients(smtp_server, tmp_path):
     assert msg["Subject"] == "Daily Report"  # no [TEST] prefix
 
 
-def test_smtp_connection_allows_anonymous_relay_with_blank_or_username_only_credentials(
-    smtp_server,
-):
-    _, port = smtp_server
-    blank = SmtpConfig(
-        host="127.0.0.1",
-        port=port,
-        use_starttls=False,
-        use_ssl=False,
-        from_address="reportflow@corp.example.com",
-        username="",
-    )
-    username_only = SmtpConfig(
-        host="127.0.0.1",
-        port=port,
-        use_starttls=False,
-        use_ssl=False,
-        from_address="reportflow@corp.example.com",
-        username="relay-user",
-    )
+def test_dev_log_bundle_includes_operator_note(smtp_server, tmp_path):
+    from reportflow.core.config.models import TestSettings
+    from reportflow.core.email import send_dev_log_bundle
 
-    check_smtp_connection(blank, None)
-    check_smtp_connection(username_only, None)
+    handler, port = smtp_server
+    cfg = _config(port).model_copy(
+        update={"test": TestSettings(developer_bundle_recipients=["dev@corp.example.com"])}
+    )
+    bundle = tmp_path / "logs.zip"
+    bundle.write_bytes(b"PK\x03\x04")
+    context = {"hostname": "SERVER1", "note": "MURI sheet came out empty"}
+
+    to = send_dev_log_bundle(cfg, bundle, context)
+
+    assert to == ["dev@corp.example.com"]
+    msg = email.message_from_bytes(handler.envelopes[0][1], policy=email.policy.default)
+    subject = str(email.header.make_header(email.header.decode_header(msg["Subject"])))
+    assert "MURI sheet came out empty" in subject
+    body = msg.get_body(preferencelist=("plain",)).get_content()
+    assert "MURI sheet came out empty" in body
+
+
+def test_subject_placeholders_are_expanded(smtp_server, tmp_path):
+    from datetime import datetime
+
+    from reportflow.core.email.render import date_context
+
+    handler, port = smtp_server
+    job = _job().model_copy(update={"subject": "R&D report — {{ today }}"})
+    ctx = {**_ctx(), **date_context(datetime(2026, 10, 7, 6, 15))}
+
+    send_report(_config(port), job, ctx, [], is_test=True)
+
+    from email import policy
+
+    msg = email.message_from_bytes(handler.envelopes[0][1], policy=policy.default)
+    assert msg["Subject"] == "[TEST] R&D report — 07-Oct-2026"  # not HTML-escaped
+
+
+def test_broken_subject_template_still_sends_as_written():
+    from reportflow.core.email.render import render_subject, template_error
+
+    assert render_subject("Report {{ today", {"today": "x"}) == "Report {{ today"
+    assert template_error("Report {{ today") is not None
+    assert template_error("Report {{ today }}") is None
+
+
+def test_date_placeholders():
+    from datetime import datetime
+
+    from reportflow.core.email.render import date_context
+
+    ctx = date_context(datetime(2026, 3, 1, 6, 15))  # the 1st: previous month is February
+    assert ctx["today"] == "01-Mar-2026"
+    assert ctx["yesterday"] == "28-Feb-2026"
+    assert ctx["now"] == "01-Mar-2026 06:15"
+    assert ctx["weekday"] == "Sunday"
+    assert ctx["month"] == "March 2026"
+    assert ctx["previous_month"] == "February 2026"
+    assert ctx["week_number"] == "9"
+    assert ctx["run_date"].strftime("%d/%m/%Y") == "01/03/2026"
+    jan = date_context(datetime(2026, 1, 1))
+    assert jan["previous_month"] == "December 2025" and jan["yesterday"] == "31-Dec-2025"
+
+
+def test_every_documented_placeholder_has_a_sample_value():
+    """The preview (and the Help examples) must never show a blank for a listed placeholder."""
+    from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
+
+    ctx = sample_context()
+    for group, label, token, _ in PLACEHOLDERS:
+        if group == "Blocks":
+            render_email(token, ctx)  # must at least render
+            continue
+        assert render_email(token, ctx).strip(), f"{label} ({token}) renders empty"

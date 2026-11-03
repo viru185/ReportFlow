@@ -11,6 +11,8 @@ unused Qt modules so nothing drags them in. Validate the frozen build with:
 
 import os
 
+from PyInstaller.utils.hooks import copy_metadata
+
 ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 ICON = os.path.join(ROOT, "assets", "reportflow.ico")
 
@@ -66,12 +68,24 @@ a = Analysis(
     datas=[
         (os.path.join(ROOT, "assets", "reportflow.png"), "assets"),
         (os.path.join(ROOT, "assets", "check.svg"), "assets"),
-        (os.path.join(ROOT, "src", "reportflow"), "reportflow"),
+        (os.path.join(ROOT, "assets", "arrow-up.png"), "assets"),
+        (os.path.join(ROOT, "assets", "arrow-down.png"), "assets"),
+        # The version lives only in pyproject.toml; frozen exes read package metadata.
+        *copy_metadata("reportflow"),
     ],
-    hiddenimports=["httpx", "win32crypt", "importlib.metadata"],
+    hiddenimports=["httpx", "win32crypt"],
     excludes=["xlwings", "tkinter", "matplotlib", *_QT_EXCLUDES],
     noarchive=False,
 )
+# Qt on Windows uses the OS's unversioned ICU ABI. A build tool on PATH (for
+# example Poppler) can supply another icuuc.dll with version-suffixed exports.
+# Bundling that DLL shadows Windows ICU and prevents QtWidgets from importing.
+# Keep versioned/private ICU libraries; never ship replacements for these OS names.
+a.binaries = [
+    entry for entry in a.binaries
+    if entry[0].replace("\\", "/").rsplit("/", 1)[-1].lower() not in {"icuuc.dll", "icuin.dll"}
+]
+
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

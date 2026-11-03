@@ -2,9 +2,86 @@
 
 from __future__ import annotations
 
+import html
+from datetime import datetime
+
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
 
 from reportflow import __about__ as about
+from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
+
+
+def _placeholder_html() -> str:
+    """The placeholder reference, generated from the same list the template editor uses."""
+    sample = sample_context(now=datetime(2026, 10, 7, 6, 15))  # stable examples
+    rows = []
+    for group, label, token, about_it in PLACEHOLDERS:
+        example = "" if group == "Blocks" else render_email(token, sample)
+        rows.append(
+            f"<tr><td><code>{html.escape(token)}</code></td><td>{html.escape(example)}</td>"
+            f"<td>{html.escape(label)} — {html.escape(about_it)}</td></tr>"
+        )
+
+    def code(text: str) -> str:
+        return f"<code>{html.escape(text)}</code>"
+
+    recipes = [
+        (
+            "A dated subject",
+            code("Daily production report — {{ today }}"),
+            "Daily production report — 07-Oct-2026",
+        ),
+        (
+            "Yesterday's data (a report run in the morning)",
+            code("Production for {{ yesterday }} is attached."),
+            "Production for 06-Oct-2026 is attached.",
+        ),
+        (
+            "A monthly report run on the 1st",
+            code("The {{ previous_month }} summary is attached."),
+            "The September 2026 summary is attached.",
+        ),
+        ("Your own date format", code("{{ run_date.strftime('%d/%m/%Y') }}"), "07/10/2026"),
+        (
+            "Only when the run has warnings",
+            code("{% if warnings %}Please note {{ warning_count }} warning(s).{% endif %}"),
+            "(nothing when there are none)",
+        ),
+        (
+            "List the attached files",
+            code("<ul>{% for f in attachments %}<li>{{ f }}</li>{% endfor %}</ul>"),
+            "a bullet per file",
+        ),
+    ]
+    recipe_rows = "".join(
+        f"<tr><td>{what}</td><td>{snippet}</td><td>{html.escape(result)}</td></tr>"
+        for what, snippet, result in recipes
+    )
+    return (
+        '<h2 id="placeholders">Email placeholders</h2>'
+        "<p>A placeholder is a name in double curly braces — like <code>{{ today }}</code> — "
+        "that ReportFlow replaces with the real value when it sends the email. They work in "
+        "the <b>email body</b> (Email tab → <b>Edit email template…</b>; click one in the "
+        "list on the right to insert it) and in the job's <b>Subject</b>. Click "
+        "<b>Preview</b> in the template editor to see the result. Dates are the date the "
+        "run <i>started</i>.</p>"
+        '<table border="1" cellpadding="4" cellspacing="0">'
+        "<tr><th>Placeholder</th><th>Example</th><th>What it is</th></tr>"
+        + "".join(rows)
+        + "</table>"
+        "<p><b>Recipes</b></p>"
+        '<table border="1" cellpadding="4" cellspacing="0">'
+        "<tr><th>For</th><th>Write</th><th>Gives</th></tr>" + recipe_rows + "</table>"
+        "<p><b>Good to know:</b> spell a placeholder exactly as listed (lower case, with the "
+        "underscores) — an unknown name comes out empty. Date format codes for "
+        "<code>strftime</code>: <code>%d</code> day, <code>%m</code> month number, "
+        "<code>%b</code> Oct, <code>%B</code> October, <code>%Y</code> 2026, "
+        "<code>%A</code> Wednesday, <code>%H:%M</code> 06:15.</p>"
+    )
+
+
+_PLACEHOLDER_HTML = _placeholder_html()
 
 _HELP_HTML = f"""
 <h1>{about.NAME} — Help Guide</h1>
@@ -15,13 +92,17 @@ _HELP_HTML = f"""
 <a href="#output">Output files</a> ·
 <a href="#schedule">Scheduling</a> ·
 <a href="#email">Email &amp; templates</a> ·
+<a href="#placeholders">Email placeholders</a> ·
 <a href="#runs">Running &amp; test runs</a> ·
 <a href="#logs">Logs &amp; history</a> ·
 <a href="#settings">Settings (SMTP &amp; more)</a> ·
 <a href="#transfer">Import &amp; export</a> ·
 <a href="#updates">Updates</a> ·
 <a href="#advanced">Advanced options</a> ·
-<a href="#pidatalink">PI DataLink &amp; add-ins</a>
+<a href="#pidatalink">PI DataLink &amp; add-ins</a> ·
+<a href="#dryrun">Build only</a> ·
+<a href="#emailalerts">Email failures</a> ·
+<a href="#exportlogs">Send logs to dev</a>
 </p>
 
 <h2 id="start">Getting started</h2>
@@ -34,68 +115,147 @@ The background <b>service</b> runs jobs on schedule; this app is the control pan
 <h2 id="jobs">Creating &amp; editing jobs</h2>
 <ol>
 <li>Click <b>New Job</b>.</li>
-<li>Give the job a unique <b>name</b> (also used in output filenames).</li>
-<li>Browse to the <b>Input Excel file</b> (.xlsx / .xlsm). The sheet list fills in
-    automatically — tick the sheets this job should process. Selection is stored by sheet
-    <i>name</i>, so reordering sheets in the workbook is safe.</li>
+<li>Give the job a unique <b>name</b> (also used in output filenames). You can rename it
+    later in <b>✎ Edit</b> — its run history and email template move with it (not while a
+    run of it is in progress).</li>
+<li>Browse to the <b>Input Excel file</b> (.xlsx / .xlsm). The sheet table fills in
+    automatically, every sheet included. Per sheet choose:
+    <b>Include</b> (refresh, check and freeze it), <b>PDF</b> (also export it as its own PDF)
+    and <b>Hidden</b> (keep it in the Excel file but hidden — recipients can unhide it; it can
+    still get a PDF). At least one included sheet must stay visible. Click a column title to
+    tick or untick it for every sheet. Sheets are stored by <i>name</i>, so reordering sheets
+    in the workbook is safe.</li>
+<li><b>Sheets not included</b> — what the output copy does with the sheets you didn't
+    include: <i>Remove them from the file</i> (smallest file, but can break charts/defined
+    names that referenced them, so Office may refuse to open the output), <i>Keep them,
+    hidden</i> (very-hidden: references stay intact and the file always opens, but the raw data
+    stays inside it) or <i>Keep them, visible</i>.</li>
+<li>More than one Excel file? <b>+ Add workbook…</b> adds another tab with its own file,
+    sheets and choices. Every run builds all of them and sends <b>one email</b> with every
+    file attached. On the Output tab, <b>If a workbook fails</b> decides whether one failing
+    workbook stops the whole run (default — nothing is sent) or the others are still sent
+    with a warning.</li>
 <li>Configure Output, Schedule, and Email in their sections (details below), then
     <b>Save</b>.</li>
 </ol>
-<p><b>What a run does:</b> opens the input file, refreshes external data / Power Query,
-waits for calculation, optionally freezes formulas to values on the selected sheets,
-exports one PDF per selected sheet using the workbook's own print layout, and saves the
-output Excel. The input file itself is never modified.</p>
+<p><b>What a run does:</b> for each workbook — opens the input file, refreshes external
+data / Power Query, waits for calculation, optionally freezes formulas to values on the
+included sheets, exports the PDFs using the workbook's own print layout, hides the sheets
+marked Hidden, and saves the output Excel. The input files themselves are never modified.</p>
 
 <h2 id="output">Output files</h2>
 <p>Pick an <b>Output folder</b> — or leave it empty to save next to the input file.
-Optionally set a <b>Filename</b>; leave it empty for the default <code>{{job}}_{{date}}</code>.
-Available placeholders: <code>{{job}}</code>, <code>{{date}}</code>, <code>{{datetime}}</code>,
-<code>{{run_id}}</code>.</p>
-<p>Each run writes <code>&lt;filename&gt;.xlsx</code> plus, when <i>Generate PDF</i> is on,
-one <code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per selected sheet.</p>
+Optionally set a <b>Filename</b>; leave it empty for the default
+<code>{{job}}_{{datetime}}</code> (e.g. <code>Sales_20261007_061500</code>) — the run's time is
+part of the name, so a job that runs twice in one day never overwrites its earlier report.
+Available placeholders: <code>{{job}}</code>, <code>{{date}}</code> (20261007),
+<code>{{time}}</code> (061500), <code>{{datetime}}</code> (20261007_061500),
+<code>{{run_id}}</code>, <code>{{workbook}}</code> (the input file's name). A custom name
+without <code>{{time}}</code> / <code>{{datetime}}</code> / <code>{{run_id}}</code> is
+overwritten by a second run on the same day — the editor warns about that.</p>
+<p>Each run writes <code>&lt;filename&gt;.xlsx</code> per workbook plus one
+<code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per sheet with PDF ticked. With several
+workbooks, <code>_{{workbook}}</code> is added to the name automatically so their files never
+overwrite each other.</p>
 
 <h2 id="schedule">Scheduling</h2>
-<p>In the Schedule section, choose a mode:</p>
+<p>A job with no schedule is <b>manual</b> — it only runs when you click Run. Click
+<b>+ Add schedule</b> to run it automatically, and add <b>more than one</b> to combine them —
+for example <i>Daily at 06:00</i> plus <i>Weekly on Sunday at 10:00</i>. Each schedule is one
+of:</p>
 <ul>
-<li><b>Manual</b> — never runs automatically; use the Run/Test buttons.</li>
-<li><b>Daily</b> — runs every day at the times you add. Add several times (e.g. 06:00
-    and 18:00) for multiple runs per day.</li>
-<li><b>Weekly</b> — pick weekdays + times.</li>
-<li><b>Monthly</b> — pick days of the month (1–31) + times.</li>
-<li><b>Advanced (cron)</b> — full cron control, one expression per line
+<li><b>Daily</b> — every day at the times you add. Add several times (e.g. 06:00 and 18:00)
+    for multiple runs per day.</li>
+<li><b>Weekly</b> — tick the weekdays + add times.</li>
+<li><b>Monthly</b> — type the days of the month (e.g. <code>1, 15</code>) + add times.</li>
+<li><b>Custom (cron)</b> — full cron control, one expression per line
     (<code>minute hour day-of-month month day-of-week</code>).</li>
 </ul>
+<p>Pick a time and click <b>Add</b>; each added time shows as a chip — click its <b>✕</b> to
+remove it. <b>🗑 Delete</b> removes a whole schedule. Two schedules may not fire at the same
+moment (e.g. Daily 06:00 and Sunday 06:00) — that would run the job twice, so the editor
+refuses it and says why.</p>
 
-<h2 id="email">Email &amp; templates</h2>
+<h2 id="email">Email, recipients &amp; the Testing → Live lifecycle</h2>
 <p>Each job has two recipient sets: <b>Production</b> and <b>Test</b>. <i>To</i> is
-required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses).</p>
+required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses). <b>Who gets
+emailed is decided by the job's stage:</b></p>
 <ul>
-<li><b>Test runs</b> always email the <i>test</i> recipients only — never production.</li>
-<li><b>Real runs</b> email production recipients only when <i>“Email report … on real
-    runs”</i> is ticked. Failures never send email; check the logs instead.</li>
-<li>Emails attach the output Excel and all per-sheet PDFs.</li>
+<li><b>TESTING</b> (every new job starts here, amber pill on the card) — <b>every</b> run,
+    manual or scheduled, emails only the <i>Test</i> recipients, subject prefixed
+    <code>[TEST]</code>. Verify the report internally as long as you need.</li>
+<li><b>LIVE</b> (green pill) — runs email the <i>Production</i> recipients. Promote with the
+    card's <b>✓ Go live</b> button; the confirmation shows exactly who will receive future
+    reports. A live job can be moved back to Testing in the job editor's Email tab.</li>
+<li>Failures never send email; check the logs instead.</li>
+<li>Emails attach the output Excel and all per-sheet PDFs, and show the run's duration.</li>
 <li>Every run's history entry shows an <b>email:</b> line — sent to how many recipients,
     or exactly why nothing was sent.</li>
 </ul>
 <p>Click <b>Edit email template…</b> to author the email body in-app: <b>Simple</b> mode
-(plain text + placeholder buttons) or <b>HTML</b> mode (full control), with a live preview.
-Placeholders like <code>{{{{ job_name }}}}</code>, <code>{{{{ status }}}}</code> and
-<code>{{{{ run_id }}}}</code> are filled in at send time.</p>
+(plain text) or <b>HTML</b> mode (full control), with a live preview.
+Placeholders like <code>{{{{ today }}}}</code>, <code>{{{{ job_name }}}}</code> and
+<code>{{{{ status }}}}</code> are filled in at send time — in the body and in the Subject. See
+<a href="#placeholders">Email placeholders</a> for the full list and examples.</p>
+<p><b>Using an .html file you made elsewhere:</b> click <b>Load from file…</b> in the template
+editor. By default a <i>copy</i> is saved with the job — later edits to the file are ignored.
+Tick <b>Keep linked to this file</b> instead to have every run read the file again, so your
+edits to it are picked up automatically. A linked file must be readable by the ReportFlow
+service (it runs under its own Windows account — a shared folder works best); the editor
+checks this when you save. If a linked file later goes missing, the email is still sent with
+the default template and the run shows a warning.</p>
 
-<h2 id="runs">Running &amp; test runs</h2>
-<p>On each job card: <b>Run</b> starts a real run (production email if enabled);
-<b>Test</b> starts a test run (test recipients only, subject prefixed <code>[TEST]</code>).
-Jobs run in parallel, each in its own isolated Excel process. Failed runs are never
+{_PLACEHOLDER_HTML}
+
+<h2 id="runs">Running a job — everything is one click</h2>
+<p>Each job card has two run buttons; the job's stage answers "who gets the email":</p>
+<ul>
+<li><b>▶ Run</b> — builds the report and emails it per the stage: the Test recipients while
+    the job is in <b>Testing</b>, the Production recipients once it is <b>Live</b>.</li>
+<li><b>👁 Build only</b> — builds and verifies the report (checks that PI DataLink / your data
+    source produced real values) but <b>sends no email at all</b>.</li>
+</ul>
+<p>While a run is in flight the card's badge counts the elapsed time and the run buttons
+lock, so a job cannot be started twice by accident. Scheduled cards also show the next fire
+time ("next: tomorrow 06:00").</p>
+<p>The card's <b>coloured left edge</b> is the last run's outcome at a glance:
+<span style="color:#4ade80;">green</span> = success,
+<span style="color:#f87171;">red</span> = failed,
+<span style="color:#fbbf24;">amber</span> = running,
+grey = paused or never ran. The detail line shows the next fire time, the last outcome
+("last: success 2h ago") and the sheet count.</p>
+<p>Everything occasional lives behind the card's <b>⋯</b> menu, so daily actions stay one
+click:</p>
+<ul>
+<li><b>📂 Open last report</b> — Explorer opens with the last successful report
+    pre-selected.</li>
+<li><b>✎ Edit</b> / <b>Logs</b> — the job editor and that job's run history.</li>
+<li><b>⧉ Duplicate</b> — a new job with <i>everything</i> copied from this one — workbooks,
+    sheet choices, output, schedules, recipients, advanced options and the email template.
+    Only two things differ: you give it a new name, and it starts in Testing.</li>
+<li><b>⏸ Pause</b> — pause scheduling. A paused job is unmistakable: the whole card dims
+    with a grey <b>⏸ PAUSED</b> pill, and a one-click <b>▸ Resume</b> button appears on the
+    card. Manual runs still work while paused.</li>
+<li><b>🗑 Delete</b> — remove the job (asks for confirmation).</li>
+</ul>
+<p>Jobs run in parallel, each in its own isolated Excel process. Failed runs are never
 retried automatically — they stay visible in the history.</p>
 
 <h2 id="logs">Logs &amp; history</h2>
 <ul>
 <li><b>Logs</b> on a job card — that job's run history with status, timings, output paths,
-    error summaries, and the per-run worker log.</li>
-<li><b>File → Application logs</b> — the full rolling logs of the Service, Worker, and UI.</li>
-<li><b>File → Send logs to support</b> — emails a diagnostic bundle (logs + sanitized
+    error summaries, and the colour-coded per-run worker log.</li>
+<li><b>Logs → Application logs</b> — the full rolling logs of the Service, Worker, and UI.
+    Switch process with one click, filter by level, search the text, and read it colour-coded
+    by severity.</li>
+<li><b>Logs → Send logs to support</b> — emails a diagnostic bundle (logs + sanitized
     settings, never passwords) to the configured support email.</li>
-<li><b>File → Open data folder</b> — opens the folder holding config, logs, and outputs
+<li><b>Logs → Delete old logs…</b> — frees disk space by deleting run folders, log files,
+    bundles, and history rows older than the retention setting. The service also does this
+    automatically at startup and nightly.</li>
+<li><b>Logs → Delete ALL logs…</b> — wipes everything regardless of age (strong
+    confirmation; runs currently in progress always survive). No undo.</li>
+<li><b>Logs → Open data folder</b> — opens the folder holding config, logs, and outputs
     metadata in Explorer.</li>
 </ul>
 
@@ -108,8 +268,12 @@ retried automatically — they stay visible in the history.</p>
     server without sending an email.</li>
 <li><b>Test recipients</b> — global fallback for test runs.</li>
 <li><b>Support email</b> — receives the diagnostic bundles from "Send logs to support".</li>
-<li><b>Application</b> — max parallel runs, default timeout, log retention, and the
+<li><b>Application</b> — max parallel runs, default timeout, log retention (drives the
+    automatic nightly cleanup), and the
     check-for-updates-on-startup toggle.</li>
+<li><b>Service account (PI DataLink)</b> — set the Windows user the service runs as, right
+    here (see below). Click <b>Use current Windows user</b> to fill in the account you are
+    logged in as, enter its password, and click <b>Validate &amp; apply</b>.</li>
 </ul>
 
 <h2 id="transfer">Import &amp; export</h2>
@@ -125,45 +289,142 @@ retried automatically — they stay visible in the history.</p>
 </ul>
 
 <h2 id="updates">Updates</h2>
-<p>The app checks GitHub for a newer version at startup (only when the internet is
-reachable; toggle in Settings). You can also run <b>Help → Check for updates…</b> at any
-time. When an update exists you see the version and release notes — nothing installs until
-you click <b>Update now</b>; then the download shows its progress and the installer
-upgrades automatically, preserving all jobs, settings, and logs.</p>
+<p>Run <b>Help → Check for updates…</b> to look for a newer version on GitHub. To have the
+app look automatically each time it starts, tick <b>Check for updates when the app
+starts</b> in File → Settings (off by default; skipped silently when offline). When an
+update exists you see the version and release notes — nothing installs until you click
+<b>Update now</b>; then the download shows its progress and the installer upgrades
+automatically, preserving all jobs, settings, and logs.</p>
+<p><b>Beta versions</b> (e.g. <code>0.11.0-beta</code>) are published on GitHub as
+<i>pre-releases</i> for testing new features. The update check never offers them; install a
+beta by hand from the GitHub releases page. Someone running a beta is offered the final
+release when it comes out.</p>
 
 <h2 id="advanced">Advanced options</h2>
 <ul>
-<li><b>Timeout</b> — the maximum seconds a run may take. If Excel hangs, the service kills
-    the run at the timeout and marks it <i>Timed out</i>. Leave 0 to use the default.</li>
+<li><b>Time limit</b> (minutes) — the longest a whole run may take, start to finish (all
+    workbooks). When it is reached the run is stopped and marked <i>Timed out</i>; nothing is
+    emailed. <b>Default</b> uses File → Settings → <i>Default time limit</i> (15&nbsp;min out
+    of the box). <b>If a report times out because it is simply big</b> — e.g. it pulls a lot
+    of PI data and needs 20+ minutes — raise the limit (30–60&nbsp;min is common for such
+    reports). The run history's error line says the same.</li>
+<li><b>Wait for add-in data</b> (up to N seconds) — Excel can report the refresh as done
+    while an add-in such as <b>PI DataLink</b> is still filling cells. ReportFlow keeps
+    checking for up to this long and <i>moves on as soon as the data stops changing</i>, so a
+    larger value only costs time when the data really is still arriving. Raise it (e.g.
+    60–300&nbsp;s) if sheets arrive partly empty. This wait counts toward the time limit.</li>
 <li><b>Concurrency group</b> — jobs sharing the same group name run one-at-a-time instead
     of in parallel (useful when several jobs hit the same slow database). Leave empty for
     normal parallel behavior.</li>
-<li><b>Extra wait after refresh</b> — additional seconds to wait after the data refresh
-    before freezing/exporting. Set this (e.g. 30–120&nbsp;s) when the workbook loads data
-    through an Excel add-in such as <b>PI DataLink</b> that keeps filling cells after the
-    normal calculation finishes.</li>
-<li><b>Freeze formulas</b> — converts formulas to plain values on the selected sheets in
-    the <i>output copy</i>, so recipients see numbers even without your data connections.</li>
+<li><b>Freeze formulas</b> (Output tab) — converts formulas to plain values on the
+    included sheets in the <i>output copy</i>, so recipients see numbers even without your
+    data connections.</li>
+<li><b>Fail if a sheet comes out empty</b> (default on) — a run whose included sheet has
+    no data fails loudly instead of emailing a blank report.</li>
+<li><b>Fail if a sheet has error cells (strict)</b> (default <i>off</i>) — by default a
+    report with Excel errors (<code>#REF!</code>, <code>#N/A</code>, …) is still
+    <b>delivered</b>, and the errors are listed as a <i>warning</i> on the run. Tick this only
+    if you want any error cell to fail the run instead.</li>
+<li><b>Blank out values</b> — comma-separated cell values removed from the output after
+    saving: error codes (<code>#REF!</code>, <code>#N/A</code>, <code>#NAME?</code>) or
+    add-in strings like "Tag not found".</li>
+<li><b>Debug logging</b> (File → Settings → Application) — verbose logs for
+    troubleshooting; the run history and Logs → Application logs show far more detail.</li>
 </ul>
 
+<h2>Choose email attachments</h2>
+<p>For each included sheet, tick <b>Excel attachment</b>, <b>PDF</b>, or both.
+The emailed Excel file contains exactly the Excel-ticked sheets. A full processed Excel
+copy is always saved locally; <b>Local sheets not included</b> controls its extra sheets.
+Untick Excel for every sheet to send only PDFs. If no attachments are selected, the report
+is built locally and no email is sent.</p>
+<p>Tick <b>Combine selected sheets into one PDF</b> to produce one PDF per workbook,
+in the order shown in the sheet table. Otherwise each PDF-ticked sheet gets its own PDF.
+<b>Hidden</b> applies to Excel-ticked sheets, with at least one visible Excel sheet required.
+Removing other sheets can break references in an Excel attachment when freezing is disabled.</p>
+
 <h2 id="pidatalink">Workbooks using PI DataLink (or other Excel add-ins)</h2>
-<p>ReportFlow connects Excel COM add-ins automatically at the start of each run and forces
-a full recalculation so add-in functions (PI DataLink, etc.) fetch live data. Two things
-to check if the output still comes out empty:</p>
+<p><b>The single most important rule:</b> PI DataLink is a <i>VSTO</i> add-in that uses
+Windows-integrated security. It <b>cannot load when the service runs as LocalSystem</b> (the
+default) — there is no user profile, no VSTO cache, and no PI identity. When that happens the
+add-in's worksheet functions are unregistered and every PI cell comes out as
+<code>#NAME?</code>. The report is broken, not empty.</p>
+<p><b>The fix — run the service as a PI-enabled Windows user:</b></p>
 <ul>
-<li>Open the run's <b>Logs</b> — the worker log lists every COM add-in it found and
-    whether it connected. If PI DataLink is <i>not in the list</i>, it is installed only
-    for a specific user: either reinstall it "for all users", or make the ReportFlow
-    service run as that user (Services app → ReportFlow → Log On, or
-    <code>nssm set ReportFlow ObjectName ...</code>).</li>
-<li>If the add-in appears but data is incomplete, increase <b>Extra wait after refresh</b>
-    in the job's Advanced tab.</li>
+<li><b>In the app (easiest):</b> open <b>File → Settings → Service account</b>, click
+    <b>Use current Windows user</b> (the account you are logged in as — the one that has PI
+    DataLink installed), type its password, and click <b>Validate &amp; apply</b>. ReportFlow
+    checks the credentials with Windows, reconfigures the service to run as that user, and
+    restarts it — no admin prompt and no reinstall. The dashboard's red banner has a
+    <b>Set account…</b> button that jumps straight here.</li>
+<li><b>On a fresh install:</b> the installer asks for an optional <i>service account</i> and
+    validates the credentials before continuing — enter the PI-enabled user there.</li>
+<li><b>Admin PowerShell (alternative):</b> run
+    <code>scripts\\set-service-account.ps1 -User "DOMAIN\\your_pi_user"</code>.</li>
 </ul>
+<p>After applying the account, click <b>👁 Build only</b> on the job to confirm. The worker log
+should show <code>Executing as DOMAIN\\your_pi_user</code> (no trailing <code>$</code>) and
+<code>COM add-in 'PI DataLink': connected=True</code>, with real values instead of
+<code>#NAME?</code>.</p>
+<p><b>Error cells &amp; incomplete data.</b> Pre-existing errors like <code>#REF!</code> no
+longer block delivery — the report is sent and the errors appear as a <i>warning</i> on the
+run (blank them out with the <b>Blank out values</b> list, or fail on them by ticking the
+strict option). If a sheet comes out only partly filled, the add-in's data was still arriving
+when ReportFlow froze it — raise <b>Wait for add-in data</b> (Advanced tab; ReportFlow already
+waits adaptively up to that budget and logs when data is still changing at the end). If the
+run instead ends as <i>Timed out</i>, raise the <b>Time limit</b>.</p>
+<p><b>"Cannot be opened" report.</b> If a delivered report trips Office's
+"Office has detected a problem with this file", the sheet-removal step likely broke a chart or
+defined name that pointed at a removed tab. Switch that workbook's <b>Sheets not
+included</b> to <i>Keep them, hidden</i> (General tab) — the file will always open. If the
+<i>input</i> file shows the same message when you open it by hand, it carries a
+Mark-of-the-Web from being downloaded: right-click → Properties → <b>Unblock</b> (or add its
+folder as a Trusted Location).
+ReportFlow still generates reports from it because the service opens files via automation.</p>
+
+<h3>PI DataLink fails under an existing service account</h3>
+<p>Using a real account is necessary for PI access, but does not guarantee that the VSTO
+add-in can load. <b>Require PI DataLink</b> (Edit → Advanced) stops the workbook if the
+add-in is missing or fails to connect, even when pasted or cached values look healthy.
+Ordinary error-cell strictness remains a separate setting.</p>
+<p>Use <b>Build only</b>, then <b>Logs → Export logs to zip…</b>. Each run contains a
+<b>pi_diagnostics</b> folder with the worker identity, Excel details, add-in registrations,
+connection failures, recent VSTO logs and relevant Application events. This is collected
+through the service account; you do not need to log in as that account. VSTO alerts are
+suppressed so an invisible prompt cannot block the worker.</p>
+<p><b>“The add-in could not be installed”</b> is an outer VSTO error. Use the detailed
+exception to identify inaccessible/missing manifests, runtime dependencies, trust,
+disabled add-ins or profile issues before repairing the relevant component. Excel startup
+<b>0x80070005</b> is a separate access-denied failure, before add-in loading.</p>
+<p>A report containing manually pasted values does not verify automatic PI refresh.
+Check a copy containing original PI formulas against a known current-data query through
+Build only, then repeat after a service restart.</p>
+
+<h2 id="dryrun">Build only — check the report without emailing</h2>
+<p>Each job card has a <b>👁 Build only</b> button (previously "Dry run"). It builds the full
+output workbook and runs the same checks as a real run, but <b>never sends any email</b> — use
+it to verify that PI DataLink (or any data source) is producing real values before you rely on
+scheduled delivery. The result and any warnings show in the run history.</p>
+
+<h2 id="emailalerts">When a report email fails</h2>
+<p>If a run builds successfully but the email cannot be sent (wrong SMTP settings, server
+unreachable), the run history shows an <b>inline warning banner</b> for that run — it no
+longer fails silently, and no pop-up interrupts you while a run is live. The job card also
+shows a small <b>✉ failed</b> marker, and the run history's <code>email:</code> line gives the
+reason. Fix the SMTP settings under File → Settings and re-run.</p>
+
+<h2 id="exportlogs">Sending logs to the developer</h2>
+<p>Both <b>Logs → Export logs to zip…</b> and <b>Logs → Send logs to support…</b> let you type
+a short <b>description of the problem</b> first — it travels inside the bundle (and in the email
+subject/body for the "Send" option) so the developer knows what to look for. Export writes the
+bundle (logs + sanitized settings, never passwords) to a zip you choose — handy when the mail
+server is unreachable; Send emails the same bundle to the configured support address.</p>
 """
 
 
 class HelpDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, anchor: str | None = None) -> None:
+        """``anchor`` opens the guide at that section (e.g. "placeholders")."""
         super().__init__(parent)
         self.setWindowTitle(f"{about.NAME} — Help")
         self.resize(680, 640)
@@ -180,3 +441,6 @@ class HelpDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(browser)
         layout.addWidget(buttons)
+        if anchor:
+            # After the first layout pass — before it the anchor has no position yet.
+            QTimer.singleShot(0, lambda: browser.scrollToAnchor(anchor))

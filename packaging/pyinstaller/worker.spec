@@ -6,7 +6,7 @@ Launched by the Service with CREATE_NO_WINDOW so the console never flashes.
 
 import os
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 ICON = os.path.join(ROOT, "assets", "reportflow.ico")
@@ -18,8 +18,10 @@ for pkg in ("xlwings",):
     binaries += b
     hiddenimports += h
 
+# The version lives only in pyproject.toml; frozen exes read it from package metadata.
+datas += copy_metadata("reportflow")
+
 hiddenimports += [
-    "openpyxl",
     "win32com",
     "win32com.client",
     "pythoncom",
@@ -29,13 +31,14 @@ hiddenimports += [
     "win32process",
     "pypdf",
     "psutil",
+    "openpyxl",
 ]
 
 a = Analysis(
     [os.path.join(ROOT, "src", "reportflow", "worker", "__main__.py")],
     pathex=[os.path.join(ROOT, "src")],
     binaries=binaries,
-    datas=datas + [(os.path.join(ROOT, "src", "reportflow"), "reportflow")],
+    datas=datas,
     hiddenimports=hiddenimports,
     excludes=["PySide6", "shiboken6", "tkinter", "matplotlib"],
     noarchive=False,

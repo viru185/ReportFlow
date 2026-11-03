@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from PySide6.QtWidgets import (
@@ -16,11 +17,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.widgets import scroll_page
 
 
 def _split_csv(text: str) -> list[str]:
@@ -28,13 +31,23 @@ def _split_csv(text: str) -> list[str]:
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        api: ApiClient,
+        parent: QWidget | None = None,
+        *,
+        focus_service_account: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._api = api
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(620)
+        self.resize(800, 650)
         self._build()
         self._load()
+        if focus_service_account:
+            self.settings_tabs.setCurrentIndex(2)
+            self.account_user.setFocus()
 
     # -- construction ------------------------------------------------------------
 
@@ -57,7 +70,11 @@ class SettingsDialog(QDialog):
         self.smtp_from = QLineEdit()
         self.smtp_from.setToolTip("The From address report emails are sent as.")
         self.smtp_user = QLineEdit()
-        self.smtp_user.setToolTip("SMTP login username; leave empty if no authentication.")
+        self.smtp_user.setToolTip(
+            "SMTP login username — leave EMPTY for servers that accept mail without "
+            "login (e.g. internal relays on port 25). Login is only attempted when both "
+            "a username and a password are set."
+        )
 
         self.smtp_password = QLineEdit()
         self.smtp_password.setEchoMode(QLineEdit.EchoMode.Password)
@@ -107,11 +124,13 @@ class SettingsDialog(QDialog):
         rcpt_form = QFormLayout(rcpt_box)
         self.test_recipients = QLineEdit()
         self.test_recipients.setToolTip(
-            "Global fallback recipients for TEST runs when a job has no test recipients " "of its own. Comma-separated."
+            "Global fallback recipients for TEST runs when a job has no test recipients "
+            "of its own. Comma-separated."
         )
         self.dev_recipients = QLineEdit()
         self.dev_recipients.setToolTip(
-            "Receives the diagnostic log bundles sent from File → Send logs to support. " "Comma-separated."
+            "Receives the diagnostic log bundles sent from File → Send logs to support. "
+            "Comma-separated."
         )
         rcpt_form.addRow("Test recipients", self.test_recipients)
         rcpt_form.addRow("Support email", self.dev_recipients)
@@ -123,9 +142,13 @@ class SettingsDialog(QDialog):
         self.max_concurrency.setRange(1, 32)
         self.max_concurrency.setToolTip("Maximum number of jobs allowed to run at the same time.")
         self.default_timeout = QSpinBox()
-        self.default_timeout.setRange(30, 86400)
-        self.default_timeout.setSuffix(" s")
-        self.default_timeout.setToolTip("Default per-run time limit; a hung run is killed when it exceeds this.")
+        self.default_timeout.setRange(1, 24 * 60)
+        self.default_timeout.setSuffix(" min")
+        self.default_timeout.setToolTip(
+            "The longest a run may take when its job leaves Time limit at Default. When it "
+            "is reached the run is stopped and marked Timed out — raise it (here, or per job "
+            "in Edit → Advanced) for big reports that pull a lot of PI data."
+        )
         self.log_retention = QSpinBox()
         self.log_retention.setRange(1, 365)
         self.log_retention.setSuffix(" days")
@@ -136,20 +159,88 @@ class SettingsDialog(QDialog):
             "Updates are only ever installed when you click Update."
         )
         self.debug_logging = QCheckBox("Enable debug logging (verbose)")
-        self.debug_logging.setToolTip("Write more detailed diagnostic logs for the service, UI, and worker.")
+        self.debug_logging.setToolTip(
+            "Writes much more detail to the service, worker, and app log files — useful "
+            "when troubleshooting with support. Applies to the service immediately; the "
+            "app picks it up on next start."
+        )
         app_form.addRow("Max parallel runs", self.max_concurrency)
-        app_form.addRow("Default timeout", self.default_timeout)
+        app_form.addRow("Default time limit", self.default_timeout)
         app_form.addRow("Log retention", self.log_retention)
         app_form.addRow("", self.check_updates)
         app_form.addRow("", self.debug_logging)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        # Service account — set the Windows user the service (and its Excel workers) run as.
+        # PI DataLink and other add-ins only load under a real user, never LocalSystem.
+        account_box = QGroupBox("Service account (PI DataLink)")
+        account_form = QFormLayout(account_box)
+        self.service_account = QLabel("")
+        self.service_account.setWordWrap(True)
+        self.service_account.setToolTip(
+            "The Windows account the ReportFlow service currently runs as."
+        )
+        self.account_user = QLineEdit()
+        self.account_user.setPlaceholderText("DOMAIN\\user or .\\user")
+        self.account_user.setToolTip(
+            "A Windows account that has PI DataLink installed and PI access. Use DOMAIN\\user "
+            "for a domain account, or .\\user for a local one."
+        )
+        use_current = QPushButton("Use current Windows user")
+        use_current.setToolTip("Fill in the account you are logged in as right now.")
+        use_current.clicked.connect(self._fill_current_user)
+        user_row = QHBoxLayout()
+        user_row.addWidget(self.account_user)
+        user_row.addWidget(use_current)
+
+        self.account_password = QLineEdit()
+        self.account_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.account_password.setToolTip(
+            "The account's Windows password. It is validated with Windows and passed straight "
+            "to the service configuration — never written to the config file."
+        )
+        apply_account = QPushButton("Validate && apply")
+        apply_account.setProperty("accent", True)
+        apply_account.setToolTip(
+            "Check the credentials with Windows, then reconfigure the service to run as this "
+            "account and restart it. No reinstall or admin prompt needed."
+        )
+        apply_account.clicked.connect(self._apply_service_account)
+        apply_row = QHBoxLayout()
+        apply_row.addStretch()
+        apply_row.addWidget(apply_account)
+
+        account_hint = QLabel(
+            "Updates preserve the existing service account. Changing it here is a separate "
+            "operation: Validate & apply restarts the service. Save does not change the account."
+        )
+        account_hint.setWordWrap(True)
+        account_hint.setProperty("muted", True)
+        account_form.addRow(account_hint)
+        account_form.addRow("Runs as", self.service_account)
+        account_form.addRow("User", user_row)
+        account_form.addRow("Password", self.account_password)
+        account_form.addRow("", apply_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("accent", True)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
 
-        layout.addWidget(smtp_box)
-        layout.addWidget(rcpt_box)
-        layout.addWidget(app_box)
+        self.settings_tabs = QTabWidget()
+        for title, boxes in (
+            ("Email", [smtp_box, rcpt_box]),
+            ("Application", [app_box]),
+            ("Service account", [account_box]),
+        ):
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            for box in boxes:
+                page_layout.addWidget(box)
+            page_layout.addStretch()
+            self.settings_tabs.addTab(scroll_page(page), title)
+        layout.addWidget(self.settings_tabs)
         layout.addWidget(buttons)
 
     # -- data --------------------------------------------------------------------
@@ -175,16 +266,69 @@ class SettingsDialog(QDialog):
 
         app_cfg = cfg.get("app", {})
         self.max_concurrency.setValue(int(app_cfg.get("max_global_concurrency", 4)))
-        self.default_timeout.setValue(int(app_cfg.get("default_timeout_seconds", 900)))
+        # Stored in seconds; edited in minutes (rounded up so a limit never shrinks).
+        self.default_timeout.setValue(-(-int(app_cfg.get("default_timeout_seconds", 900)) // 60))
         self.log_retention.setValue(int(app_cfg.get("log_retention_days", 30)))
 
         ui_cfg = cfg.get("ui", {})
-        self.check_updates.setChecked(bool(ui_cfg.get("check_updates_on_startup", True)))
+        self.check_updates.setChecked(bool(ui_cfg.get("check_updates_on_startup", False)))
         self.debug_logging.setChecked(bool(app_cfg.get("debug_logging", False)))
 
         self._app_section_base: dict[str, Any] = app_cfg
         self._ui_section_base: dict[str, Any] = ui_cfg
-        self.password_status.setText("A password is currently stored." if pw_set else "No password stored yet.")
+        self.password_status.setText(
+            "A password is currently stored." if pw_set else "No password stored yet."
+        )
+
+        try:
+            status = self._api.system_status()
+        except ApiError:
+            status = {}
+        account = status.get("service_account") or "unknown"
+        if status.get("service_account_is_system"):
+            self.service_account.setText(
+                f"⚠ {account} (LocalSystem) — PI DataLink and other add-ins will NOT load. "
+                "Run scripts/set-service-account.ps1 as admin to switch to a PI-enabled user."
+            )
+            self.service_account.setStyleSheet("color: #e06c6c;")
+        else:
+            self.service_account.setText(account)
+            self.service_account.setStyleSheet("")
+
+    def _fill_current_user(self) -> None:
+        domain = os.environ.get("USERDOMAIN", "")
+        user = os.environ.get("USERNAME", "")
+        self.account_user.setText(f"{domain}\\{user}".strip("\\") if user else "")
+        self.account_password.setFocus()
+
+    def _apply_service_account(self) -> None:
+        user = self.account_user.text().strip()
+        password = self.account_password.text()
+        if not user or not password:
+            QMessageBox.warning(
+                self, "Service account", "Enter both the account (DOMAIN\\user) and its password."
+            )
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Set service account",
+            f"Validate {user!r} and reconfigure the ReportFlow service to run as it?\n\n"
+            "The service will restart, briefly interrupting any running job.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            resp = self._api.set_service_account(user, password)
+        except ApiError as e:
+            QMessageBox.warning(self, "Service account", str(e))
+            return
+        self.account_password.clear()
+        QMessageBox.information(
+            self,
+            "Service account",
+            f"Applied — the service is restarting as {resp.get('account', user)}.\n\n"
+            "Give it a few seconds, then run a Build only to confirm PI DataLink connects.",
+        )
 
     def _save(self) -> None:
         sections: dict[str, Any] = {
@@ -196,7 +340,7 @@ class SettingsDialog(QDialog):
             "app": {
                 **getattr(self, "_app_section_base", {}),
                 "max_global_concurrency": self.max_concurrency.value(),
-                "default_timeout_seconds": self.default_timeout.value(),
+                "default_timeout_seconds": self.default_timeout.value() * 60,
                 "log_retention_days": self.log_retention.value(),
                 "debug_logging": self.debug_logging.isChecked(),
             },
@@ -216,7 +360,9 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def _toggle_password_visible(self, show: bool) -> None:
-        self.smtp_password.setEchoMode(QLineEdit.EchoMode.Normal if show else QLineEdit.EchoMode.Password)
+        self.smtp_password.setEchoMode(
+            QLineEdit.EchoMode.Normal if show else QLineEdit.EchoMode.Password
+        )
 
     def _smtp_form_values(self) -> dict[str, Any]:
         return {
@@ -235,7 +381,9 @@ class SettingsDialog(QDialog):
         except ApiError as e:
             QMessageBox.warning(self, "SMTP test failed", str(e))
             return
-        QMessageBox.information(self, "SMTP test", "Connection successful — the SMTP settings work.")
+        QMessageBox.information(
+            self, "SMTP test", "Connection successful — the SMTP settings work."
+        )
 
     def _clear_password(self) -> None:
         confirm = QMessageBox.question(self, "Clear password", "Remove the stored SMTP password?")

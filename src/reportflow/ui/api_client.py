@@ -39,12 +39,13 @@ class ApiClient:
         try:
             resp = self._client.request(method, f"{self.base_url}{path}", **kw)
         except httpx.HTTPError as e:
-            logger.warning("UI API request failed {} {}: {}", method, path, e)
+            logger.warning("API {} {} unreachable: {}", method, path, e)
             raise ApiError(f"service not reachable at {self.base_url}: {e}") from e
         if resp.status_code >= 400:
             detail = _safe_detail(resp)
-            logger.warning("UI API request failed {} {} -> {}", method, path, detail)
+            logger.warning("API {} {} -> {}: {}", method, path, resp.status_code, detail)
             raise ApiError(detail, resp.status_code)
+        logger.debug("API {} {} -> {}", method, path, resp.status_code)
         if resp.headers.get("content-type", "").startswith("application/json"):
             return resp.json()
         return resp.text
@@ -59,8 +60,25 @@ class ApiClient:
     def get_config(self) -> dict:
         return self._request("GET", "/config")
 
-    def send_dev_logs(self) -> dict:
-        return self._request("POST", "/system/send-dev-logs")
+    def send_dev_logs(self, note: str = "") -> dict:
+        return self._request("POST", "/system/send-dev-logs", json={"note": note})
+
+    def export_logs(self, note: str = "") -> dict:
+        return self._request("POST", "/system/export-logs", json={"note": note})
+
+    def purge_logs(self, older_than_days: int | None = None, *, everything: bool = False) -> dict:
+        payload: dict[str, Any] = {"all": everything}
+        if older_than_days is not None:
+            payload["older_than_days"] = older_than_days
+        return self._request("POST", "/system/purge-logs", json=payload)
+
+    def get_service_account(self) -> dict:
+        return self._request("GET", "/system/service-account")
+
+    def set_service_account(self, user: str, password: str) -> dict:
+        return self._request(
+            "POST", "/system/service-account", json={"user": user, "password": password}
+        )
 
     # -- jobs --
     def list_jobs(self) -> list[dict]:
@@ -81,8 +99,11 @@ class ApiClient:
     def run_job(self, name: str) -> dict:
         return self._request("POST", f"/jobs/{name}/run")
 
-    def test_job(self, name: str) -> dict:
-        return self._request("POST", f"/jobs/{name}/test")
+    def dry_run_job(self, name: str) -> dict:
+        return self._request("POST", f"/jobs/{name}/dry-run")
+
+    def set_job_stage(self, name: str, stage: str) -> dict:
+        return self._request("POST", f"/jobs/{name}/stage", json={"stage": stage})
 
     # -- runs --
     def list_runs(self, job: str | None = None, limit: int = 50) -> list[dict]:
@@ -108,6 +129,10 @@ class ApiClient:
     def get_email_template(self, job_name: str) -> dict:
         return self._request("GET", f"/jobs/{job_name}/email-template")
 
+    def check_email_template(self, path: str) -> dict:
+        """Ask the service whether it can read + render a template file (ApiError if not)."""
+        return self._request("POST", "/email/template-check", json={"path": path})
+
     def put_email_template(self, job_name: str, content: str) -> dict:
         return self._request("PUT", f"/jobs/{job_name}/email-template", json={"content": content})
 
@@ -128,7 +153,9 @@ class ApiClient:
         return self._request("POST", "/system/smtp-test", json=smtp)
 
     def system_logs(self, process: str = "service", tail: int = 500) -> str:
-        return self._request("GET", "/system/logs", params={"process": process, "tail": tail})["log"]
+        return self._request("GET", "/system/logs", params={"process": process, "tail": tail})[
+            "log"
+        ]
 
 
 def _safe_detail(resp: httpx.Response) -> str:

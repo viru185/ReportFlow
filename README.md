@@ -10,7 +10,7 @@ stay isolated at runtime:
 
 | Executable | Role |
 |---|---|
-| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs, discover sheets, run/test, view logs. |
+| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs, discover sheets, run, go live, view logs. |
 | **Service** (`reportflow-service`) | Background control plane: localhost API + scheduler; launches workers. Runs as a Windows service (via NSSM). |
 | **Excel Worker** (`reportflow-worker`) | Short-lived process that does the Excel automation for one run, then exits. |
 
@@ -79,68 +79,134 @@ and every field has a tooltip.
 
 Click **+ New Job**. The editor is organized in sections:
 
-**Input**
-- **Job name** — unique; also used in output filenames.
+**General**
+- **Job name** — unique; also used in output filenames. You can **rename** a job later — its
+  run history and email template follow the new name.
+- **Workbooks** — one tab per input Excel file; **+ Add workbook…** adds another. Every run
+  builds all of them and sends **one** email with every file attached.
 - **Input Excel file** — browse to the `.xlsx`/`.xlsm`. The app **discovers the sheet names**
-  automatically; tick the sheets to process. (Stored by *name*, so reordering sheets is safe.)
+  automatically. (Stored by *name*, so reordering sheets is safe.)
+- **Sheets** — one row per sheet: **Include** (refresh, check and freeze it), **PDF** (also
+  export it as its own PDF) and **Hidden** (keep it in the Excel file but hidden — recipients
+  can unhide it; it can still get a PDF). At least one included sheet must stay visible. Click
+  a column title to tick the whole column.
+- **Sheets not included** — *Remove them from the file* / *Keep them, hidden* (very-hidden,
+  references stay intact) / *Keep them, visible*.
 
 **Output**
 - **Output folder** — browse to where results are saved, or leave empty to save **next to the
   input file**.
-- **Filename** — optional stem; empty means `{job}_{date}`. Placeholders: `{job}`, `{date}`,
-  `{datetime}`, `{run_id}`. A live example shows the resulting names. Each run writes
-  `<name>.xlsx` plus one `<name>_<sheet>.pdf` per selected sheet.
-- **Freeze formulas to values** / **Generate PDF** toggles.
+- **Filename** — optional stem; empty means `{job}_{datetime}` (e.g. `Sales_20261007_061500`),
+  so a job that runs twice in one day never overwrites its earlier report. Placeholders:
+  `{job}`, `{date}`, `{time}`, `{datetime}`, `{run_id}`, `{workbook}`. With several workbooks
+  `_{workbook}` is added automatically. A live example shows the resulting names (and warns
+  when a custom name has no time). Each run writes `<name>.xlsx` per workbook plus one
+  `<name>_<sheet>.pdf` per sheet with PDF ticked.
+- **Freeze formulas to values**.
+- **If a workbook fails** (several workbooks only) — fail the whole run and send nothing
+  (default), or send the workbooks that worked with a warning naming the failed one.
 
-**Schedule** — visual builder: **Manual**, **Daily**, **Weekly** (weekday picker),
-**Monthly** (day-of-month picker), or **Advanced (cron)**. Add **multiple run times per day**
-(e.g. 06:00 and 18:00) in any preset mode.
+**Schedule** — no schedule = manual. **+ Add schedule** adds a **Daily**, **Weekly**,
+**Monthly** or **Custom (cron)** rule; add several to combine them — e.g. daily at 06:00
+*and* every Sunday at 10:00. Each run time is a chip with its own ✕, each rule its own
+Delete. Rules that would fire at the same moment are refused (the job would run twice).
 
-**Email** — subject, recipients, and the in-app template editor (next section).
+**Email** — subject (placeholders work here too, e.g. `Daily report — {{ today }}`),
+recipients, and the template editor (next section).
 
-**Advanced** (collapsed by default) — **Timeout** (max seconds before a hung run is killed)
-and **Concurrency group** (jobs sharing a group run one-at-a-time), plus notes.
+**Advanced** — **Time limit** (minutes; the run is stopped and marked *Timed out* after
+this — raise it for big PI reports that need 20+ minutes), **Wait for add-in data** (keep
+waiting up to N seconds while PI DataLink fills cells; moves on as soon as the data stops
+changing), **Concurrency group**, the empty/error-cell checks, **Blank out values**, notes.
+Each setting has a one-line explanation right under it.
 
 Only the input file, at least one sheet, and the **To** addresses are required. Everything
 optional can be left blank.
+
+### Job lifecycle: Testing → Live
+
+Every job starts in **Testing**: every run — manual **and scheduled** — emails only the
+**Test** recipients (subject prefixed `[TEST]`), so the report is verified internally first.
+When you're happy with it, click **✓ Go live** on the job card (the confirmation names the
+production recipients); from then on runs email the **client**. A live job can be moved back
+to Testing from the job editor's Email tab. The card shows an amber **TESTING** / green
+**LIVE** pill so the state is always visible.
 
 ### Recipients & email template
 
 Each job has two recipient sets — **production** and **test** — each with **To** (required),
 **Cc** (optional), and **Bcc** (optional).
 
-- **Test runs** email the **test** recipients only — they can never reach production addresses.
-- **Real runs** email the **production** recipients only if **"Email report … on real runs"**
-  is enabled. Failures never send an automatic email.
-- Report emails attach the **output Excel** plus **all per-sheet PDFs**.
+- **Testing-stage** runs email the **test** recipients only — they can never reach production.
+- **Live** runs email the **production** recipients. Failures never send an automatic email.
+- Report emails attach the **output Excel** plus **all per-sheet PDFs**, and show the run's
+  real **duration**.
 
 The email **body** is authored in-app: click **Edit email template…** in the job editor and
-write it in **Simple** mode (plain text + placeholder-insert buttons) or **HTML** mode, with a
-live **Preview** against sample data. The template is stored per job; leave it untouched to use
-the built-in default.
+write it in **Simple** mode (plain text) or **HTML** mode, with a live **Preview** against
+sample data. The template is stored per job; leave it untouched to use the built-in default.
 
-### Run, test, and schedule
+- **Placeholders** — a list beside the editor shows every placeholder with today's value; one
+  click inserts it. Dates (`{{ today }}`, `{{ yesterday }}`, `{{ now }}`, `{{ weekday }}`,
+  `{{ month }}`, `{{ previous_month }}`, `{{ week_number }}`, or any format via
+  `{{ run_date.strftime('%d/%m/%Y') }}`), run facts (job, status, stage, timings, warnings) and
+  files (attachments, workbooks, sheets). They work in the **Subject** too. **Help → Email
+  placeholders** has the full table and recipes.
+- **Load from file…** — use an `.html` file made elsewhere. By default a copy is saved with the
+  job; tick **Keep linked to this file** to have every run re-read it (the service must be able
+  to read it — the editor checks; if it later goes missing, the email uses the default template
+  and the run shows a warning).
 
-- **▶ Run** (on the job card) — a real run (production recipients, if enabled).
-- **🧪 Test** — a test run to the test recipients, subject prefixed `[TEST]`.
+### Run and schedule
+
+Two single-click actions on each job card — the job's stage answers "who gets the email":
+
+- **▶ Run** — builds the report and emails per the stage (testers while Testing, the client
+  when Live).
+- **👁 Build only** — builds and verifies the report (checks the data) but emails no one.
 - **Schedule** — the service runs enabled jobs on their configured times automatically; each
-  configured time registers its own trigger.
+  configured time registers its own trigger, honouring the job's stage. Scheduled cards show
+  **when the next run fires** ("next: tomorrow 06:00").
 
-Multiple jobs run in parallel, each in its own disposable worker process. A failed run is never
-retried automatically — it's recorded and visible in the history.
+While a job is **running**, its card shows a live elapsed counter and the run buttons lock so
+it can't be double-fired. Multiple jobs run in parallel, each in its own disposable worker
+process. A failed run is never retried automatically — it's recorded and visible in history.
+
+Each card's **coloured left edge** tells the last run's outcome at a glance — green =
+success, red = failed, amber = running, grey = paused or never ran — and the detail line
+reads `next: tomorrow 06:00 · last: success 2h ago · 4 sheet(s)`.
+
+Everything occasional lives behind the card's **⋯** menu (so daily actions stay one click):
+
+- **📂 Open last report** — Explorer opens with the last successful report pre-selected.
+- **✎ Edit** and **Logs** — the job editor (including rename) / that job's run history.
+- **⧉ Duplicate** — a new job with *everything* copied — workbooks, sheet choices, schedules,
+  recipients, advanced options and the email template; only the name (new) and the stage
+  (Testing) differ.
+- **⏸ Pause** — pause scheduling. A paused job is unmissable: the whole card dims, a grey
+  **⏸ PAUSED** pill appears, the schedule line reads *paused*, and a one-click **▸ Resume**
+  button takes the promote button's slot. Manual runs still work while paused.
+- **🗑 Delete** — remove the job (with confirmation).
 
 ### Logs & diagnostics
 
 - **Logs** on a job card — that job's run history: status, timings, output paths, error
   summary, and the worker log tail. It refreshes live while a run is in progress.
-- **File → Application logs** — the full rolling logs of the Service, Worker, and UI.
-- **File → Send logs to support** — emails a diagnostic bundle (logs + sanitized settings,
-  never passwords) to the configured support email.
+- **Logs → Application logs** — the full rolling logs of the Service, Worker, and UI, with a
+  one-click Service/Worker/UI switcher and per-token colour (timestamp, level, message).
+- **Logs → Send logs to support** / **Export logs to zip** — bundle the logs + sanitized
+  settings (never passwords); you can type a short **problem description** that rides along in
+  the bundle (and the email) so the developer knows what to look for.
+- **Logs → Delete old logs… / Delete ALL logs…** — free disk space on demand. "Old" uses the
+  retention setting; "ALL" wipes every run folder, log, bundle, and history row (strong
+  confirm; active runs always survive). The service also purges automatically at startup and
+  nightly per **Log retention** — the setting now genuinely controls disk usage.
 - **File → Open data folder** — opens `C:\ProgramData\ReportFlow` in Explorer.
 
 ### Settings (SMTP, support email, application)
 
-**File → Settings** configures everything in-app:
+**File → Settings** configures everything in-app (one compact two-column dialog — email on
+the left, application & service on the right):
 
 - **SMTP** — host, port, STARTTLS/SSL, from-address, username, and the **password** (stored
   encrypted via Windows DPAPI, machine scope — never in the config file). An eye icon shows
@@ -148,8 +214,8 @@ retried automatically — it's recorded and visible in the history.
   server without sending anything.
 - **Test & support email** — global test-run fallback recipients and the support address
   that receives diagnostic bundles.
-- **Application** — max parallel runs, default timeout, log retention, and the startup
-  update-check toggle.
+- **Application** — max parallel runs, default time limit (minutes), log retention, and the
+  startup update-check toggle (off by default).
 
 ### Import, export & updates
 
@@ -158,26 +224,59 @@ retried automatically — it's recorded and visible in the history.
   Overwrite / Skip / Import as copy.
 - **File → Export/Import settings…** — the same for application settings. The SMTP
   password never travels; re-enter it after importing.
-- **Updates** — the app checks GitHub for a newer release at startup (skipped when
-  offline; toggleable in Settings) and via **Help → Check for updates…**. Nothing installs
-  until you click **Update now**; the download shows progress and the installer upgrades
-  automatically, preserving jobs, settings, and logs.
+- **Updates** — **Help → Check for updates…** looks for a newer release on GitHub; tick the
+  startup check in Settings to have the app look on every start (off by default; skipped when
+  offline). Nothing installs until you click **Update now**; the download shows progress and
+  the installer upgrades automatically, preserving jobs, settings, and logs. **Beta**
+  pre-releases are never offered — install one by hand from the GitHub releases page.
 
 ### Workbooks using PI DataLink (or other Excel add-ins)
 
-ReportFlow connects Excel **COM add-ins** automatically at the start of every run (they do
-not load by themselves in an automated Excel session) and forces a full recalculation so
-add-in functions fetch live data. If the output is still empty or incomplete:
+**PI DataLink is a VSTO add-in that uses Windows-integrated security, and it cannot load
+when the service runs as LocalSystem** (the default). With no user profile / VSTO cache / PI
+identity, `.Connect` fails with *"the add-in could not be installed"*, its worksheet
+functions are unregistered, and every PI cell comes out as **`#NAME?`** — a broken report,
+not an empty one. The legacy Task Scheduler script worked only because it ran **as the
+desktop user**.
 
-- Check the run's worker log — it lists every COM add-in found and its connect state. If
-  the add-in (e.g. PI DataLink) is **not listed**, it is installed per-user only: reinstall
-  it "for all users", or run the ReportFlow service under that user account
-  (Services → ReportFlow → Log On, or `nssm set ReportFlow ObjectName`).
-- If the add-in loads but data lags, set **Extra wait after refresh** (job → Advanced) to
-  give it time (e.g. 30–120 s).
+**Fix — run the service as a PI-enabled Windows user** (one that has PI DataLink installed
+and PI access):
 
-Every run's history entry also shows an **email:** line — sent to how many recipients, or
-exactly why nothing was sent (e.g. the job's "Email report on real runs" option is off).
+- **In the app (easiest):** **File → Settings → Service account** → **Use current Windows
+  user** → enter the password → **Validate & apply**. ReportFlow checks the credentials with
+  Windows, reconfigures the service to run as that user, and restarts it — no admin prompt, no
+  reinstall. The dashboard's red banner has a **Set account…** button that jumps straight here.
+- **Fresh install:** the installer asks for an optional **service account** and validates the
+  credentials before continuing — enter the PI-enabled user there.
+- **Admin PowerShell (alternative):** `scripts\set-service-account.ps1 -User "DOMAIN\your_pi_user"`.
+- **Verify:** **File → Settings → Service account** shows the current account (and warns in red
+  if it is LocalSystem); the dashboard shows a warning banner too. Then click **👁 Build only**
+  on the job — the worker log should read `Executing as DOMAIN\your_pi_user` (no trailing `$`)
+  and `COM add-in 'PI DataLink': connected=True`, with real values.
+
+**Error cells are reported, not fatal.** Pre-existing errors like `#REF!` no longer block
+delivery — the report is sent and the errors show as a *warning* on the run. Strip them with
+the **Blank out values** list (e.g. `#REF!, #N/A`), or tick *"Fail the run if a sheet has
+error cells (strict)"* to fail instead. If a sheet is only partly filled, the add-in's data
+was still arriving at freeze time — raise **Wait for add-in data** (ReportFlow waits
+adaptively up to that budget and logs when data is still changing at the end). If the run
+instead ends as *Timed out*, raise the **Time limit**.
+
+**"Cannot be opened" output.** Removing non-selected sheets can break a chart/defined name that
+referenced them, and Office File Validation then blocks the file. ReportFlow purges broken
+`#REF!` defined names automatically; if a report still won't open, set that workbook's **Sheets
+not included** option (General tab) to **Keep them, hidden** — the others become very-hidden,
+references stay intact, and the file always opens. If the *input* file won't open by hand, it carries a
+Mark-of-the-Web: right-click → Properties → **Unblock** (or add its folder as a Trusted
+Location); reports still generate because the service opens files via automation.
+
+**Build only** (👁 on each job card) builds the full report and runs the checks but never emails
+— use it to confirm PI data before relying on scheduled delivery.
+
+**Email failures no longer pass silently:** when a run builds but the email cannot be sent,
+the app pops a warning, the card shows a **✉ failed** marker, and the run history's
+**email:** line gives the reason. When SMTP is down and you need to hand logs to support,
+use **File → Export logs to zip…** to save the diagnostic bundle locally.
 
 ### Where data lives
 
@@ -186,7 +285,7 @@ Everything runtime lives under **`C:\ProgramData\ReportFlow\`**:
 ```
 config\reportflow.toml     application + SMTP + job definitions
 templates\email\default.html   default email body
-templates\jobs\<job>.html  per-job email templates authored in-app
+templates\jobs\<job>.html  per-job email templates authored in-app (or imported)
 logs\                      rolling per-process logs (ui, service, worker)
 state\runs.db              run history (SQLite)
 state\secrets\             encrypted secrets (DPAPI)
@@ -235,6 +334,58 @@ Set **`REPORTFLOW_DATA_DIR`** to redirect the data root (config/logs/state) away
 $env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
 ```
 
+### Test the full app locally — no build, no installer
+
+Goal: exercise the real service + UI + worker against a real workbook (e.g. a PI DataLink
+file) on your dev machine before pushing anything.
+
+```powershell
+# 1) Isolated data dir so your real ProgramData isn't touched (per terminal!)
+$env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
+
+# 2) Start the service (terminal 1)
+uv run python -m reportflow.service
+
+# 3) Start the UI (terminal 2 — set REPORTFLOW_DATA_DIR here too)
+uv run python -m reportflow.ui
+```
+
+Create the job in the UI exactly as on the server (pick your workbook, tick the report
+sheets), hit **🧪 Test**, and inspect the run log + output files.
+
+**Fake the email sending** (nothing leaves your machine): in a third terminal run
+
+```powershell
+uv run python scripts/dev_smtp_server.py        # listens on 127.0.0.1:2525
+```
+
+then in the UI set Settings → SMTP to host `127.0.0.1`, port `2525`, no TLS, empty
+username/password. Every email ReportFlow "sends" is printed by that terminal and saved
+under `scripts\sample\outbox\*.eml` (double-click opens in Outlook). **Test connection**
+also works against it.
+
+Worker-only quick loop (no service/UI):
+
+```powershell
+uv run python scripts/dev_run_worker.py --template "D:\path\to\MyReport.xlsx" --sheets "Sheet A" "Sheet B"
+```
+
+### Build & test the executables locally
+
+```powershell
+uv run python packaging/build_all.py            # dist\worker, dist\service, dist\ui
+dist\ui\reportflow-ui.exe --selftest             # exit 0 => UI bundle OK
+
+# Run the FROZEN service + UI against the isolated data dir:
+$env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
+dist\service\reportflow-service.exe              # terminal 1
+dist\ui\reportflow-ui.exe                        # terminal 2 (same env var)
+```
+
+`dist\` mirrors the installed layout, so the frozen service finds the frozen worker the
+same way it does under `C:\Program Files\ReportFlow`. When this passes, push/tag with
+confidence — the CI installer wraps the very same artifacts.
+
 ### Testing
 
 Excel-dependent tests are marked `excel` and skipped by default (and in CI).
@@ -282,6 +433,9 @@ Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) and `packaging/nssm/nss
 # -> packaging\innosetup\Output\ReportFlow-Setup-0.1.0.exe
 ```
 
+For a beta, also pass the numeric part for the Windows file version:
+`/DMyAppVersion=0.11.0-beta /DMyAppNumericVersion=0.11.0`.
+
 ### Project layout
 
 ```
@@ -326,6 +480,7 @@ username = "reportflow@corp.example.com"
 
 [ui]
 api_base_url = "http://127.0.0.1:8787"
+check_updates_on_startup = false
 
 [email]
 default_template_path = "email/default.html"   # relative to templates\
@@ -337,18 +492,25 @@ developer_bundle_recipients = ["dev-team@corp.example.com"]
 [[job]]
 name = "daily_sales"
 enabled = true
-input_excel_path = "C:/Templates/daily_sales.xlsx"
 email_template_path = 'C:/ProgramData/ReportFlow/templates/jobs/daily_sales.html'  # optional
-output_dir = "C:/Reports/daily_sales"     # optional; empty -> next to the input file
-output_name = "{job}_{date}"              # optional filename stem; PDFs get _<sheet> suffix
-sheet_names = ["Summary", "Detail"]       # names, not indexes
+output_dir = "C:/Reports/daily_sales"     # optional; empty -> next to each input file
+output_name = "{job}_{datetime}"          # optional filename stem; PDFs get _<sheet> suffix
+on_workbook_failure = "fail_run"          # or "send_partial" (several workbooks)
 freeze_values = true
-generate_pdf = true
-schedule_crons = ["0 6 * * MON-FRI", "0 18 * * MON-FRI"]   # one trigger per entry
-timeout_seconds = 1200
+schedule_crons = ["0 6 * * *", "0 10 * * SUN"]   # one trigger per entry (daily + Sunday)
+timeout_seconds = 2700                    # the editor shows minutes
+post_refresh_wait_seconds = 120
 concurrency_group = "reports"
-subject = "Daily Sales — {date}"
-send_report_email = true                  # real runs email prod only if true
+subject = "Daily Sales — {{ today }}"     # placeholders work in the subject
+stage = "live"                            # "testing" (default) emails testers; "live" -> prod
+
+  [[job.workbooks]]                       # one or more; all go out in one email
+  input_excel_path = "C:/Templates/daily_sales.xlsx"
+  unselected_sheets = "remove"            # sheets not listed: "remove" | "hide" | "keep"
+  sheets = [                              # names, not indexes
+    { name = "Summary", pdf = true, hidden = false },
+    { name = "Detail",  pdf = false, hidden = true },
+  ]
 
   [job.prod]
   to  = ["managers@corp.example.com"]
@@ -378,12 +540,15 @@ Bound to `127.0.0.1` only.
 | `PUT /settings` | Update app/smtp/ui/email/test sections (jobs untouched). |
 | `GET/POST/DELETE /system/smtp-password` | Status / store / clear the DPAPI SMTP password. |
 | `GET /system/logs?process=&tail=` | Tail the Service/Worker/UI rolling log. |
-| `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD. |
-| `POST /jobs/{name}/run` · `POST /jobs/{name}/test` | Trigger a real / test run. |
+| `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD (a PUT with a new name renames the job; history + template follow). |
+| `POST /jobs/{name}/run` · `POST /jobs/{name}/dry-run` | Run per the job's stage / build only. |
+| `POST /jobs/{name}/stage` | Promote to live / demote to testing. |
+| `POST /system/purge-logs` | Delete old (or all) run folders, logs, bundles. |
 | `GET/PUT /jobs/{name}/email-template` | Read / write the job's per-job email template. |
 | `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs. |
 | `POST /workbook/sheets` | Discover sheet names (openpyxl, no COM). |
 | `POST /email/preview` | Render the email template with sample data. |
+| `POST /email/template-check` | Can the service read + render a template file (for linked templates)? |
 | `POST /system/send-dev-logs` | Email the redacted diagnostic bundle. |
 
 ### Design notes
@@ -407,10 +572,87 @@ Bound to `127.0.0.1` only.
 
 - **`.github/workflows/ci.yml`** (push/PR, `windows-latest`): `ruff check`, `ruff format
   --check`, `mypy`, `pytest -m "not excel"`, and Conventional-Commits linting on PRs.
-- **`.github/workflows/release.yml`** (tag `v*`): builds the three exes, fetches NSSM, compiles
-  the Inno Setup installer, generates the changelog with git-cliff, and publishes a GitHub
-  Release with the installer + zipped executables.
+- **`.github/workflows/release.yml`** (tag `v*`): checks the tag matches `pyproject.toml`,
+  builds the three exes, fetches NSSM, compiles the Inno Setup installer, writes release notes
+  with git-cliff (everything since the last stable tag), and publishes a GitHub Release with
+  the installer + zipped executables.
+
+**Beta first.** A new feature ships as a beta: set `version = "X.Y.Z-beta"` in
+`pyproject.toml` and push tag `vX.Y.Z-beta` (from any branch). Betas are **not numbered** — if a
+beta needs a fix, bump the version (`v0.11.0-beta` → `v0.11.1-beta`), never `-beta.2`. It is published as a GitHub
+**pre-release**, never marked latest, so the in-app updater ignores it and testers install it
+by hand. When it's verified, set `version = "X.Y.Z"`, merge to `main` and push tag `vX.Y.Z`:
+that release is offered to everyone, its notes include the beta's changes, and the workflow
+commits the regenerated `CHANGELOG.md` to `main` (betas skip that step and get no changelog
+section of their own).
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/); the changelog is
 generated from history by [git-cliff](https://git-cliff.org/).
 ```
+
+
+### Sheet-level email attachments
+
+Each included sheet has independent **Excel attachment** and **PDF** choices. One emailed
+Excel file per workbook contains exactly the Excel-selected sheets. The regular local
+Excel copy is retained even for PDF-only emails and follows the workbook's existing
+keep/hide/remove setting for other sheets. Local **Open report** still opens that copy.
+**Combine selected sheets into one PDF** produces one PDF per workbook in the listed
+sheet order, preserving each sheet's print settings. No selected attachments means a
+local build without email.
+
+### Diagnosing PI activation under the service account
+
+Enable **Edit → Advanced → Require PI DataLink** for reports that depend on PI. Run
+**Build only** through the existing service account, then **Logs → Export logs to zip…**.
+The run's `pi_diagnostics/activation.json` records the actual Windows identity, session,
+Excel version/bitness, add-in registration and activation errors. New PI-related VSTO
+logs and relevant Application events are collected there too. Diagnostics enable
+`VSTO_LOGALERTS=1` and suppress VSTO dialogs within the worker process only. No login
+as the service account or account change is needed.
+
+Retain the configured service account while investigating. If a log contains only
+VSTO's outer “The add-in could not be installed” error, inspect the detailed deployment
+exception to determine the repair (manifest access, runtime dependencies, registration,
+trust, disabled add-ins or profile access). Pasted values do not establish recovery.
+Excel startup access denial (`0x80070005`) is reported separately.
+
+Recovery requires an original-formula test workbook to retrieve a controlled recent-data
+query through the service, match an independently checked reference, and repeat after a
+service restart. Add-in connection alone, cached values, and manually pasted reports do
+not establish fresh PI data. Local tests do not establish recovery on the affected server.
+
+### Investigating VSTO publisher-trust failures
+
+If diagnostic events identify `System.Security.SecurityException` in `VerifyAddInTrust`,
+inspect the installed vendor certificate and the executing account's inclusion list.
+Use the detailed exception to establish the cause before choosing an approved repair.
+The helper below is an inspection tool by default, not an automatic repair.
+
+From a PowerShell terminal on the server, inspect the installed public certificates first:
+
+```powershell
+$piManifests = @(
+    "$env:ProgramFiles\PIPC\Excel\OSIsoft.PIDataLink.UI.vsto"
+    "${env:ProgramFiles(x86)}\PIPC\AF\PIAFBuilder.vsto"
+)
+.\scripts\repair-pi-publisher-trust.ps1 -ManifestPath $piManifests
+```
+
+The helper defaults to inspection only. IT must independently verify the actual vendor
+signing certificate SHA-256 fingerprints against an approved package or certificate.
+After approval, an administrator can run the helper with `-ApprovedSha256` and `-Apply`
+to import only those certificates into `LocalMachine\TrustedPublisher`. This grants
+publisher trust to all code signed by those certificates on the device. The helper requires
+valid code-signing certificates and a valid Windows certificate chain, and never installs
+root certificates or changes Office policy. Expired certificates or invalid chains require
+vendor/IT repair instead. IT can deploy the same approved certificates through Group Policy.
+
+Once current runs finish, restart ReportFlow, enable **Require PI DataLink** on PI jobs,
+and use **Build only** with the original formulas. Verify both connection and fresh PI
+results before normal delivery. If a template's sheet names have changed, use
+**Discover sheets** and select the intended sheets explicitly. ReportFlow must not
+silently substitute renamed sheets.
+
+Microsoft references: [VSTO trust](https://learn.microsoft.com/en-us/visualstudio/vsto/granting-trust-to-office-solutions),
+[machine-scope ClickOnce publisher deployment](https://learn.microsoft.com/en-us/visualstudio/deployment/how-to-add-a-trusted-publisher-to-a-client-computer-for-clickonce-applications).

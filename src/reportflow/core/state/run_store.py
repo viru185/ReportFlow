@@ -23,10 +23,14 @@ CREATE TABLE IF NOT EXISTS runs (
     is_test         INTEGER NOT NULL DEFAULT 0,
     started_at      TEXT,
     finished_at     TEXT,
+    duration_seconds REAL,
     exit_code       INTEGER,
     output_xlsx     TEXT,
+    output_xlsx_paths TEXT NOT NULL DEFAULT '[]',
     pdf_paths       TEXT NOT NULL DEFAULT '[]',
+    attachment_paths TEXT,
     error_summary   TEXT,
+    warnings        TEXT NOT NULL DEFAULT '[]',
     worker_log_path TEXT,
     email_sent      INTEGER NOT NULL DEFAULT 0,
     email_note      TEXT
@@ -37,7 +41,14 @@ CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC);
 
 # Columns added after the first release; applied to pre-existing databases on open.
 _MIGRATIONS = [
+    "ALTER TABLE runs ADD COLUMN attachment_paths TEXT",
     "ALTER TABLE runs ADD COLUMN email_note TEXT",
+    "ALTER TABLE runs ADD COLUMN duration_seconds REAL",
+    # warnings existed on the model since 0.6.2 but was never persisted — run history read
+    # back empty lists after a service restart. Backfilled as '[]'.
+    "ALTER TABLE runs ADD COLUMN warnings TEXT NOT NULL DEFAULT '[]'",
+    # 0.11: several workbooks per job -> several output files per run.
+    "ALTER TABLE runs ADD COLUMN output_xlsx_paths TEXT NOT NULL DEFAULT '[]'",
 ]
 
 
@@ -68,18 +79,26 @@ class RunStore:
             conn.execute(
                 """
                 INSERT INTO runs (run_id, job_name, trigger, status, is_test, started_at,
-                                  finished_at, exit_code, output_xlsx, pdf_paths, error_summary,
+                                  finished_at, duration_seconds, exit_code, output_xlsx,
+                                  output_xlsx_paths, pdf_paths, attachment_paths,
+                                  error_summary, warnings,
                                   worker_log_path, email_sent, email_note)
                 VALUES (:run_id, :job_name, :trigger, :status, :is_test, :started_at,
-                        :finished_at, :exit_code, :output_xlsx, :pdf_paths, :error_summary,
+                        :finished_at, :duration_seconds, :exit_code, :output_xlsx,
+                        :output_xlsx_paths, :pdf_paths, :attachment_paths,
+                        :error_summary, :warnings,
                         :worker_log_path, :email_sent, :email_note)
                 ON CONFLICT(run_id) DO UPDATE SET
                     status=excluded.status,
                     finished_at=excluded.finished_at,
+                    duration_seconds=excluded.duration_seconds,
                     exit_code=excluded.exit_code,
                     output_xlsx=excluded.output_xlsx,
+                    output_xlsx_paths=excluded.output_xlsx_paths,
                     pdf_paths=excluded.pdf_paths,
+                    attachment_paths=excluded.attachment_paths,
                     error_summary=excluded.error_summary,
+                    warnings=excluded.warnings,
                     worker_log_path=excluded.worker_log_path,
                     email_sent=excluded.email_sent,
                     email_note=excluded.email_note
@@ -97,10 +116,16 @@ class RunStore:
             "is_test": int(r.is_test),
             "started_at": r.started_at,
             "finished_at": r.finished_at,
+            "duration_seconds": r.duration_seconds,
             "exit_code": r.exit_code,
             "output_xlsx": r.output_xlsx,
+            "output_xlsx_paths": json.dumps(r.output_xlsx_paths),
             "pdf_paths": json.dumps(r.pdf_paths),
+            "attachment_paths": (
+                json.dumps(r.attachment_paths) if r.attachment_paths is not None else None
+            ),
             "error_summary": r.error_summary,
+            "warnings": json.dumps(r.warnings),
             "worker_log_path": r.worker_log_path,
             "email_sent": int(r.email_sent),
             "email_note": r.email_note,
@@ -116,10 +141,18 @@ class RunStore:
             is_test=bool(row["is_test"]),
             started_at=row["started_at"],
             finished_at=row["finished_at"],
+            duration_seconds=row["duration_seconds"],
             exit_code=row["exit_code"],
             output_xlsx=row["output_xlsx"],
+            # Pre-0.11 rows only have the single output column.
+            output_xlsx_paths=json.loads(row["output_xlsx_paths"] or "[]")
+            or ([row["output_xlsx"]] if row["output_xlsx"] else []),
             pdf_paths=json.loads(row["pdf_paths"]),
+            attachment_paths=(
+                json.loads(row["attachment_paths"]) if row["attachment_paths"] is not None else None
+            ),
             error_summary=row["error_summary"],
+            warnings=json.loads(row["warnings"] or "[]"),
             worker_log_path=row["worker_log_path"],
             email_sent=bool(row["email_sent"]),
             email_note=row["email_note"],
@@ -146,6 +179,36 @@ class RunStore:
         runs = self.list(job_name=job_name, limit=1)
         return runs[0] if runs else None
 
+    def delete_before(self, cutoff_iso: str, *, keep_ids: set[str] | None = None) -> int:
+        """Delete history rows started before ``cutoff_iso`` (ISO string; lexicographic
+        compare matches chronological for our second-precision timestamps). Rows in
+        ``keep_ids`` (active runs) survive regardless. Returns the number deleted."""
+        keep = sorted(keep_ids or ())
+        placeholders = ",".join("?" for _ in keep)
+        query = "DELETE FROM runs WHERE COALESCE(started_at, '') < ?"
+        if keep:
+            query += f" AND run_id NOT IN ({placeholders})"
+        with self._connect() as conn:
+            cur = conn.execute(query, (cutoff_iso, *keep))
+        return cur.rowcount
+
+    def delete_all(self, *, keep_ids: set[str] | None = None) -> int:
+        """Delete ALL history rows except ``keep_ids`` (active runs). Returns the count."""
+        keep = sorted(keep_ids or ())
+        placeholders = ",".join("?" for _ in keep)
+        query = "DELETE FROM runs"
+        if keep:
+            query += f" WHERE run_id NOT IN ({placeholders})"
+        with self._connect() as conn:
+            cur = conn.execute(query, keep)
+        return cur.rowcount
+
+    def rename_job(self, old_name: str, new_name: str) -> int:
+        """Re-point a renamed job's history at its new name. Returns the rows moved."""
+        with self._connect() as conn:
+            cur = conn.execute("UPDATE runs SET job_name=? WHERE job_name=?", (new_name, old_name))
+        return cur.rowcount
+
     def latest_failure_for_job(self, job_name: str) -> RunRecord | None:
         """The last failed run is preserved for visibility even after later successes."""
         with self._connect() as conn:
@@ -156,5 +219,19 @@ class RunStore:
                 ORDER BY COALESCE(started_at, '') DESC LIMIT 1
                 """,
                 (job_name, RunStatus.FAILED, RunStatus.TIMED_OUT, RunStatus.CRASHED),
+            ).fetchone()
+        return self._from_row(row) if row else None
+
+    def latest_success_for_job(self, job_name: str) -> RunRecord | None:
+        """The most recent successful run that produced an output file (for 'open last
+        report' — a later failure must not hide the last good output)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM runs
+                WHERE job_name=? AND status=? AND output_xlsx IS NOT NULL
+                ORDER BY COALESCE(started_at, '') DESC LIMIT 1
+                """,
+                (job_name, RunStatus.SUCCESS),
             ).fetchone()
         return self._from_row(row) if row else None

@@ -17,7 +17,12 @@ from loguru import logger
 
 from reportflow.core import secrets
 from reportflow.core.config.models import AppConfig, JobConfig, Recipients, SmtpConfig
-from reportflow.core.email.render import html_to_text, render_email, resolve_template
+from reportflow.core.email.render import (
+    html_to_text,
+    render_email,
+    render_subject,
+    resolve_template,
+)
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 
 
@@ -47,7 +52,8 @@ def build_report_message(
 ) -> tuple[EmailMessage, list[str]]:
     recipients = resolve_recipients(job, config, is_test=is_test)
 
-    subject = job.subject or f"{job.name} report"
+    # Placeholders work in the subject too ("Daily report — {{ today }}").
+    subject = render_subject(job.subject or f"{job.name} report", context)
     if is_test:
         subject = f"[TEST] {subject}"
 
@@ -75,7 +81,7 @@ def build_report_message(
     return msg, recipients.all_addresses()
 
 
-def check_smtp_connection(smtp: SmtpConfig, password: str | None = None) -> None:
+def test_smtp_connection(smtp: SmtpConfig, password: str | None = None) -> None:
     """Verify the SMTP settings: connect, EHLO, STARTTLS (if configured), and log in
     when credentials are present. Raises with a readable message on any failure.
 
@@ -98,13 +104,16 @@ def check_smtp_connection(smtp: SmtpConfig, password: str | None = None) -> None
         if smtp.use_starttls and not smtp.use_ssl:
             server.starttls()
             server.ehlo()
+        # Login only when BOTH a username and a password exist — anonymous relays
+        # (e.g. internal servers on port 25) need no credentials at all, and sending
+        # behaves the same way (see send_message).
         if smtp.username and password:
             try:
                 server.login(smtp.username, password)
             except smtplib.SMTPAuthenticationError as e:
                 raise PermissionError(f"login rejected for {smtp.username!r} — {e}") from e
-        elif smtp.username and not password:
-            logger.warning("SMTP username is set but no password was provided; skipping authentication")
+        elif smtp.username:
+            logger.info("SMTP test: no password stored/provided — skipping login check")
     finally:
         try:
             server.quit()
@@ -161,11 +170,22 @@ def send_dev_log_bundle(config: AppConfig, bundle_path: Path, context: dict[str,
     if not to:
         raise ValueError("no developer_bundle_recipients configured")
 
+    note = str(context.get("note", "")).strip()
     msg = EmailMessage()
     msg["From"] = config.smtp.from_address or config.smtp.username or "reportflow@localhost"
-    msg["Subject"] = f"[ReportFlow] Diagnostic bundle — {context.get('hostname', 'host')}"
+    subject = f"[ReportFlow] Diagnostic bundle — {context.get('hostname', 'host')}"
+    if note:
+        # Show the first line of the operator's note in the subject for a quick scan.
+        subject += f" — {note.splitlines()[0][:80]}"
+    msg["Subject"] = subject
     msg["To"] = ", ".join(to)
-    msg.set_content("Attached is the ReportFlow diagnostic bundle (logs + sanitized config). " "Secrets have been redacted.")
+    body = (
+        "Attached is the ReportFlow diagnostic bundle (logs + sanitized config). "
+        "Secrets have been redacted."
+    )
+    if note:
+        body += f"\n\nProblem description from the operator:\n{note}"
+    msg.set_content(body)
     _attach_file(msg, Path(bundle_path))
 
     send_message(config.smtp, msg, to)

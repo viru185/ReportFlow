@@ -61,11 +61,14 @@ class UpdateDialog(QDialog):
         super().__init__(parent)
         self._info = info
         self._thread: _DownloadThread | None = None
-        self.setWindowTitle("Update available")
+        self.setWindowTitle(f"Update available — v{about.VERSION} → v{info.version}")
         self.resize(520, 420)
 
         layout = QVBoxLayout(self)
-        headline = QLabel(f"<b>{about.NAME}</b> update: {about.VERSION} → {info.version}")
+        headline = QLabel(
+            f"<b>{about.NAME} update: v{about.VERSION} &nbsp;→&nbsp; v{info.version}</b><br>"
+            f"You are currently on version {about.VERSION}."
+        )
         headline.setWordWrap(True)
         layout.addWidget(headline)
 
@@ -85,8 +88,8 @@ class UpdateDialog(QDialog):
         self.update_btn = QPushButton("Update now")
         self.update_btn.setProperty("accent", True)
         self.update_btn.setToolTip(
-            "Download the installer and upgrade automatically. The app will close; "
-            "your jobs, settings, and logs are preserved."
+            "Download the installer and upgrade automatically. The app closes and reopens "
+            "when the update finishes; your jobs, settings, and logs are preserved."
         )
         self.update_btn.clicked.connect(self._start)
         later = QPushButton("Later")
@@ -104,8 +107,11 @@ class UpdateDialog(QDialog):
         assert self._info.installer_url is not None
         self.update_btn.setEnabled(False)
         self.progress.setVisible(True)
-        self.status.setText(f"Updating from {about.VERSION} to {self._info.version}…")
+        self.status.setText("Downloading update…")
 
+        self.status.setText(
+            f"Updating from v{about.VERSION} to v{self._info.version} — downloading…"
+        )
         dest = Path(tempfile.gettempdir()) / f"ReportFlow-Setup-{self._info.version}.exe"
         thread = _DownloadThread(self._info.installer_url, dest, self)
         thread.progress.connect(self._on_progress)
@@ -123,7 +129,7 @@ class UpdateDialog(QDialog):
             self.progress.setMaximum(0)  # busy indicator
 
     def _on_done(self, path: str) -> None:
-        self.status.setText("Download complete — starting the installer…")
+        self.status.setText("Download complete — updating and reopening ReportFlow…")
         # /SILENT: automatic upgrade with a progress window only (no wizard). The
         # installer stops the service, replaces files, preserves ProgramData, restarts.
         try:

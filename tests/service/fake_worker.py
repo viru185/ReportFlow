@@ -36,23 +36,42 @@ def main() -> int:
         )
         return 1
 
-    # success: create the output artifacts and report them
-    request.output_xlsx_path.parent.mkdir(parents=True, exist_ok=True)
-    request.output_xlsx_path.write_bytes(b"PK\x03\x04fake-xlsx")
+    # success: create the output artifacts (one per workbook) and report them
+    outputs = []
     pdfs = []
-    if request.generate_pdf and request.output_pdf_path is not None:
-        for sheet in request.sheet_names:
-            p = Path(str(request.output_pdf_path).replace("{sheet}", sheet))
+    attachments = []
+    for task in request.workbooks:
+        task.output_xlsx_path.parent.mkdir(parents=True, exist_ok=True)
+        task.output_xlsx_path.write_bytes(b"PK\x03\x04fake-xlsx")
+        outputs.append(task.output_xlsx_path)
+        if any(s.excel for s in task.sheets):
+            email_xlsx = task.output_xlsx_path.with_name(f"{task.output_xlsx_path.stem}_email.xlsx")
+            email_xlsx.write_bytes(b"PK\x03\x04fake-xlsx")
+            attachments.append(email_xlsx)
+        if task.output_pdf_path is None:
+            continue
+        if task.pdf_mode == "combined" and any(s.pdf for s in task.sheets):
+            p = task.output_xlsx_path.with_suffix(".pdf")
+            p.write_bytes(b"%PDF-1.4 fake")
+            pdfs.append(p)
+            continue
+        for sheet in task.sheets:
+            if not sheet.pdf:
+                continue
+            p = Path(str(task.output_pdf_path).replace("{sheet}", sheet.name))
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(b"%PDF-1.4 fake")
             pdfs.append(p)
+    warnings = ["sheet 'Detailed report': 12 error cell(s) (#REF!) — delivered anyway"]
     write_result(
         WorkerResult(
             run_id=request.run_id,
             status=RunStatus.SUCCESS,
-            message="completed",
-            output_xlsx=request.output_xlsx_path,
+            message="completed with 1 warning(s)" if mode == "warn" else "completed",
+            output_xlsx_paths=outputs,
             pdf_paths=pdfs,
+            attachment_paths=[*attachments, *pdfs],
+            warnings=warnings if mode == "warn" else [],
             excel_pid_reaped=True,
         ),
         request.result_path,

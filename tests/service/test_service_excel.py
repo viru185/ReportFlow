@@ -94,7 +94,7 @@ def test_default_output_lands_next_to_input(tmp_path):
         job = {
             "name": "e2e_default",
             "input_excel_path": str(wb),
-            # no output_dir / output_name -> next to input, stem {job}_{date}
+            # no output_dir / output_name -> next to input, default stem {job}_{datetime}
             "sheet_names": ["Summary"],
             "send_report_email": False,
             "prod": {"to": ["boss@corp.example.com"]},
@@ -106,6 +106,6 @@ def test_default_output_lands_next_to_input(tmp_path):
     assert rec["status"] == "success", rec
     out_xlsx = Path(rec["output_xlsx"])
     assert out_xlsx.parent == wb.parent  # defaulted next to the input file
-    assert out_xlsx.name.startswith("e2e_default_")  # {job}_{date} stem
+    assert out_xlsx.name.startswith("e2e_default_")  # {job}_{datetime} stem
     assert len(rec["pdf_paths"]) == 1
     assert Path(rec["pdf_paths"][0]).name.endswith("_Summary.pdf")

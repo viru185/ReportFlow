@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from reportflow import __version__
 from reportflow.core import paths, secrets
@@ -26,7 +27,6 @@ from reportflow.core.email import (
     sample_context,
     send_dev_log_bundle,
 )
-from reportflow.core.logging_setup import reconfigure
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 from reportflow.core.state import RunStore, RunTrigger
 from reportflow.service.bootstrap import seed_data_files
@@ -44,8 +44,21 @@ class ServiceState:
         self.config: AppConfig = self._load_or_default()
         self.run_store = RunStore()
         self.launcher = Launcher(self.run_store, lambda: self.config, worker_command=worker_command)
-        self.scheduler = SchedulerService(self.launcher)
+        self.scheduler = SchedulerService(self.launcher, maintenance=self.run_maintenance)
         self._lock = threading.Lock()
+
+    def run_maintenance(self) -> None:
+        """Purge run folders/bundles/rotated logs past the configured retention window."""
+        from reportflow.core.maintenance import purge_logs
+
+        try:
+            purge_logs(
+                self.config.app.log_retention_days,
+                active_run_ids=set(self.launcher.active_run_ids()),
+                run_store=self.run_store,
+            )
+        except Exception as e:  # noqa: BLE001 — housekeeping must never take the service down
+            logger.error("Log maintenance failed: {}", e)
 
     def _load_or_default(self) -> AppConfig:
         try:
@@ -79,7 +92,6 @@ class ServiceState:
             self.config = load_config()
             self.config_error = None
             self.scheduler.rebuild(self.config)
-            reconfigure("service", level="DEBUG" if self.config.app.debug_logging else "INFO")
 
     def save_jobs(self, jobs: list[JobConfig]) -> None:
         """Validate (uniqueness), persist, and re-schedule with the new job list."""
@@ -91,7 +103,6 @@ class ServiceState:
             self.config = new_config
             self.config_error = None
             self.scheduler.rebuild(new_config)
-            reconfigure("service", level="DEBUG" if new_config.app.debug_logging else "INFO")
 
     def save_settings(self, sections: dict[str, Any]) -> None:
         """Merge the given non-job sections (app/smtp/ui/email/test) into the config,
@@ -109,7 +120,16 @@ class ServiceState:
             self.config = new_config
             self.config_error = None
             self.scheduler.rebuild(new_config)
-            reconfigure("service", level="DEBUG" if new_config.app.debug_logging else "INFO")
+        self._apply_log_level()
+
+    def _apply_log_level(self) -> None:
+        from reportflow.core.logging_setup import reconfigure
+
+        reconfigure(
+            "service",
+            level="DEBUG" if self.config.app.debug_logging else "INFO",
+            retention_days=self.config.app.log_retention_days,
+        )
 
 
 # --- request/response models ---------------------------------------------------
@@ -135,6 +155,24 @@ class SmtpPasswordUpdate(BaseModel):
     password: str
 
 
+class ServiceAccountUpdate(BaseModel):
+    user: str
+    password: str
+
+
+class DevBundleRequest(BaseModel):
+    note: str = ""
+
+
+class StageUpdate(BaseModel):
+    stage: Literal["testing", "live"]
+
+
+class PurgeRequest(BaseModel):
+    older_than_days: int | None = Field(default=None, ge=1)
+    all: bool = False
+
+
 class SmtpTestRequest(BaseModel):
     host: str = ""
     port: int = 587
@@ -143,6 +181,10 @@ class SmtpTestRequest(BaseModel):
     from_address: str = ""
     username: str | None = None
     password: str | None = None  # None/empty -> fall back to the stored secret
+
+
+class TemplateCheckRequest(BaseModel):
+    path: str
 
 
 class EmailTemplateUpdate(BaseModel):
@@ -163,6 +205,8 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         st: ServiceState = app.state.svc
         st.scheduler.start()
         st.scheduler.rebuild(st.config)
+        # Catch-up sweep in a worker thread so a big backlog can't delay startup.
+        threading.Thread(target=st.run_maintenance, name="startup-maintenance", daemon=True).start()
         logger.info("Service started (version {})", __version__)
         try:
             yield
@@ -182,17 +226,27 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown job: {name}")
         return job
 
-    def _job_summary(job: JobConfig) -> dict[str, Any]:
+    def _job_summary(job: JobConfig, next_runs: dict[str, str] | None = None) -> dict[str, Any]:
         latest = svc().run_store.latest_for_job(job.name)
         last_failure = svc().run_store.latest_failure_for_job(job.name)
+        last_success = svc().run_store.latest_success_for_job(job.name)
+        if next_runs is None:
+            next_runs = svc().scheduler.next_run_times()
         return {
             "name": job.name,
             "enabled": job.enabled,
+            "stage": job.stage,
+            "prod_recipients": [str(a) for a in job.prod.to],
             "schedule_crons": job.schedule_crons,
-            "sheet_names": job.sheet_names,
+            "workbook_count": len(job.workbooks),
+            "sheet_count": len(job.sheet_names),
+            "next_run_at": next_runs.get(job.name),
             "last_status": str(latest.status) if latest else None,
             "last_run_at": latest.started_at if latest else None,
             "last_failure_at": last_failure.started_at if last_failure else None,
+            "last_output_xlsx": last_success.output_xlsx if last_success else None,
+            "last_email_note": latest.email_note if latest else None,
+            "last_email_failed": bool(latest and (latest.email_note or "").startswith("failed:")),
         }
 
     # -- system ----------------------------------------------------------------
@@ -203,13 +257,41 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.get("/system/status")
     def system_status() -> dict[str, Any]:
+        username = os.environ.get("USERNAME", "")
         return {
             "version": __version__,
             "active_runs": svc().launcher.active_run_ids(),
             "scheduled_jobs": svc().scheduler.scheduled_job_names(),
             "job_count": len(svc().config.jobs),
             "config_error": svc().config_error,
+            # The Windows identity the service (and thus its Excel workers) runs as. A name
+            # ending in "$" is the machine account (LocalSystem), under which VSTO add-ins
+            # like PI DataLink cannot load — the UI warns about this.
+            "service_account": f"{os.environ.get('USERDOMAIN', '')}\\{username}".strip("\\"),
+            "service_account_is_system": username.endswith("$"),
         }
+
+    @app.get("/system/service-account")
+    def get_service_account() -> dict[str, Any]:
+        from reportflow.service.service_account import current_account
+
+        return current_account()
+
+    @app.post("/system/service-account")
+    def set_service_account(update: ServiceAccountUpdate) -> dict[str, Any]:
+        from reportflow.service.service_account import (
+            ServiceAccountError,
+            apply_service_account,
+            validate_credentials,
+        )
+
+        logger.info("API: service-account change requested")  # never log the credentials
+        try:
+            validate_credentials(update.user, update.password)
+            account = apply_service_account(update.user, update.password)
+        except ServiceAccountError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "account": account, "restarting": True}
 
     @app.get("/config")
     def get_config() -> dict[str, Any]:
@@ -221,19 +303,18 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             svc().reload()
         except ConfigError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        logger.info("Config reloaded; debug_logging={}", svc().config.app.debug_logging)
         return {"ok": True, "job_count": len(svc().config.jobs)}
 
     @app.put("/settings")
     def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         sections = {k: v for k, v in update.model_dump().items() if v is not None}
+        logger.info("API: settings update for section(s) {}", sorted(sections))
         if not sections:
             raise HTTPException(status_code=400, detail="no settings sections provided")
         try:
             svc().save_settings(sections)
         except Exception as e:  # noqa: BLE001 — validation / write error -> 400
             raise HTTPException(status_code=400, detail=str(e)) from e
-        logger.info("Settings saved: {}", sorted(sections))
         return {"ok": True, "sections": sorted(sections)}
 
     @app.get("/system/smtp-password")
@@ -255,15 +336,31 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
     @app.post("/system/smtp-test")
     def smtp_test(req: SmtpTestRequest) -> dict[str, Any]:
         from reportflow.core.config.models import SmtpConfig
-        from reportflow.core.email.sender import check_smtp_connection
+        from reportflow.core.email.sender import test_smtp_connection
 
         try:
             smtp = SmtpConfig.model_validate(req.model_dump(exclude={"password"}))
-            logger.info("SMTP test requested for {}:{}", smtp.host, smtp.port)
-            check_smtp_connection(smtp, req.password or None)
+            test_smtp_connection(smtp, req.password or None)
         except Exception as e:  # noqa: BLE001 — surface the reason to the UI
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True}
+
+    @app.post("/system/purge-logs")
+    def purge_logs_endpoint(req: PurgeRequest) -> dict[str, Any]:
+        """Delete old (or ALL) run folders, bundles, and rotated logs; returns stats."""
+        from reportflow.core.maintenance import purge_logs
+
+        st = svc()
+        if not req.all and req.older_than_days is None:
+            raise HTTPException(status_code=400, detail="pass older_than_days or all=true")
+        logger.info("API: log purge requested ({})", "ALL" if req.all else req.older_than_days)
+        stats = purge_logs(
+            req.older_than_days,
+            everything=req.all,
+            active_run_ids=set(st.launcher.active_run_ids()),
+            run_store=st.run_store,
+        )
+        return {"ok": True, **stats.as_dict()}
 
     @app.get("/system/logs")
     def system_logs(process: str = "service", tail: int = 500) -> dict[str, Any]:
@@ -279,7 +376,8 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.get("/jobs")
     def list_jobs() -> list[dict[str, Any]]:
-        return [_job_summary(j) for j in svc().config.jobs]
+        next_runs = svc().scheduler.next_run_times()  # one scheduler read for the whole list
+        return [_job_summary(j, next_runs) for j in svc().config.jobs]
 
     @app.get("/jobs/{name}")
     def get_job(name: str) -> dict[str, Any]:
@@ -288,42 +386,99 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
 
     @app.post("/jobs", status_code=201)
     def create_job(job: JobConfig) -> dict[str, Any]:
+        logger.info("API: create job {!r}", job.name)
         if svc().config.job(job.name) is not None:
             raise HTTPException(status_code=409, detail=f"job already exists: {job.name}")
         jobs = [*svc().config.jobs, job]
         _save_jobs_or_400(svc(), jobs)
-        logger.info("Job created: {}", job.name)
         return {"ok": True, "name": job.name}
 
     @app.put("/jobs/{name}")
     def update_job(name: str, job: JobConfig) -> dict[str, Any]:
-        _require_job(name)
-        jobs = [job if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
-        _save_jobs_or_400(svc(), jobs)
-        logger.info("Job updated: {}", job.name)
-        return {"ok": True, "name": job.name}
+        """Replace a job. A different ``job.name`` renames it: history and the job's own
+        email template follow the new name."""
+        logger.info("API: update job {!r}", name)
+        current = _require_job(name)
+        if job.name == current.name:
+            jobs = [job if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
+            _save_jobs_or_400(svc(), jobs)
+            return {"ok": True, "name": job.name}
+        return _rename_job(current, job)
+
+    def _rename_job(current: JobConfig, job: JobConfig) -> dict[str, Any]:
+        st = svc()
+        logger.info("API: rename job {!r} -> {!r}", current.name, job.name)
+        clash = st.config.job(job.name)
+        if clash is not None and clash.name != current.name:
+            raise HTTPException(status_code=409, detail=f"job already exists: {job.name}")
+        if current.name in st.launcher.inflight_job_names():
+            # A queued/running run still writes history under the old name.
+            raise HTTPException(
+                status_code=409, detail=f"{current.name} is running — rename it when it finishes"
+            )
+        # The per-job template file is named after the job; a linked external file isn't.
+        old_tpl = _job_template_path(current)
+        moves_template = (
+            job.email_template_path is not None
+            and Path(job.email_template_path) == old_tpl
+            and old_tpl.exists()
+        )
+        new_tpl = _job_template_path(job)
+        # Windows paths are case-insensitive: a case-only rename is the same file.
+        same_file = str(old_tpl).casefold() == str(new_tpl).casefold()
+        if moves_template:
+            if not same_file:
+                shutil.copyfile(old_tpl, new_tpl)  # copy first: a failed save loses nothing
+            job = job.model_copy(update={"email_template_path": new_tpl})
+        jobs = [job if j.name == current.name else j for j in st.config.jobs]
+        try:
+            _save_jobs_or_400(st, jobs)
+        except HTTPException:
+            if moves_template and not same_file:
+                new_tpl.unlink(missing_ok=True)
+            raise
+        if moves_template:
+            if same_file:
+                os.replace(old_tpl, new_tpl)  # just the letter case
+            else:
+                old_tpl.unlink(missing_ok=True)
+        moved = st.run_store.rename_job(current.name, job.name)
+        logger.info("Renamed job {!r} -> {!r} ({} history row(s))", current.name, job.name, moved)
+        return {"ok": True, "name": job.name, "renamed_from": current.name}
 
     @app.delete("/jobs/{name}")
     def delete_job(name: str) -> dict[str, Any]:
+        logger.info("API: delete job {!r}", name)
         _require_job(name)
         jobs = [j for j in svc().config.jobs if j.name.casefold() != name.casefold()]
         _save_jobs_or_400(svc(), jobs)
-        logger.info("Job deleted: {}", name)
         return {"ok": True}
 
     @app.post("/jobs/{name}/run", response_model=RunResponse)
     def run_job(name: str) -> RunResponse:
+        # The job's stage decides recipients: testing -> test recipients, live -> production.
+        logger.info("API: manual run requested for {!r}", name)
         _require_job(name)
-        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.MANUAL, is_test=False)
-        logger.info("Manual run requested for job {} (run_id={})", name, run_id)
+        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.MANUAL)
         return RunResponse(run_id=run_id)
 
-    @app.post("/jobs/{name}/test", response_model=RunResponse)
-    def test_job(name: str) -> RunResponse:
+    @app.post("/jobs/{name}/dry-run", response_model=RunResponse)
+    def dry_run_job(name: str) -> RunResponse:
+        # Build + validate the report (so the #NAME?/error-cell scan runs) but never email.
+        logger.info("API: build-only run requested for {!r}", name)
         _require_job(name)
-        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.TEST, is_test=True)
-        logger.info("Test run requested for job {} (run_id={})", name, run_id)
+        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.DRY_RUN)
         return RunResponse(run_id=run_id)
+
+    @app.post("/jobs/{name}/stage")
+    def set_job_stage(name: str, update: StageUpdate) -> dict[str, Any]:
+        # Promote to live / demote to testing; persists and applies to the NEXT run.
+        logger.info("API: stage change for {!r} -> {}", name, update.stage)
+        job = _require_job(name)
+        updated = job.model_copy(update={"stage": update.stage})
+        jobs = [updated if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
+        _save_jobs_or_400(svc(), jobs)
+        return {"ok": True, "name": job.name, "stage": update.stage}
 
     def _job_template_path(job: JobConfig) -> Path:
         return paths.templates_dir() / "jobs" / f"{job.name}.html"
@@ -332,10 +487,14 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
     def get_email_template(name: str) -> dict[str, Any]:
         job = _require_job(name)
         # Prefer the job's configured template; fall back to the conventional per-job file.
-        path = Path(job.email_template_path) if job.email_template_path else _job_template_path(job)
+        own = _job_template_path(job)
+        path = Path(job.email_template_path) if job.email_template_path else own
+        # "Linked": the job points at the user's own file, re-read on every run.
+        linked = str(path).casefold() != str(own).casefold()
         if path.exists():
-            return {"content": path.read_text(encoding="utf-8"), "exists": True}
-        return {"content": "", "exists": False}
+            content = path.read_text(encoding="utf-8", errors="replace")
+            return {"content": content, "exists": True, "linked": linked, "path": str(path)}
+        return {"content": "", "exists": False, "linked": linked, "path": str(path)}
 
     @app.put("/jobs/{name}/email-template")
     def put_email_template(name: str, update: EmailTemplateUpdate) -> dict[str, Any]:
@@ -345,7 +504,9 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         path.write_text(update.content, encoding="utf-8")
         if job.email_template_path != path:
             updated = job.model_copy(update={"email_template_path": path})
-            jobs = [updated if j.name.casefold() == name.casefold() else j for j in svc().config.jobs]
+            jobs = [
+                updated if j.name.casefold() == name.casefold() else j for j in svc().config.jobs
+            ]
             _save_jobs_or_400(svc(), jobs)
         return {"ok": True, "path": str(path)}
 
@@ -382,30 +543,65 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         except WorkbookError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
+    @app.post("/email/template-check")
+    def email_template_check(req: TemplateCheckRequest) -> dict[str, Any]:
+        """Can the SERVICE read and render this file? It runs as its own Windows account,
+        so a file the user can open may still be out of its reach."""
+        path = Path(req.path)
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise HTTPException(
+                status_code=400, detail=f"the ReportFlow service cannot read {path}: {e}"
+            ) from e
+        try:
+            render_email(source, sample_context())
+        except Exception as e:  # noqa: BLE001 — surface the template error to the author
+            raise HTTPException(status_code=400, detail=f"the template does not render: {e}") from e
+        return {"ok": True}
+
     @app.post("/email/preview")
     def email_preview(req: EmailPreviewRequest) -> dict[str, Any]:
         job = svc().config.job(req.job_name) if req.job_name else None
         html = render_email(resolve_template(job, svc().config), sample_context(job))
         return {"html": html}
 
+    def _bundle_metadata(note: str) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "hostname": os.environ.get("COMPUTERNAME", "host"),
+            "windows_user": os.environ.get("USERNAME", "unknown"),
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        if note.strip():
+            metadata["note"] = note.strip()
+        return metadata
+
     @app.post("/system/send-dev-logs")
-    def send_dev_logs() -> dict[str, Any]:
+    def send_dev_logs(req: DevBundleRequest | None = None) -> dict[str, Any]:
         st = svc()
         if not st.config.test.developer_bundle_recipients:
             raise HTTPException(status_code=400, detail="no developer_bundle_recipients configured")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         bundle = paths.state_dir() / "bundles" / f"reportflow_logs_{stamp}.zip"
-        metadata = {
-            "hostname": os.environ.get("COMPUTERNAME", "host"),
-            "windows_user": os.environ.get("USERNAME", "unknown"),
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        metadata = _bundle_metadata(req.note if req else "")
         build_log_bundle(bundle, st.config, metadata=metadata)
         try:
             recipients = send_dev_log_bundle(st.config, bundle, metadata)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"failed to send: {e}") from e
         return {"ok": True, "recipients": recipients, "bundle": str(bundle)}
+
+    @app.post("/system/export-logs")
+    def export_logs(req: DevBundleRequest | None = None) -> dict[str, Any]:
+        """Build the diagnostic zip on disk WITHOUT emailing it — for when SMTP is down and
+        the logs must be sent to the developer by hand."""
+        st = svc()
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bundle = paths.state_dir() / "bundles" / f"reportflow_logs_{stamp}.zip"
+        metadata = _bundle_metadata(req.note if req else "")
+        build_log_bundle(bundle, st.config, metadata=metadata)
+        logger.info("API: exported diagnostic bundle to {}", bundle)
+        return {"ok": True, "bundle": str(bundle)}
 
     return app
 

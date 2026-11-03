@@ -1,4 +1,4 @@
-"""About / Project Info dialog — app identity, developer links, and support info."""
+"""About dialog — application identity and environment information."""
 
 from __future__ import annotations
 
@@ -45,16 +45,6 @@ class AboutDialog(QDialog):
         summary = QLabel(about.SUMMARY)
         summary.setWordWrap(True)
         layout.addWidget(summary)
-
-        links = QLabel(
-            f"Developer: <b>{about.AUTHOR}</b><br>"
-            f'Repository: <a href="{about.REPO_URL}">{about.REPO_URL}</a><br>'
-            f'GitHub: <a href="{about.GITHUB_URL}">{about.GITHUB_URL}</a><br>'
-            f'LinkedIn: <a href="{about.LINKEDIN_URL}">{about.LINKEDIN_URL}</a>'
-        )
-        links.setOpenExternalLinks(True)
-        links.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        layout.addWidget(links)
 
         status = "—" if connected is None else ("connected" if connected else "not reachable")
         env = QLabel(

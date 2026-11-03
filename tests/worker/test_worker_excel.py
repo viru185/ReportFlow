@@ -13,14 +13,19 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import openpyxl
 import psutil
 import pytest
 
-from reportflow.core.ipc import RunStatus, WorkerRequest, read_result, write_request
-from reportflow.worker.excel import ExcelRun
+from reportflow.core.ipc import (
+    RunStatus,
+    SheetTask,
+    WorkbookTask,
+    WorkerRequest,
+    read_result,
+    write_request,
+)
 from reportflow.worker.runner import run_job
 
 pytestmark = pytest.mark.excel
@@ -57,23 +62,38 @@ def _make_workbook(path: Path) -> None:
     wb.save(path)
 
 
+_WORKBOOK_KEYS = {
+    "input_excel_path",
+    "output_xlsx_path",
+    "output_pdf_path",
+    "unselected_sheets",
+    "pdf_mode",
+}
+
+
 def _request(tmp_path: Path, sheets, **over) -> WorkerRequest:
+    """One-workbook request. ``sheets``: names (PDF on, visible) or SheetTask objects.
+    Workbook-level keys in ``over`` go to the WorkbookTask, the rest to the request."""
     wb = tmp_path / "template.xlsx"
     if not wb.exists():
         _make_workbook(wb)
-    defaults = dict(
-        run_id="r1",
-        job_name="j",
+    task = dict(
         input_excel_path=wb,
         output_xlsx_path=tmp_path / "out.xlsx",
         output_pdf_path=tmp_path / "{sheet}.pdf",
-        sheet_names=sheets,
+        sheets=[s if isinstance(s, SheetTask) else SheetTask(name=s) for s in sheets],
+    )
+    task.update({k: v for k, v in over.items() if k in _WORKBOOK_KEYS})
+    defaults = dict(
+        run_id="r1",
+        job_name="j",
+        workbooks=[WorkbookTask(**task)],
         timeout_seconds=120,
         is_test=True,
         result_path=tmp_path / "result.json",
         log_path=tmp_path / "worker.log",
     )
-    defaults.update(over)
+    defaults.update({k: v for k, v in over.items() if k not in _WORKBOOK_KEYS})
     return WorkerRequest(**defaults)
 
 
@@ -82,60 +102,121 @@ def test_success_freezes_and_exports(tmp_path):
     result = run_job(_request(tmp_path, ["Summary", "Detail"]))
 
     assert result.status is RunStatus.SUCCESS
-    assert Path(result.output_xlsx).exists()
+    assert Path(result.output_xlsx_paths[0]).exists()
     assert len(result.pdf_paths) == 2
     assert all(Path(p).stat().st_size > 0 for p in result.pdf_paths)
     assert result.excel_pid_reaped is True
     assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked"
 
-    wb = openpyxl.load_workbook(result.output_xlsx)
+    wb = openpyxl.load_workbook(result.output_xlsx_paths[0])
     assert wb["Summary"]["B1"].value == 550  # frozen to a value, not a formula
-    assert str(wb["Data"]["D2"].value).startswith("=")  # non-selected sheet untouched
+    assert "Data" not in wb.sheetnames  # unselected sheets are removed from the OUTPUT
+    assert set(wb.sheetnames) == {"Summary", "Detail"}
+
+    # Selection is collapsed: the file opens on the first selected sheet with A1 active,
+    # not with the whole used range highlighted (PasteSpecial's leftover selection).
+    assert wb.active.title == "Summary"
+    for name in ("Summary", "Detail"):
+        selection = wb[name].sheet_view.selection[0]
+        assert selection.activeCell == "A1"
+        assert selection.sqref == "A1"
+
+    # The SOURCE workbook is untouched: helper sheet still there, formulas intact.
+    src = openpyxl.load_workbook(tmp_path / "template.xlsx")
+    assert "Data" in src.sheetnames
+    assert str(src["Summary"]["B1"].value).startswith("=")
 
 
-def test_refresh_retries_until_selected_sheet_has_content():
-    class FakeRange:
-        def __init__(self, value):
-            self.value = value
+def _make_broken_workbook(path: Path) -> None:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Report"
+    ws["A1"] = "=THISFUNCTIONDOESNOTEXIST()"  # -> #NAME? once Excel recalculates
+    ws["A2"] = 123
+    ws.print_area = "A1:A2"
+    wb.save(path)
 
-    class FakeSheet:
-        def __init__(self, value):
-            self.name = "Main"
-            self.used_range = FakeRange(value)
 
-    class FakeBook:
-        def __init__(self):
-            self.api = SimpleNamespace(Connections=[])
-            self.sheets = {"Main": FakeSheet(None)}
+def test_error_cells_deliver_by_default(tmp_path):
+    """Default policy: an error cell (#NAME? here) does NOT fail the run — the report is
+    delivered and the error is reported as a warning."""
+    before = _excel_pids()
+    wb_path = tmp_path / "broken.xlsx"
+    _make_broken_workbook(wb_path)
 
-    book = FakeBook()
-    refresh_calls = 0
+    result = run_job(_request(tmp_path, ["Report"], input_excel_path=wb_path))
 
-    def refresh_all():
-        nonlocal refresh_calls
-        refresh_calls += 1
-        if refresh_calls < 3:
-            book.sheets["Main"].used_range.value = None
-        else:
-            book.sheets["Main"].used_range.value = [["value"]]
+    assert result.status is RunStatus.SUCCESS
+    assert Path(result.output_xlsx_paths[0]).exists()
+    assert any("#NAME?" in warning for warning in result.warnings)
+    assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked"
 
-    app = SimpleNamespace(
-        api=SimpleNamespace(
-            CalculateUntilAsyncQueriesDone=lambda: None,
-            CalculateFullRebuild=lambda: None,
-            CalculationState=0,
-        ),
-        calculate=lambda: None,
+
+def test_error_cells_fail_in_strict_mode(tmp_path):
+    """Opt-in strict mode still fails on error cells with the pointed #NAME? message."""
+    before = _excel_pids()
+    wb_path = tmp_path / "broken.xlsx"
+    _make_broken_workbook(wb_path)
+
+    result = run_job(
+        _request(tmp_path, ["Report"], input_excel_path=wb_path, fail_if_sheet_has_errors=True)
     )
-    run = ExcelRun()
-    run.app = app
-    book.api.RefreshAll = refresh_all
-    run._wait_for_calc = lambda: None
 
-    run.refresh_and_wait(book, 0, ["Main"])
+    assert result.status is RunStatus.FAILED
+    assert "#NAME?" in result.message
+    assert not (_excel_pids() - before)
 
-    assert refresh_calls == 3
-    assert book.sheets["Main"].used_range.value == [["value"]]
+
+def test_broken_defined_names_purged_so_output_opens(tmp_path):
+    """Deleting a sheet referenced by a defined name would leave a #REF! name that Office
+    File Validation blocks. The output must load cleanly with no broken names."""
+    from openpyxl.workbook.defined_name import DefinedName
+
+    before = _excel_pids()
+    wb_path = tmp_path / "named.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Report"
+    ws["A1"] = 1
+    ws.print_area = "A1:A1"
+    wb.create_sheet("Data")["A1"] = 99
+    dn = DefinedName("LinkToData", attr_text="Data!$A$1")
+    try:
+        wb.defined_names.add(dn)
+    except AttributeError:  # older openpyxl API
+        wb.defined_names["LinkToData"] = dn
+    wb.save(wb_path)
+
+    result = run_job(_request(tmp_path, ["Report"], input_excel_path=wb_path))
+
+    assert result.status is RunStatus.SUCCESS
+    out = openpyxl.load_workbook(result.output_xlsx_paths[0])  # must not raise
+    assert "Data" not in out.sheetnames
+    refs = []
+    try:
+        refs = [str(d.value) for d in out.defined_names.values()]
+    except AttributeError:
+        refs = [str(out.defined_names[k].value) for k in out.defined_names]
+    assert not any("#REF!" in r for r in refs), refs
+    assert not (_excel_pids() - before)
+
+
+def test_hide_mode_keeps_sheets_very_hidden(tmp_path):
+    """In 'hide' mode the unselected sheets stay in the file but very-hidden (never breaks
+    references), so the output always opens."""
+    before = _excel_pids()
+    result = run_job(_request(tmp_path, ["Summary"], unselected_sheets="hide"))
+
+    assert result.status is RunStatus.SUCCESS
+    out = openpyxl.load_workbook(result.output_xlsx_paths[0])
+    assert "Data" in out.sheetnames  # kept, not deleted
+    assert out["Data"].sheet_state == "veryHidden"
+    emailed = openpyxl.load_workbook(
+        next(p for p in result.attachment_paths if p.suffix == ".xlsx")
+    )
+    assert emailed.sheetnames == ["Summary"]
+    emailed.close()
+    assert not (_excel_pids() - before)
 
 
 def test_missing_sheet_fails_cleanly(tmp_path):
@@ -161,14 +242,92 @@ def test_missing_template_fails_cleanly(tmp_path):
 
 def test_no_pdf_no_freeze_keeps_formulas(tmp_path):
     before = _excel_pids()
-    req = _request(tmp_path, ["Summary"], generate_pdf=False, output_pdf_path=None, freeze_values=False)
+    req = _request(tmp_path, ["Summary"], output_pdf_path=None, freeze_values=False)
     result = run_job(req)
 
     assert result.status is RunStatus.SUCCESS
     assert result.pdf_paths == []
     assert not (_excel_pids() - before)
-    wb = openpyxl.load_workbook(result.output_xlsx)
+    wb = openpyxl.load_workbook(result.output_xlsx_paths[0])
     assert str(wb["Summary"]["B1"].value).startswith("=")  # not frozen -> still a formula
+
+
+def test_per_sheet_pdf_and_hidden(tmp_path):
+    """PDF and Hidden are per sheet: a hidden sheet can still get a PDF (export runs before
+    hiding), and the file opens on the first VISIBLE included sheet."""
+    before = _excel_pids()
+    sheets = [
+        SheetTask(name="Summary", pdf=False, hidden=True),
+        SheetTask(name="Detail", pdf=True),
+        SheetTask(name="Data", pdf=True, hidden=True),
+    ]
+    result = run_job(_request(tmp_path, sheets))
+
+    assert result.status is RunStatus.SUCCESS, result.message
+    assert sorted(Path(p).name for p in result.pdf_paths) == ["Data.pdf", "Detail.pdf"]
+    assert all(Path(p).stat().st_size > 0 for p in result.pdf_paths)
+    out = openpyxl.load_workbook(result.output_xlsx_paths[0])
+    assert out["Summary"].sheet_state == "hidden"  # normal hidden: recipients can unhide
+    assert out["Data"].sheet_state == "hidden"
+    assert out["Detail"].sheet_state == "visible"
+    assert out.active.title == "Detail"
+    assert not (_excel_pids() - before)
+
+
+def test_keep_mode_leaves_unincluded_sheets_visible(tmp_path):
+    before = _excel_pids()
+    result = run_job(_request(tmp_path, ["Summary"], unselected_sheets="keep"))
+
+    assert result.status is RunStatus.SUCCESS
+    out = openpyxl.load_workbook(result.output_xlsx_paths[0])
+    assert out["Data"].sheet_state == "visible" and out["Detail"].sheet_state == "visible"
+    assert not (_excel_pids() - before)
+
+
+def _second_workbook(tmp_path: Path, input_path: Path) -> WorkbookTask:
+    return WorkbookTask(
+        input_excel_path=input_path,
+        output_xlsx_path=tmp_path / "out2.xlsx",
+        output_pdf_path=tmp_path / "second_{sheet}.pdf",
+        sheets=[SheetTask(name="Detail")],
+    )
+
+
+def test_two_workbooks_build_in_one_session(tmp_path):
+    before = _excel_pids()
+    other = tmp_path / "other.xlsx"
+    _make_workbook(other)
+    req = _request(tmp_path, ["Summary"])
+    req = req.model_copy(update={"workbooks": [*req.workbooks, _second_workbook(tmp_path, other)]})
+
+    result = run_job(req)
+
+    assert result.status is RunStatus.SUCCESS, result.message
+    assert [p.name for p in result.output_xlsx_paths] == ["out.xlsx", "out2.xlsx"]
+    assert all(p.exists() for p in result.output_xlsx_paths)
+    assert sorted(Path(p).name for p in result.pdf_paths) == ["Summary.pdf", "second_Detail.pdf"]
+    assert openpyxl.load_workbook(result.output_xlsx_paths[1]).sheetnames == ["Detail"]
+    assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked"
+
+
+def test_failed_workbook_fails_run_or_is_skipped(tmp_path):
+    """Default: one bad workbook fails the run, naming it. Partial delivery: it is skipped
+    with a warning and the rest is delivered."""
+    before = _excel_pids()
+    req = _request(tmp_path, ["Summary"])
+    missing = _second_workbook(tmp_path, tmp_path / "nope.xlsx")
+    req = req.model_copy(update={"workbooks": [*req.workbooks, missing]})
+
+    strict = run_job(req)
+    assert strict.status is RunStatus.FAILED
+    assert strict.message.startswith("nope.xlsx:")
+
+    partial = run_job(req.model_copy(update={"continue_on_workbook_failure": True}))
+    assert partial.status is RunStatus.SUCCESS
+    assert [p.name for p in partial.output_xlsx_paths] == ["out.xlsx"]
+    assert partial.failed_workbooks == ["nope.xlsx"]
+    assert any("nope.xlsx" in w and "not attached" in w for w in partial.warnings)
+    assert not (_excel_pids() - before)
 
 
 def test_parallel_subprocesses_no_ghost(tmp_path):
@@ -207,3 +366,42 @@ def test_parallel_subprocesses_no_ghost(tmp_path):
         assert read_result(req.result_path).status is RunStatus.SUCCESS
 
     assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked after parallel runs"
+
+
+@pytest.mark.parametrize("excel_selected", [True, False])
+def test_selected_formats_combined_pdf_and_local_copy(tmp_path, excel_selected):
+    from pypdf import PdfReader
+
+    before = _excel_pids()
+    source = tmp_path / "template.xlsx"
+    _make_workbook(source)
+    original = source.read_bytes()
+    result = run_job(
+        _request(
+            tmp_path,
+            [
+                SheetTask(name="Summary", excel=excel_selected),
+                SheetTask(name="Detail", excel=False, hidden=True),
+            ],
+            pdf_mode="combined",
+            unselected_sheets="keep",
+            post_refresh_wait_seconds=0,
+        )
+    )
+    assert result.ok, result.message
+    assert len(result.pdf_paths) == 1
+    assert len(PdfReader(result.pdf_paths[0]).pages) == 2
+    local = openpyxl.load_workbook(result.output_xlsx_paths[0])
+    assert set(local.sheetnames) == {"Data", "Summary", "Detail"}
+    local.close()
+    excels = [p for p in result.attachment_paths if p.suffix == ".xlsx"]
+    assert len(excels) == int(excel_selected)
+    if excels:
+        emailed = openpyxl.load_workbook(excels[0])
+        assert emailed.sheetnames == ["Summary"]
+        assert emailed["Summary"]["B1"].value == 550
+        emailed.close()
+    assert result.output_xlsx_paths[0] not in result.attachment_paths
+    assert not list(tmp_path.glob("pdf-*"))
+    assert source.read_bytes() == original
+    assert not (_excel_pids() - before)

@@ -9,17 +9,19 @@ Reliability is the whole point of this module:
   so one failing step cannot skip the others. This is what prevents ghost ``EXCEL.EXE``.
 * The workbook template owns all print layout — we never touch PageSetup; PDF export goes
   through ``sheet.to_pdf`` which honors the sheet's stored print settings.
-* We leave Excel's automation defaults in place so macro/event-driven refresh logic can run
-  the way the proven PI workflow expects.
 """
 
 from __future__ import annotations
 
+import gc
+import os
 import re
+import stat
 import time
+import traceback
 from pathlib import Path
 from types import TracebackType
-from typing import Literal
+from typing import Any, Literal
 
 import psutil
 import pythoncom
@@ -28,9 +30,30 @@ import win32event
 import xlwings as xw
 from loguru import logger
 
+from reportflow.worker.diagnostics import VstoDiagnostics, redact_diagnostic_text, windows_identity
+
 # Excel COM constants (avoid importing the type library).
 _XL_CALC_DONE = 0  # xlDone
+_XL_PASTE_VALUES = -4163  # xlPasteValues
 _CALC_POLL_SECONDS = 0.15
+
+# Error-cell detection (Range.SpecialCells).
+_XL_CELLTYPE_CONSTANTS = 2  # xlCellTypeConstants
+_XL_CELLTYPE_FORMULAS = -4123  # xlCellTypeFormulas
+_XL_ERRORS = 16  # xlErrors
+_NO_CELLS_FOUND_HRESULT = -2146827284  # 0x800A03EC — SpecialCells matched nothing
+_ERROR_SAMPLE_LIMIT = 200  # cap cells scanned when collecting distinct error texts
+
+_XL_SHEET_HIDDEN = 0  # xlSheetHidden — recipients can unhide it
+_XL_SHEET_VERY_HIDDEN = 2  # xlSheetVeryHidden — only VBA can unhide it
+
+# Adaptive settle: keep recalculating until every selected sheet's populated-cell count is
+# unchanged AND at least back to its opening baseline (the template's cached values). PI
+# archive pulls (PINCompDat & co.) routinely exceed small budgets, so a still-lagging sheet
+# earns ONE bounded grace extension before we give up and warn.
+_SETTLE_STEP_SECONDS = 4.0
+_SETTLE_STABLE_ROUNDS = 2
+_SETTLE_GRACE_SECONDS = 30.0
 
 # Launching several Excel instances at the exact same moment races the COM/DCOM
 # registration and yields "RPC server is unavailable". We serialize only the brief
@@ -75,7 +98,108 @@ def is_transient_com_error(exc: BaseException) -> bool:
     if hresult and isinstance(hresult[0], int) and hresult[0] in _TRANSIENT_HRESULTS:
         return True
     text = str(exc).lower()
-    return "rpc server is unavailable" in text or "server execution failed" in text or ("remote procedure call failed" in text)
+    return (
+        "rpc server is unavailable" in text
+        or "server execution failed" in text
+        or ("remote procedure call failed" in text)
+    )
+
+
+def _has_any_value(values: object) -> bool:
+    """True when a used-range payload contains at least one non-empty cell value."""
+    if values is None:
+        return False
+    if isinstance(values, list):
+        return any(_has_any_value(v) for v in values)
+    if isinstance(values, str):
+        return bool(values.strip())
+    return True  # numbers, datetimes, bools — real data
+
+
+def _count_values(values: object) -> int:
+    """Count non-empty cells in a used-range payload — the 'populated' signature used to
+    detect when async add-in data (PI DataLink) has stopped arriving."""
+    if values is None:
+        return 0
+    if isinstance(values, list):
+        return sum(_count_values(v) for v in values)
+    if isinstance(values, str):
+        return 1 if values.strip() else 0
+    return 1  # numbers, datetimes, bools — real data
+
+
+def _count_values_by_sheet(book: xw.Book, sheet_names: list[str]) -> dict[str, int]:
+    """Populated cells per selected sheet (best-effort; a COM read error counts 0).
+
+    Per-sheet, not summed: a fast sheet's large stable count must never mask a slow
+    sheet whose async spill is still empty (the Equipment/Sensor field bug).
+    """
+    counts: dict[str, int] = {}
+    for name in sheet_names:
+        try:
+            counts[name] = _count_values(book.sheets[name].used_range.value)
+        except Exception as e:  # noqa: BLE001 — a transient read must not abort settling
+            logger.debug("Could not read used range of {!r} for settle signature: {}", name, e)
+            counts[name] = 0
+    return counts
+
+
+def _settle_verdict(
+    counts: dict[str, int],
+    prev: dict[str, int] | None,
+    baselines: dict[str, int],
+    stable_rounds: int,
+) -> tuple[int, list[str]]:
+    """Pure settle predicate: ``(new_stable_rounds, lagging_sheets)``.
+
+    A round is stable only when EVERY sheet's populated count is exactly unchanged. A
+    decrease is a dynamic-array spill collapsed mid-recalc — instability, never
+    convergence (the old ``sig <= prev`` check froze half-loaded sheets). Sheets still
+    below their opening baseline (the template's cached values) are "lagging": async data
+    has not caught back up to what the workbook held when it was opened.
+    """
+    lagging = [n for n, c in counts.items() if c < baselines.get(n, 0)]
+    if prev is None or any(counts[n] != prev.get(n, -1) for n in counts):
+        return 0, lagging
+    return stable_rounds + 1, lagging
+
+
+def format_error_cell_message(
+    findings: dict[str, tuple[int, list[str]]], failed_addins: list[str], account: str
+) -> str:
+    """Build the failure message for sheets that contain Excel error cells.
+
+    Pure (no COM) so it is unit-testable. ``#NAME?`` gets the pointed add-in/account hint,
+    since it specifically means an add-in (e.g. PI DataLink) never loaded.
+    """
+    all_texts: dict[str, None] = {}
+    parts: list[str] = []
+    for name, (count, texts) in findings.items():
+        for text in texts:
+            all_texts.setdefault(text, None)
+        listed = ", ".join(texts) if texts else "errors"
+        parts.append(f"{name!r} ({count} cell(s): {listed})")
+    hint = ""
+    if "#NAME?" in all_texts:
+        addin = f" ({', '.join(failed_addins)})" if failed_addins else ""
+        hint = (
+            f" #NAME? means an add-in{addin} such as PI DataLink did not load — the "
+            "ReportFlow service must run as a Windows user that has the add-in installed "
+            f"and data access (currently running as {account})."
+        )
+    return (
+        f"selected sheet(s) contain Excel error cells: {'; '.join(parts)}.{hint} "
+        "See Help → PI DataLink."
+    )
+
+
+def format_error_cell_warnings(findings: dict[str, tuple[int, list[str]]]) -> list[str]:
+    """One 'delivered anyway' warning per sheet with error cells (non-strict mode)."""
+    warnings: list[str] = []
+    for name, (count, texts) in findings.items():
+        listed = ", ".join(texts) if texts else "errors"
+        warnings.append(f"sheet {name!r}: {count} error cell(s) ({listed}) — delivered anyway")
+    return warnings
 
 
 def _sanitize_for_filename(name: str) -> str:
@@ -97,13 +221,26 @@ def _pdf_path_for_sheet(template: Path, sheet_name: str, *, single: bool) -> Pat
 class ExcelRun:
     """Context manager that owns a single disposable Excel instance for one run."""
 
-    def __init__(self, *, deadline: float | None = None) -> None:
+    def __init__(
+        self, *, deadline: float | None = None, diagnostics: VstoDiagnostics | None = None
+    ) -> None:
         self._deadline = deadline
+        self.diagnostics = diagnostics
+        self.pi_datalink_connected = False
+        self._source_paths: dict[int, Path] = {}
         self._com_initialized = False
         self._startup_mutex: int | None = None
         self.app: xw.App | None = None
         self.excel_pid: int | None = None
         self.excel_pid_reaped: bool = False
+        # Add-ins that failed to activate — surfaced even when cached cells look healthy.
+        self.failed_addins: list[str] = []
+        # Per-sheet populated counts captured at open (the template's cached values) —
+        # the settle loop's "expected shape" for each selected sheet of the OPEN workbook.
+        self.baseline_counts: dict[str, int] = {}
+        # Deliver-anyway notes when settling gave up (sheets still lagging/changing) for the
+        # open workbook; the runner merges these into the run's warnings.
+        self.settle_warnings: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -115,6 +252,8 @@ class ExcelRun:
             self.app = self._create_app_with_retry()
             self.excel_pid = int(self.app.pid)
             logger.info("Excel session started (pid={})", self.excel_pid)
+            if self.diagnostics is not None:
+                self.diagnostics.excel(self.app)
             self._harden(self.app)
             self._connect_com_addins(self.app)
         except Exception:
@@ -123,8 +262,7 @@ class ExcelRun:
             raise
         return self
 
-    @staticmethod
-    def _connect_com_addins(app: xw.App) -> None:
+    def _connect_com_addins(self, app: xw.App) -> None:
         """Connect COM add-ins (e.g. PI DataLink) in this automation instance.
 
         Excel does NOT load COM add-ins when started via automation, so add-in worksheet
@@ -132,6 +270,10 @@ class ExcelRun:
         comes out empty. Best-effort: every failure is logged and skipped. The INFO log
         of names + states is deliberate — support bundles must show whether the add-in
         the workbook depends on actually loaded.
+
+        Every failed connection is recorded in ``self.failed_addins`` so healthy-looking
+        cached values cannot suppress a run warning. VSTO diagnostics capture the
+        underlying loader failure in the worker security context.
         """
         try:
             addins = app.api.COMAddIns
@@ -147,14 +289,36 @@ class ExcelRun:
             return
         for i in range(1, count + 1):
             name = f"#{i}"
+            details: dict[str, Any] = {}
             try:
                 addin = addins.Item(i)
                 name = str(addin.Description or addin.ProgId)
+                details.update(name=name, progid=str(addin.ProgId), before=bool(addin.Connect))
                 if not addin.Connect:
                     addin.Connect = True
-                logger.info("COM add-in {!r}: connected={}", name, bool(addin.Connect))
-            except Exception as e:  # noqa: BLE001 — one bad add-in must not stop the rest
-                logger.warning("COM add-in {!r} could not be connected: {}", name, e)
+                connected = bool(addin.Connect)
+                details["after"] = connected
+                logger.info("COM add-in {!r}: connected={}", name, connected)
+                key = re.sub(r"[^a-z0-9]", "", (name + details["progid"]).lower())
+                if "pidatalink" in key:
+                    self.pi_datalink_connected |= connected
+                if not connected:
+                    self.failed_addins.append(name)
+            except Exception as e:  # one failed add-in must not suppress the others
+                details.update(
+                    name=name,
+                    error=redact_diagnostic_text(repr(e)),
+                    traceback=redact_diagnostic_text(traceback.format_exc()),
+                )
+                logger.warning(
+                    "COM add-in {!r} could not be connected: {}",
+                    name,
+                    redact_diagnostic_text(str(e)),
+                )
+                self.failed_addins.append(name)
+            finally:
+                if self.diagnostics is not None:
+                    self.diagnostics.addin(details)
 
     def _acquire_startup_lock(self) -> None:
         try:
@@ -188,14 +352,25 @@ class ExcelRun:
                 return app
             except Exception as e:  # noqa: BLE001 — transient COM/RPC startup failure
                 last_error = e
-                logger.warning("Excel startup attempt {}/{} failed: {}", attempt, _APP_START_ATTEMPTS, e)
+                logger.warning(
+                    "Excel startup attempt {}/{} failed: {}", attempt, _APP_START_ATTEMPTS, e
+                )
                 if app is not None:
                     try:
                         app.kill()
                     except Exception:  # noqa: BLE001
                         pass
-                time.sleep(_APP_START_BACKOFF_SECONDS * attempt)
-        raise ExcelJobError(f"could not start Excel after {_APP_START_ATTEMPTS} attempts: {last_error}")
+                if getattr(e, "hresult", e.args[0] if e.args else None) == -2147024891:
+                    raise ExcelJobError(
+                        f"Excel startup access denied (0x80070005) for {windows_identity()}. "
+                        "Check Excel launch permissions for this service account; "
+                        "this occurs before PI DataLink activation."
+                    ) from e
+                if attempt < _APP_START_ATTEMPTS:
+                    time.sleep(_APP_START_BACKOFF_SECONDS * attempt)
+        raise ExcelJobError(
+            f"could not start Excel after {_APP_START_ATTEMPTS} attempts: {last_error}"
+        )
 
     def __exit__(
         self,
@@ -209,6 +384,11 @@ class ExcelRun:
     def _harden(self, app: xw.App) -> None:
         # Every set is best-effort and individually guarded: a transient COM hiccup on one
         # property must not abort the run or skip the others.
+        #
+        # DELIBERATELY NOT disabled: macros (AutomationSecurity) and EnableEvents. Data
+        # workbooks in the field (PI DataLink & co.) rely on macros/event hooks to
+        # populate their data; force-disabling them produced empty reports. Excel's
+        # automation default (macros allowed) matches the customer's proven legacy script.
         for attr, value in (
             ("DisplayAlerts", False),
             ("ScreenUpdating", False),
@@ -224,6 +404,7 @@ class ExcelRun:
         """Guaranteed cleanup. Every step isolated so one failure cannot skip the rest."""
         self._release_startup_lock()  # safety net: normally released after open_workbook
         app = self.app
+        book: xw.Book | None = None
         if app is not None:
             try:
                 for book in list(app.books):
@@ -246,6 +427,13 @@ class ExcelRun:
 
         self.excel_pid_reaped = self._reap_pid(self.excel_pid)
 
+        # Release proxies while this thread still has a COM apartment. Exception
+        # tracebacks can otherwise release them after CoUninitialize and emit RPC faults.
+        self.app = None
+        app = None
+        book = None
+        gc.collect()
+
         if self._com_initialized:
             try:
                 pythoncom.CoUninitialize()
@@ -253,7 +441,6 @@ class ExcelRun:
                 logger.debug("CoUninitialize failed: {}", e)
             self._com_initialized = False
 
-        self.app = None
         logger.info(
             "Excel session torn down (pid={}, reaped={})",
             self.excel_pid,
@@ -292,116 +479,179 @@ class ExcelRun:
         if self._deadline is not None and time.monotonic() > self._deadline:
             raise ExcelJobError(f"timed out before completing: {what}")
 
+    @staticmethod
+    def _clear_read_only_attribute(path: Path) -> None:
+        """Drop the filesystem read-only flag: Excel would open the file read-only and
+        add-ins like PI DataLink then refuse to refresh their data into it."""
+        try:
+            if path.stat().st_mode & stat.S_IWRITE:
+                return
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            logger.info("Cleared the read-only attribute on {}", path)
+        except OSError as e:
+            logger.warning("Could not clear read-only attribute on {}: {}", path, e)
+
     def open_workbook(self, template_path: Path, sheet_names: list[str]) -> xw.Book:
         assert self.app is not None
         if not template_path.exists():
             raise ExcelJobError(f"workbook template not found: {template_path}")
         logger.info("Opening workbook: {}", template_path)
-        book = self.app.books.open(str(template_path), update_links=False)
+        book = self.app.books.open(
+            str(template_path),
+            update_links=False,
+            read_only=False,
+            ignore_read_only_recommended=True,
+        )
+        try:
+            if bool(book.api.ReadOnly):
+                logger.warning(
+                    "Workbook opened READ-ONLY despite requesting write access — live "
+                    "data refresh may not work (is the file open elsewhere?)"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not query ReadOnly state: {}", e)
 
+        self._source_paths[id(book)] = template_path.resolve()
         existing = [s.name for s in book.sheets]
         missing = [n for n in sheet_names if n not in existing]
         if missing:
-            raise ExcelJobError(f"selected sheet(s) not found in workbook: {missing} (available: {existing})")
+            self.close_book(book)
+            del book
+            raise ExcelJobError(
+                f"selected sheet(s) not found in workbook: {missing} (available: {existing})"
+            )
+        # The template's cached values are the settle loop's "expected shape": after the
+        # refresh, a selected sheet holding fewer values than it OPENED with means async
+        # data (PI archive pulls) hasn't caught up yet — keep waiting, then warn.
+        # Output visibility is configured later; PDF export needs these sheets visible now.
+        for name in sheet_names:
+            book.sheets[name].api.Visible = -1
+        self.baseline_counts = _count_values_by_sheet(book, sheet_names)
+        self.settle_warnings = []  # per-workbook, like the baselines
+        logger.info("Opening populated-cell baselines: {}", self.baseline_counts)
         # The fragile startup+open is done; let other worker processes start their Excel now.
         self._release_startup_lock()
         return book
 
     def refresh_and_wait(
-        self,
-        book: xw.Book,
-        post_refresh_wait_seconds: int = 0,
-        sheet_names: list[str] | None = None,
+        self, book: xw.Book, sheet_names: list[str], post_refresh_wait_seconds: int = 0
     ) -> None:
-        """Refresh external data and keep retrying until the selected sheets are populated."""
-        max_attempts = 3 if sheet_names else 1
+        """Force a synchronous refresh of connections/Power Query, then wait for calc."""
+        # Make every query synchronous so RefreshAll blocks instead of returning early.
+        try:
+            for conn in book.api.Connections:
+                for sub in ("OLEDBConnection", "ODBCConnection"):
+                    try:
+                        getattr(conn, sub).BackgroundQuery = False
+                    except Exception:  # noqa: BLE001 — connection type may lack this sub-object
+                        pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not enumerate workbook connections: {}", e)
 
-        for attempt in range(1, max_attempts + 1):
-            # Make every query synchronous so RefreshAll blocks instead of returning early.
+        logger.info("Refreshing external data / Power Query…")
+        # Let any COM error propagate unwrapped so the runner can classify it as transient
+        # (retryable) vs. deterministic.
+        book.api.RefreshAll()
+
+        assert self.app is not None
+        try:
+            self.app.api.CalculateUntilAsyncQueriesDone()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("CalculateUntilAsyncQueriesDone unavailable: {}", e)
+
+        # Full rebuild forces re-evaluation of EVERY formula — essential for add-in
+        # functions (PI DataLink & co.) whose add-in was only just connected and whose
+        # cached results are stale or empty.
+        try:
+            self.app.api.CalculateFullRebuild()
+            logger.info("CalculateFullRebuild issued")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("CalculateFullRebuild unavailable ({}); using normal calculate", e)
+            self.app.calculate()
+        self._wait_for_calc()
+
+        if post_refresh_wait_seconds > 0:
+            self._adaptive_settle(book, sheet_names, post_refresh_wait_seconds)
+
+    def _adaptive_settle(self, book: xw.Book, sheet_names: list[str], budget_seconds: int) -> None:
+        """Wait for asynchronous add-in data (PI DataLink & co.) to finish arriving.
+
+        PI cells keep filling AFTER Excel reports calculation done, and different sheets
+        resolve at different rates — archive-history pulls (PINCompDat) are far slower than
+        snapshot reads. Per-sheet counts + opening baselines decide convergence (see
+        :func:`_settle_verdict`); a sheet still below its baseline at the budget earns ONE
+        bounded grace extension, then a deliver-anyway warning naming the sheet.
+        """
+        assert self.app is not None
+        logger.info("Settling async add-in data (budget {}s)…", budget_seconds)
+        deadline = time.monotonic() + budget_seconds
+        baselines = self.baseline_counts
+        prev: dict[str, int] | None = None
+        counts: dict[str, int] = {}
+        stable = 0
+        rounds = 0
+        graced = False
+        while True:
+            self._check_deadline("adaptive settle")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                counts = counts or _count_values_by_sheet(book, sheet_names)
+                lagging = [n for n, c in counts.items() if c < baselines.get(n, 0)]
+                if not graced and (lagging or stable < _SETTLE_STABLE_ROUNDS):
+                    # Archive pulls routinely outlive small budgets; extend exactly once.
+                    graced = True
+                    deadline = time.monotonic() + _SETTLE_GRACE_SECONDS
+                    logger.info(
+                        "Settle budget elapsed with sheets still lagging/changing {} — "
+                        "extending once by {}s",
+                        lagging or "(counts not yet stable)",
+                        int(_SETTLE_GRACE_SECONDS),
+                    )
+                    continue
+                break
+            time.sleep(min(_SETTLE_STEP_SECONDS, remaining))
+            # Nudge the add-in to pull any late data, then let the calc chain settle.
             try:
-                for conn in book.api.Connections:
-                    for sub in ("OLEDBConnection", "ODBCConnection"):
-                        try:
-                            getattr(conn, sub).BackgroundQuery = False
-                        except Exception:  # noqa: BLE001 — connection type may lack this sub-object
-                            pass
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Could not enumerate workbook connections: {}", e)
-
-            logger.info("Refreshing external data / Power Query (attempt {}/{})…", attempt, max_attempts)
-            # Let any COM error propagate unwrapped so the runner can classify it as transient
-            # (retryable) vs. deterministic.
-            book.api.RefreshAll()
-
-            assert self.app is not None
+                self.app.api.CalculateFullRebuild()
+            except Exception:  # noqa: BLE001
+                self.app.calculate()
             try:
                 self.app.api.CalculateUntilAsyncQueriesDone()
             except Exception as e:  # noqa: BLE001
                 logger.debug("CalculateUntilAsyncQueriesDone unavailable: {}", e)
-
-            # Full rebuild forces re-evaluation of EVERY formula — essential for add-in
-            # functions (PI DataLink & co.) whose add-in was only just connected and whose
-            # cached results are stale or empty.
-            try:
-                self.app.api.CalculateFullRebuild()
-                logger.info("CalculateFullRebuild issued")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("CalculateFullRebuild unavailable ({}); using normal calculate", e)
-                self.app.calculate()
             self._wait_for_calc()
 
-            if sheet_names and self._sheets_have_content(book, sheet_names):
-                logger.info("Selected sheets populated after {} refresh attempt(s)", attempt)
-                break
-
-            if attempt < max_attempts:
-                retry_wait = max(1.0, min(5.0, post_refresh_wait_seconds / 2.0 if post_refresh_wait_seconds > 0 else 1.0))
-                logger.warning(
-                    "Selected sheets still empty after attempt {}/{}; waiting {:.1f}s before retrying",
-                    attempt,
-                    max_attempts,
-                    retry_wait,
+            counts = _count_values_by_sheet(book, sheet_names)
+            rounds += 1
+            stable, lagging = _settle_verdict(counts, prev, baselines, stable)
+            prev = counts
+            logger.debug(
+                "Settle round {}: counts={} stable={} lagging={}", rounds, counts, stable, lagging
+            )
+            if stable >= _SETTLE_STABLE_ROUNDS and not lagging:
+                logger.info(
+                    "Data settled after {} round(s) ({} populated cells)",
+                    rounds,
+                    sum(counts.values()),
                 )
-                self._check_deadline("waiting for data refresh")
-                time.sleep(retry_wait)
-                continue
+                return
 
-        if post_refresh_wait_seconds > 0:
-            logger.info("Extra settle wait for slow add-ins: {}s", post_refresh_wait_seconds)
-            waited = 0.0
-            while waited < post_refresh_wait_seconds:
-                self._check_deadline("post-refresh wait")
-                step = min(1.0, post_refresh_wait_seconds - waited)
-                time.sleep(step)
-                waited += step
-            # The add-in may have filled cells asynchronously — settle the calc chain.
-            self.app.calculate()
-            self._wait_for_calc()
-
-    @staticmethod
-    def _sheet_has_content(sheet: xw.Sheet) -> bool:
-        used = sheet.used_range
-        values = used.value
-        if values is None:
-            return False
-
-        flattened: list[object] = []
-        if isinstance(values, (list, tuple)):
-            for item in values:
-                if isinstance(item, (list, tuple)):
-                    flattened.extend(cell for cell in item if cell is not None)
-                elif item is not None:
-                    flattened.append(item)
-        elif values is not None:
-            flattened.append(values)
-        return bool(flattened)
-
-    def _sheets_have_content(self, book: xw.Book, sheet_names: list[str]) -> bool:
-        for name in sheet_names:
-            self._check_deadline(f"checking sheet {name}")
-            if not self._sheet_has_content(book.sheets[name]):
-                return False
-        return True
+        # Budget + grace exhausted: deliver anyway, but say exactly which sheet is short.
+        for name, count in counts.items():
+            baseline = baselines.get(name, 0)
+            if count < baseline:
+                self.settle_warnings.append(
+                    f"sheet '{name}' has {count} populated cells but the workbook opened "
+                    f"with {baseline} — async data (e.g. PI) may not have finished; raise "
+                    "'Wait for add-in data' (Edit → Advanced) for this job"
+                )
+        if not self.settle_warnings:
+            self.settle_warnings.append(
+                f"data was still changing when the settle budget (+{int(_SETTLE_GRACE_SECONDS)}s "
+                "grace) elapsed — output may be incomplete; raise 'Wait for add-in data'"
+            )
+        for warning in self.settle_warnings:
+            logger.warning("{}", warning)
 
     def _wait_for_calc(self) -> None:
         assert self.app is not None
@@ -419,64 +669,198 @@ class ExcelRun:
             iterations += 1
             time.sleep(_CALC_POLL_SECONDS)
 
-    @staticmethod
-    def _refresh_sheet_charts(sheet: xw.Sheet) -> None:
-        try:
-            for chart_object in sheet.api.ChartObjects():
-                try:
-                    chart_object.Chart.Refresh()
-                except Exception as e:  # noqa: BLE001
-                    logger.debug("Chart refresh failed for sheet {}: {}", sheet.name, e)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Could not enumerate charts for sheet {}: {}", sheet.name, e)
-
     def freeze_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
-        """Convert formulas to static values on the SELECTED sheets only."""
+        """Convert formulas to static values on the SELECTED sheets only.
+
+        Uses COM ``Copy`` -> ``PasteSpecial(xlPasteValues)`` — the same mechanism as the
+        customer's proven legacy script. It preserves formatting exactly and avoids
+        round-tripping large ranges through Python.
+        """
+        assert self.app is not None
         for name in sheet_names:
             self._check_deadline(f"freezing sheet {name}")
             sheet = book.sheets[name]
             used = sheet.api.UsedRange
+            cell_count = int(used.Cells.Count)
             used.Copy()
-            used.PasteSpecial(Paste=-4163)
-            self.app.api.CutCopyMode = False
+            used.PasteSpecial(Paste=_XL_PASTE_VALUES)
             try:
-                sheet.api.Calculate()
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Sheet calculation failed for {}: {}", name, e)
-            self._refresh_sheet_charts(sheet)
-            logger.info("Froze formulas to values on sheet: {}", name)
+                self.app.api.CutCopyMode = False
+            except Exception as e:  # noqa: BLE001 — cosmetic (clears the marching ants)
+                logger.debug("Could not reset CutCopyMode: {}", e)
+            logger.info("Froze formulas to values on sheet {!r} ({} cells)", name, cell_count)
 
-    def ensure_sheets_not_empty(self, book: xw.Book, sheet_names: list[str]) -> None:
-        """Fail if a selected sheet ended up fully empty after refresh/freeze."""
+    def collapse_selection(self, book: xw.Book, sheet_names: list[str]) -> None:
+        """Select A1 on every selected sheet and finish on the first one.
+
+        PasteSpecial leaves the whole used range selected, and Excel PERSISTS the
+        per-sheet selection into the saved file — recipients opened the report with the
+        entire sheet highlighted. Walk the sheets in reverse so the last activation is
+        the FIRST selected sheet: that's the tab the workbook opens on. Cosmetic —
+        every step is best-effort.
+        """
+        for name in reversed(sheet_names):
+            try:
+                sheet = book.sheets[name]
+                sheet.api.Activate()
+                sheet.api.Range("A1").Select()
+                window = book.app.api.ActiveWindow
+                window.ScrollRow = 1
+                window.ScrollColumn = 1
+            except Exception as e:  # noqa: BLE001 — never fail a run over selection tidy-up
+                logger.debug("Could not collapse selection on {!r}: {}", name, e)
+
+    def validate_sheets_not_empty(self, book: xw.Book, sheet_names: list[str]) -> None:
+        """Fail loudly when a selected sheet produced no data at all.
+
+        An all-empty used range means the refresh silently yielded nothing (add-in not
+        loaded, no data access for this account, …) — shipping a blank report as
+        "success" is the one outcome the user must never see.
+        """
         for name in sheet_names:
             self._check_deadline(f"validating sheet {name}")
             sheet = book.sheets[name]
-            used = sheet.used_range
-            values = used.value
-            if values is None:
-                raise ExcelJobError(
-                    f"sheet {name!r} came out empty — the data refresh produced nothing "
-                    "(check add-ins/PI access for the service account)"
-                )
+            values = sheet.used_range.value
+            if _has_any_value(values):
+                continue
+            raise ExcelJobError(
+                f"sheet {name!r} came out EMPTY after refresh — the data source produced "
+                "nothing. Check the worker log's COM add-in list and whether the service "
+                "account has access to the data source (e.g. PI)."
+            )
 
-            flattened: list[object] = []
-            if isinstance(values, (list, tuple)):
-                for item in values:
-                    if isinstance(item, (list, tuple)):
-                        flattened.extend(cell for cell in item if cell is not None)
-                    elif item is not None:
-                        flattened.append(item)
-            elif values is not None:
-                flattened.append(values)
+    def scan_error_cells(
+        self, book: xw.Book, sheet_names: list[str]
+    ) -> dict[str, tuple[int, list[str]]]:
+        """Return ``{sheet: (error_cell_count, distinct_error_texts)}`` for sheets that
+        contain Excel error cells (``#NAME?``, ``#REF!``, …).
 
-            if not flattened:
-                raise ExcelJobError(
-                    f"sheet {name!r} came out empty — the data refresh produced nothing "
-                    "(check add-ins/PI access for the service account)"
-                )
-            logger.info("Validated non-empty sheet contents: {}", name)
+        ``#NAME?`` is the decisive signal that an add-in (e.g. PI DataLink) did not load:
+        its worksheet functions are unregistered, so every formula that calls them errors.
+        Run this while the formulas are still present (before freeze).
+        """
+        findings: dict[str, tuple[int, list[str]]] = {}
+        for name in sheet_names:
+            self._check_deadline(f"scanning {name} for error cells")
+            count, texts = self._sheet_error_cells(book.sheets[name].api)
+            if count:
+                findings[name] = (count, texts)
+                logger.warning("Sheet {!r} has {} error cell(s): {}", name, count, ", ".join(texts))
+        return findings
 
-    def export_pdfs(self, book: xw.Book, sheet_names: list[str], output_pdf_path: Path) -> list[Path]:
+    @staticmethod
+    def _sheet_error_cells(sheet_api: Any) -> tuple[int, list[str]]:
+        """Count error cells on a sheet and sample their distinct error strings."""
+        used = sheet_api.UsedRange
+        total = 0
+        texts: dict[str, None] = {}
+        for cell_type in (_XL_CELLTYPE_FORMULAS, _XL_CELLTYPE_CONSTANTS):
+            try:
+                rng = used.SpecialCells(cell_type, _XL_ERRORS)
+            except Exception as e:  # noqa: BLE001 — 0x800A03EC == none of that type; else skip
+                args = getattr(e, "args", [None])
+                if not (args and args[0] == _NO_CELLS_FOUND_HRESULT):
+                    logger.debug("SpecialCells({}, errors) failed: {}", cell_type, e)
+                continue
+            try:
+                total += int(rng.Count)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Could not count error cells: {}", e)
+            scanned = 0
+            try:
+                for area in rng.Areas:
+                    for cell in area.Cells:
+                        if scanned >= _ERROR_SAMPLE_LIMIT:
+                            break
+                        scanned += 1
+                        try:
+                            text = str(cell.Text).strip()
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if text.startswith("#"):
+                            texts.setdefault(text, None)
+                    if scanned >= _ERROR_SAMPLE_LIMIT:
+                        break
+            except Exception as e:  # noqa: BLE001 — sampling is best-effort
+                logger.debug("Enumerating error cells failed: {}", e)
+        return total, list(texts)
+
+    def drop_unselected_sheets(
+        self, book: xw.Book, sheet_names: list[str], *, mode: str = "remove"
+    ) -> None:
+        """Make the output contain only the selected sheets.
+
+        ``mode="remove"`` deletes the others (smaller file) then purges broken ``#REF!``
+        defined names they orphaned — otherwise Office File Validation can refuse to open the
+        output. ``mode="hide"`` makes them very-hidden instead: references stay intact so the
+        file always opens, at the cost of the raw data remaining inside it.
+
+        Runs AFTER freeze, so selected sheets hold static values.
+        """
+        keep = set(sheet_names)
+        # Capture names FIRST: the COM object is unusable after delete().
+        doomed = [s.name for s in book.sheets if s.name not in keep]
+        if mode == "hide":
+            for name in doomed:
+                try:
+                    book.sheets[name].api.Visible = _XL_SHEET_VERY_HIDDEN
+                    logger.info("Hid unselected sheet in output: {!r}", name)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Could not hide sheet {!r}: {}", name, e)
+            return
+
+        self._log_name_references(book, doomed)
+        for name in doomed:
+            try:
+                # Excel can refuse Delete on very-hidden sheets. The local copy is
+                # already saved before pruning the email copy; expose only in memory.
+                book.sheets[name].api.Visible = -1
+                book.sheets[name].delete()
+                logger.info("Deleted unselected sheet from output: {!r}", name)
+            except Exception as e:  # noqa: BLE001 — a stubborn sheet must not fail the run
+                logger.warning("Could not delete sheet {!r}: {}", name, e)
+        self._purge_broken_names(book)
+
+    @staticmethod
+    def _log_name_references(book: xw.Book, doomed: list[str]) -> None:
+        """DEBUG: record which defined names point at a soon-deleted sheet (proves the
+        cause of any 'cannot be opened' output)."""
+        if not doomed:
+            return
+        try:
+            for nm in book.api.Names:
+                refers = str(nm.RefersTo)
+                if any(d in refers for d in doomed):
+                    logger.debug("Defined name references a deleted sheet: {}", refers)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not enumerate defined names for diagnostics: {}", e)
+
+    @staticmethod
+    def _purge_broken_names(book: xw.Book) -> None:
+        """Delete defined names whose target became ``#REF!`` (the common Office File
+        Validation trigger that makes a saved workbook refuse to open)."""
+        try:
+            names = book.api.Names
+            count = int(names.Count)
+        except Exception as e:  # noqa: BLE001 — no Names collection: nothing to purge
+            logger.debug("No defined-names collection to purge: {}", e)
+            return
+        purged = 0
+        # Delete high -> low so indices don't shift under us.
+        for i in range(count, 0, -1):
+            try:
+                nm = names.Item(i)
+                if "#REF!" in str(nm.RefersTo):
+                    nm.Delete()
+                    purged += 1
+            except Exception as e:  # noqa: BLE001 — one stubborn name must not stop the rest
+                logger.debug("Could not delete a broken defined name: {}", e)
+        if purged:
+            logger.info("Purged {} broken (#REF!) defined name(s) from the output", purged)
+
+    def export_pdfs(
+        self, book: xw.Book, sheet_names: list[str], output_pdf_path: Path
+    ) -> list[Path]:
         """One PDF per selected sheet, honoring each sheet's own PageSetup."""
         single = len(sheet_names) == 1
         produced: list[Path] = []
@@ -489,7 +873,39 @@ class ExcelRun:
             produced.append(pdf_path)
         return produced
 
+    def hide_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
+        """Hide included sheets the job marked Hidden (normal hidden, unhide-able).
+
+        Runs AFTER PDF export (Excel cannot export a hidden sheet) and after
+        collapse_selection (which must activate only visible sheets).
+        """
+        for name in sheet_names:
+            try:
+                book.sheets[name].api.Visible = _XL_SHEET_HIDDEN
+                logger.info("Hid sheet in output: {!r}", name)
+            except Exception as e:  # noqa: BLE001 — e.g. Excel refusing to hide the last sheet
+                logger.warning("Could not hide sheet {!r}: {}", name, e)
+
+    @staticmethod
+    def close_book(book: xw.Book) -> None:
+        """Close a finished (or abandoned) workbook so the next one starts clean."""
+        try:
+            book.close()
+        except Exception as e:  # noqa: BLE001 — teardown closes leftovers anyway
+            logger.debug("Closing workbook failed: {}", e)
+
     def save_output(self, book: xw.Book, output_xlsx_path: Path) -> Path:
+        """Save-as to the output path. The SOURCE file is never written.
+
+        Hard guard: refuse to save onto the input file even if a job misconfiguration
+        resolves the output to the same path.
+        """
+        source = self._source_paths.get(id(book), Path(str(book.api.FullName)))
+        if output_xlsx_path.resolve() == source.resolve():
+            raise ExcelJobError(
+                f"output path equals the input workbook ({source}) — refusing to "
+                "overwrite the source file. Choose a different output folder/filename."
+            )
         output_xlsx_path.parent.mkdir(parents=True, exist_ok=True)
         book.save(str(output_xlsx_path))
         logger.info("Saved output workbook: {}", output_xlsx_path)

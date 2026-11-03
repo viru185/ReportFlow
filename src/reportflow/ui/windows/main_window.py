@@ -7,19 +7,30 @@ ApiClient methods regardless of where they're triggered (menu, card button, …)
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
+    QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,8 +39,17 @@ from reportflow import __about__ as about
 from reportflow.core import paths
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import logo_pixmap
-from reportflow.ui.schedule_compile import describe
-from reportflow.ui.style import TEXT_MUTED, card_frame, connection_pill, status_badge
+from reportflow.ui.fs_util import save_start_path
+from reportflow.ui.schedule_compile import ago_text, describe, friendly_time
+from reportflow.ui.style import (
+    TEXT_MUTED,
+    card_frame,
+    connection_pill,
+    disabled_badge,
+    stage_badge,
+    status_badge,
+    status_edge,
+)
 from reportflow.ui.updater import UpdateInfo, check_latest
 from reportflow.ui.windows.about_dialog import AboutDialog
 from reportflow.ui.windows.help_dialog import HelpDialog
@@ -37,8 +57,28 @@ from reportflow.ui.windows.job_editor import JobEditorDialog
 from reportflow.ui.windows.log_view import RunHistoryDialog
 from reportflow.ui.windows.log_viewer_dialog import LogViewerDialog
 from reportflow.ui.windows.settings_dialog import SettingsDialog
-from reportflow.ui.windows.transfer_dialogs import export_jobs_flow, export_settings_flow, import_jobs_flow, import_settings_flow
+from reportflow.ui.windows.transfer_dialogs import (
+    export_jobs_flow,
+    export_settings_flow,
+    import_jobs_flow,
+    import_settings_flow,
+)
 from reportflow.ui.windows.update_dialog import UpdateDialog
+
+
+def _elapsed_text(started_at: str | None) -> str:
+    """Human elapsed time since an ISO timestamp — '38s', '2m 10s'; '' when unknown."""
+    if not started_at:
+        return ""
+    try:
+        seconds = int((datetime.now() - datetime.fromisoformat(started_at)).total_seconds())
+    except ValueError:
+        return ""
+    if seconds < 0:
+        return ""
+    if seconds < 120:
+        return f"{seconds}s"
+    return f"{seconds // 60}m {seconds % 60}s"
 
 
 class _UpdateCheckThread(QThread):
@@ -56,6 +96,10 @@ class MainWindow(QMainWindow):
         self._api = api or ApiClient()
         self._connected = False
         self._update_thread: _UpdateCheckThread | None = None
+        # Card rebuild bookkeeping: skip identical rebuilds, and defer them while a popup
+        # (a card's ⋯ menu) is open — rebuilding destroys the menu under the cursor.
+        self._cards_signature: str | None = None
+        self._refresh_pending = False
         self.setWindowTitle(about.NAME)
         self.resize(920, 620)
         self._build_menu()
@@ -73,23 +117,33 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         bar = self.menuBar()
 
+        # File — job actions, tidy Import/Export submenus, settings, exit.
         file_menu = bar.addMenu("&File")
+        file_menu.addAction("New Job…", self._new_job)
+        file_menu.addAction("Refresh", self.refresh)
+        file_menu.addSeparator()
+        import_menu = file_menu.addMenu("Import")
+        import_menu.addAction("Jobs…", self._import_jobs)
+        import_menu.addAction("Settings…", self._import_settings)
+        export_menu = file_menu.addMenu("Export")
+        export_menu.addAction("Jobs…", self._export_jobs)
+        export_menu.addAction("Settings…", self._export_settings)
+        file_menu.addSeparator()
         file_menu.addAction("Settings…", self._open_settings)
-        file_menu.addSeparator()
-        file_menu.addAction("Export jobs…", self._export_jobs)
-        file_menu.addAction("Import jobs…", self._import_jobs)
-        file_menu.addAction("Export settings…", self._export_settings)
-        file_menu.addAction("Import settings…", self._import_settings)
-        file_menu.addSeparator()
-        file_menu.addAction("Open data folder", self._open_data_folder)
-        file_menu.addAction("Application logs…", self._open_app_logs)
-        file_menu.addAction("Send logs to support…", self._send_support_logs)
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
-        jobs_menu = bar.addMenu("&Jobs")
-        jobs_menu.addAction("New job…", self._new_job)
-        jobs_menu.addAction("Refresh", self.refresh)
+        # Logs — everything diagnostics-related in one place.
+        logs_menu = bar.addMenu("&Logs")
+        logs_menu.addAction("Application logs…", self._open_app_logs)
+        logs_menu.addSeparator()
+        logs_menu.addAction("Export logs to zip…", self._export_logs)
+        logs_menu.addAction("Send logs to support…", self._send_support_logs)
+        logs_menu.addSeparator()
+        logs_menu.addAction("Delete old logs…", self._purge_old_logs)
+        logs_menu.addAction("Delete ALL logs…", self._purge_all_logs)
+        logs_menu.addSeparator()
+        logs_menu.addAction("Open data folder", self._open_data_folder)
 
         help_menu = bar.addMenu("&Help")
         help_menu.addAction("Help guide", self._open_help)
@@ -102,7 +156,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(8, 6, 8, 6)
         root.setSpacing(6)
 
-        # Header: logo + title + stat strip + connection pill, one tight row.
+        # Header: logo + title + stat strip + actions + connection pill, one tight row.
         header = QHBoxLayout()
         logo = QLabel()
         logo.setPixmap(logo_pixmap(24))
@@ -118,21 +172,39 @@ class MainWindow(QMainWindow):
         for pill, _value in (self.card_jobs, self.card_active, self.card_failures):
             header.addWidget(pill)
         header.addStretch()
+        new_btn = QPushButton("+ New Job")
+        new_btn.setProperty("accent", True)
+        new_btn.clicked.connect(self._new_job)
+        refresh_btn = QPushButton("⟳")
+        refresh_btn.setToolTip("Refresh now — the dashboard auto-refreshes every 4 seconds.")
+        refresh_btn.clicked.connect(self.refresh)
+        header.addWidget(new_btn)
+        header.addWidget(refresh_btn)
+        header.addSpacing(8)
         self.conn_label = QLabel(connection_pill(False))
         header.addWidget(self.conn_label)
         root.addLayout(header)
 
-        # Actions row
-        actions = QHBoxLayout()
-        new_btn = QPushButton("+ New Job")
-        new_btn.setProperty("accent", True)
-        new_btn.clicked.connect(self._new_job)
-        refresh_btn = QPushButton("⟳ Refresh")
-        refresh_btn.clicked.connect(self.refresh)
-        actions.addWidget(new_btn)
-        actions.addStretch()
-        actions.addWidget(refresh_btn)
-        root.addLayout(actions)
+        # Warning banner shown when the service runs as LocalSystem (VSTO/PI add-ins can't
+        # load there → reports come out #NAME?). Hidden until refresh() detects it.
+        self.system_banner = QFrame()
+        self.system_banner.setStyleSheet(
+            "QFrame { background: #5a1e1e; border: 1px solid #a33; border-radius: 4px; }"
+        )
+        banner_row = QHBoxLayout(self.system_banner)
+        banner_row.setContentsMargins(10, 4, 10, 4)
+        banner_label = QLabel(
+            "⚠ ReportFlow is running as LocalSystem — PI DataLink can't load. "
+            "Set a Windows account to fix it."
+        )
+        banner_label.setWordWrap(True)
+        banner_fix = QPushButton("Set account…")
+        banner_fix.setProperty("accent", True)
+        banner_fix.clicked.connect(self._open_service_account)
+        banner_row.addWidget(banner_label, 1)
+        banner_row.addWidget(banner_fix)
+        self.system_banner.setVisible(False)
+        root.addWidget(self.system_banner)
 
         # Job cards in a scroll area
         self.jobs_container = QWidget()
@@ -178,8 +250,11 @@ class MainWindow(QMainWindow):
         self._connected = True
         self.conn_label.setText(connection_pill(True))
         self.conn_label.setToolTip("")
+        self.system_banner.setVisible(bool(status.get("service_account_is_system")))
 
-        failures = sum(1 for j in jobs if (j.get("last_status") or "") in ("failed", "timed_out", "crashed"))
+        failures = sum(
+            1 for j in jobs if (j.get("last_status") or "") in ("failed", "timed_out", "crashed")
+        )
         self.card_jobs[1].setText(str(len(jobs)))
         self.card_active[1].setText(str(len(status.get("active_runs", []))))
         self.card_failures[1].setText(str(failures))
@@ -194,9 +269,31 @@ class MainWindow(QMainWindow):
             self.conn_label.setToolTip(message)
         else:
             self.statusBar().showMessage(
-                f"Connected · v{status.get('version')} · " f"{len(status.get('scheduled_jobs', []))} trigger(s) scheduled"
+                f"Connected · v{status.get('version')} · "
+                f"{len(status.get('scheduled_jobs', []))} trigger(s) scheduled"
             )
+
+        if QApplication.activePopupWidget() is not None:
+            # A card's ⋯ menu is open: the 4 s rebuild used to delete the card (and with
+            # it the menu) out from under the user. Rebuild once the menu closes instead.
+            self._refresh_pending = True
+            return
+        self._refresh_pending = False
+        # Relative texts ("5m ago", "next: today 18:00") change by the minute and a running
+        # card's elapsed badge by the second — fold those into the signature so an idle
+        # dashboard isn't torn down and rebuilt every 4 s for nothing.
+        running = any((j.get("last_status") or "") == "running" for j in jobs)
+        clock = datetime.now().strftime("%Y%m%d%H%M%S" if running else "%Y%m%d%H%M")
+        signature = repr((clock, jobs))
+        if signature == self._cards_signature:
+            return
+        self._cards_signature = signature
         self._populate(jobs)
+
+    def _on_card_menu_closed(self) -> None:
+        if self._refresh_pending:
+            # Deferred so the menu finishes closing (and its action fires) first.
+            QTimer.singleShot(0, self.refresh)
 
     def _populate(self, jobs: list[dict]) -> None:
         # Clear existing cards (keep the trailing stretch).
@@ -217,7 +314,12 @@ class MainWindow(QMainWindow):
             self.jobs_layout.insertWidget(i, self._job_card(job))
 
     def _job_card(self, job: dict[str, Any]) -> QFrame:
-        card = card_frame()
+        enabled = bool(job.get("enabled", True))
+        running = (job.get("last_status") or "") == "running"
+
+        # The coloured left edge carries the last-run status; a pill only appears for
+        # states that need attention (running / paused / email failed).
+        card = card_frame(edge=status_edge(job.get("last_status"), paused=not enabled))
         lay = QHBoxLayout(card)
         lay.setContentsMargins(10, 6, 10, 6)
         lay.setSpacing(6)
@@ -225,55 +327,148 @@ class MainWindow(QMainWindow):
         info = QVBoxLayout()
         info.setSpacing(1)
         name_row = QHBoxLayout()
-        name = QLabel(f"<b>{job.get('name', '')}</b>")
+        name = QLabel(str(job.get("name", "")))
+        name.setTextFormat(Qt.TextFormat.PlainText)
+        name.setWordWrap(True)
+        name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        name_font = name.font()
+        name_font.setBold(True)
+        name.setFont(name_font)
         name_row.addWidget(name)
-        if not job.get("enabled", True):
-            disabled = QLabel("disabled")
-            disabled.setProperty("muted", True)
-            name_row.addWidget(disabled)
-        name_row.addWidget(status_badge(job.get("last_status")))
+        name_row.addWidget(stage_badge(job.get("stage", "testing")))
+        if not enabled:
+            name_row.addWidget(disabled_badge())
+        elif running:
+            # Elapsed time rides the dashboard's 4s refresh — no extra polling machinery.
+            name_row.addWidget(
+                status_badge("running", f"· {_elapsed_text(job.get('last_run_at'))}")
+            )
+        if job.get("last_email_failed"):
+            email_warn = QLabel("✉ failed")
+            email_warn.setStyleSheet("color: #e06c6c; font-size: 11px;")
+            email_warn.setToolTip(
+                job.get("last_email_note") or "The last run's report email failed to send."
+            )
+            name_row.addWidget(email_warn)
         name_row.addStretch()
         info.addLayout(name_row)
 
-        schedule_text = describe(job.get("schedule_crons") or [])
-        sheets = job.get("sheet_names") or []
-        last_run = job.get("last_run_at") or "never"
-        detail = QLabel(f"{schedule_text} · {len(sheets)} sheet(s) · last run: {last_run}")
+        parts: list[str] = []
+        if not enabled:
+            parts.append("schedule paused")
+        else:
+            next_at = friendly_time(job.get("next_run_at"))
+            parts.append(
+                f"next: {next_at}" if next_at else describe(job.get("schedule_crons") or [])
+            )
+        last_status = job.get("last_status")
+        if last_status:
+            ago = ago_text(job.get("last_run_at"))
+            status_text = str(last_status).replace("_", " ")
+            parts.append(f"last: {status_text} {ago}" if ago else f"last: {status_text}")
+        else:
+            parts.append("no runs yet")
+        sheets = f"{job.get('sheet_count') or 0} sheet(s)"
+        workbooks = int(job.get("workbook_count") or 1)
+        parts.append(f"{workbooks} files · {sheets}" if workbooks > 1 else sheets)
+        detail = QLabel(" · ".join(parts))
+        detail.setWordWrap(True)
+        detail.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         detail.setProperty("muted", True)
         info.addWidget(detail)
         lay.addLayout(info, 1)
 
-        def _btn(label: str, tip: str, slot) -> QPushButton:
+        def _btn(
+            label: str, tip: str, slot, *, accent: bool = False, active: bool = True
+        ) -> QPushButton:
             b = QPushButton(label)
             b.setToolTip(tip)
-            b.setStyleSheet("padding: 3px 10px;")
+            # No accent glow on a paused card — the dimming should read as "asleep".
+            if accent and enabled:
+                b.setProperty("accent", True)
+            else:
+                b.setStyleSheet("padding: 3px 10px;")
+            if not active:
+                b.setEnabled(False)
+                b.setToolTip("Already running — wait for it to finish.")
             b.clicked.connect(slot)
             return b
 
         job_name = job.get("name", "")
+        testing = job.get("stage", "testing") != "live"
+        # Daily actions stay single-click; everything occasional lives behind ⋯ (an
+        # owner-approved amendment to the single-click policy — keeps cards scannable).
+        run_tip = (
+            "Builds the report and emails the TEST recipients (job is in Testing)."
+            if testing
+            else "Builds the report and emails the Production recipients (job is Live)."
+        )
         lay.addWidget(
             _btn(
                 "▶ Run",
-                "Real run — emails production recipients if enabled.",
-                lambda *_: self._trigger(job_name, test=False),
+                run_tip,
+                lambda *_: self._trigger(job_name, mode="run"),
+                accent=True,
+                active=not running,
             )
         )
         lay.addWidget(
             _btn(
-                "🧪 Test",
-                "Test run — emails TEST recipients only.",
-                lambda *_: self._trigger(job_name, test=True),
+                "👁 Build only",
+                "Builds the report without emailing anyone. Enable Require PI DataLink in "
+                "Advanced to require add-in connection.",
+                lambda *_: self._trigger(job_name, mode="dry"),
+                active=not running,
             )
         )
-        lay.addWidget(_btn("✎ Edit", "Edit this job.", lambda *_: self._edit_job(job_name)))
-        lay.addWidget(
-            _btn(
-                "Logs",
-                "Run history and logs for this job.",
-                lambda *_: self._view_logs(job_name),
+        if not enabled:
+            resume = _btn(
+                "▸ Resume",
+                "Re-enable scheduling for this job (one click).",
+                lambda *_: self._set_enabled(job_name, True),
             )
-        )
-        lay.addWidget(_btn("🗑", "Delete this job.", lambda *_: self._delete_job(job_name)))
+            resume.setProperty("accent", True)  # THE call-to-action on a paused card
+            lay.addWidget(resume)
+        elif testing:
+            lay.addWidget(
+                _btn(
+                    "✓ Go live",
+                    "Promote this job: future runs (incl. scheduled) email the Production "
+                    "recipients instead of the Test recipients.",
+                    lambda *_: self._go_live(job),
+                )
+            )
+
+        more = QToolButton()
+        more.setText("⋯")
+        more.setToolTip("More actions")
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(more)
+        menu.setToolTipsVisible(True)
+        menu.addAction(
+            "📂 Open last report", lambda *_, j=job: self._open_last_report(j)
+        ).setToolTip("Open the last report's folder (file selected).")
+        menu.addAction("✎ Edit", lambda *_: self._edit_job(job_name))
+        menu.addAction("Logs", lambda *_: self._view_logs(job_name))
+        menu.addAction("⧉ Duplicate", lambda *_: self._duplicate_job(job_name))
+        if testing and not enabled:
+            # Promote is normally a visible button; on a paused card Resume takes that
+            # slot, so keep Go live reachable here.
+            menu.addAction("✓ Go live", lambda *_, j=job: self._go_live(j))
+        if enabled:
+            menu.addAction("⏸ Pause", lambda *_: self._set_enabled(job_name, False))
+        menu.addSeparator()
+        menu.addAction("🗑 Delete", lambda *_: self._delete_job(job_name))
+        menu.aboutToHide.connect(self._on_card_menu_closed)
+        more.setMenu(menu)
+        lay.addWidget(more)
+
+        if not enabled:
+            # One effect dims the ENTIRE card uniformly — pills, text, buttons — so a
+            # paused job cannot be mistaken for a live one at any glance distance.
+            effect = QGraphicsOpacityEffect(card)
+            effect.setOpacity(0.55)
+            card.setGraphicsEffect(effect)
         return card
 
     # -- job actions --------------------------------------------------------------
@@ -295,47 +490,129 @@ class MainWindow(QMainWindow):
 
     def _save(self, dlg: JobEditorDialog, *, create: bool) -> None:
         payload = dlg.payload()
+        logger.info("{} job {!r}", "Creating" if create else "Updating", payload.get("name"))
+        # Saved under its ORIGINAL name: a changed name in the payload is a rename.
+        original = dlg.original_name() or payload["name"]
         try:
             if create:
-                logger.info("UI creating job {!r}", payload["name"])
                 self._api.create_job(payload)
             else:
-                logger.info("UI updating job {!r}", payload["name"])
-                self._api.update_job(payload["name"], payload)
+                self._api.update_job(original, payload)
             template = dlg.template_html()
             if template is not None:
-                logger.info("UI saving email template for job {!r}", payload["name"])
                 self._api.put_email_template(payload["name"], template)
         except ApiError as e:
-            logger.warning("UI job save failed for {!r}: {}", payload.get("name"), e)
             QMessageBox.warning(self, "Save failed", str(e))
             return
         self.refresh()
+        if not create and original != payload["name"]:
+            self.statusBar().showMessage(
+                f"Renamed {original!r} to {payload['name']!r} — its run history came along."
+            )
+        if create:
+            self.statusBar().showMessage(
+                f"Job {payload.get('name')!r} created in Testing — click ▶ Run to build it "
+                "and email the test recipients; Go live when you're happy with it."
+            )
 
     def _delete_job(self, name: str) -> None:
         confirm = QMessageBox.question(self, "Delete", f"Delete job {name!r}?")
         if confirm != QMessageBox.StandardButton.Yes:
             return
+        logger.info("Deleting job {!r}", name)
         try:
-            logger.info("UI deleting job {!r}", name)
             self._api.delete_job(name)
         except ApiError as e:
-            logger.warning("UI delete failed for {!r}: {}", name, e)
             QMessageBox.warning(self, "Delete failed", str(e))
             return
         self.refresh()
 
-    def _trigger(self, name: str, *, test: bool) -> None:
+    def _trigger(self, name: str, *, mode: str = "run") -> None:
+        api_call = {"run": self._api.run_job, "dry": self._api.dry_run_job}[mode]
+        kind = {"run": "Run", "dry": "Build only"}[mode]
         try:
-            logger.info("UI triggering {} for job {!r}", "test" if test else "run", name)
-            resp = self._api.test_job(name) if test else self._api.run_job(name)
+            resp = api_call(name)
         except ApiError as e:
-            logger.warning("UI trigger failed for {!r}: {}", name, e)
-            QMessageBox.warning(self, "Run failed", str(e))
+            QMessageBox.warning(self, f"{kind} failed", str(e))
             return
-        kind = "Test run" if test else "Run"
+        logger.info("{} started for {!r}: run {}", kind, name, resp.get("run_id"))
         self.statusBar().showMessage(f"{kind} started for {name} (run {resp['run_id']})")
         RunHistoryDialog(self._api, name, self).exec()
+
+    def _go_live(self, job: dict[str, Any]) -> None:
+        """Promote a testing job to live after an explicit, recipient-naming confirmation."""
+        name = job.get("name", "")
+        recipients = ", ".join(job.get("prod_recipients") or []) or "the Production recipients"
+        confirm = QMessageBox.question(
+            self,
+            "Go live",
+            f"Go live with {name!r}?\n\n"
+            f"Future runs — including scheduled ones — will email:\n{recipients}\n\n"
+            "You can move it back to Testing from the job editor's Email tab.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._api.set_job_stage(name, "live")
+        except ApiError as e:
+            QMessageBox.warning(self, "Go live failed", str(e))
+            return
+        logger.info("Job {!r} promoted to live", name)
+        self.statusBar().showMessage(f"{name} is now LIVE — future runs email production.")
+        self.refresh()
+
+    def _set_enabled(self, name: str, enabled: bool) -> None:
+        """One-click Pause/Resume: flip `enabled` through the normal update path (the
+        service re-validates and re-schedules)."""
+        try:
+            job = self._api.get_job(name)["job"]
+            job["enabled"] = enabled
+            self._api.update_job(name, job)
+        except ApiError as e:
+            QMessageBox.warning(self, "Resume failed" if enabled else "Pause failed", str(e))
+            return
+        logger.info("Job {!r} {}", name, "resumed" if enabled else "paused")
+        self.statusBar().showMessage(
+            f"{name} resumed — next run per its schedule."
+            if enabled
+            else f"{name} paused — scheduling is off; manual runs still work."
+        )
+        self.refresh()
+
+    def _open_last_report(self, job: dict[str, Any]) -> None:
+        """Open Explorer at the last successful report, file pre-selected."""
+        path_text = job.get("last_output_xlsx")
+        if not path_text:
+            self.statusBar().showMessage("No successful report yet — run the job first.")
+            return
+        path = Path(path_text)
+        if path.exists():
+            subprocess.Popen(["explorer", "/select,", str(path)])  # noqa: S603,S607
+        elif path.parent.exists():
+            os.startfile(str(path.parent))  # noqa: S606 — deliberate shell open
+        else:
+            self.statusBar().showMessage(f"Last report no longer exists: {path}")
+
+    def _duplicate_job(self, name: str) -> None:
+        """New job pre-filled with EVERYTHING from an existing one, template included
+        (fresh name, starts in Testing)."""
+        try:
+            job = self._api.get_job(name)["job"]
+            template = self._api.get_email_template(name)
+        except ApiError as e:
+            QMessageBox.warning(self, "Duplicate failed", str(e))
+            return
+        linked = template.get("path") if template.get("linked") else None
+        dlg = JobEditorDialog(
+            self._api,
+            None,
+            self,
+            prefill=job,
+            prefill_template=None if linked else (template.get("content") or None),
+            prefill_template_link=linked,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._save(dlg, create=True)
 
     def _view_logs(self, name: str | None = None) -> None:
         RunHistoryDialog(self._api, name, self).exec()
@@ -344,6 +621,11 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         SettingsDialog(self._api, self).exec()
+
+    def _open_service_account(self) -> None:
+        dlg = SettingsDialog(self._api, self, focus_service_account=True)
+        if dlg.exec():
+            self.refresh()
 
     def _open_app_logs(self) -> None:
         LogViewerDialog(self._api, self).exec()
@@ -364,25 +646,122 @@ class MainWindow(QMainWindow):
     def _import_settings(self) -> None:
         import_settings_flow(self._api, self)
 
+    def _ask_dev_note(self, title: str) -> str | None:
+        """Prompt for an optional problem description. Returns the note, or None if cancelled."""
+        note, ok = QInputDialog.getMultiLineText(
+            self,
+            title,
+            "Describe the problem for the developer (optional — leave blank to skip):",
+        )
+        return note if ok else None
+
+    def _export_logs(self) -> None:
+        """Build the diagnostic zip and let the user save it locally (email may be down)."""
+        note = self._ask_dev_note("Export logs to zip")
+        if note is None:
+            return
+        try:
+            resp = self._api.export_logs(note)
+        except ApiError as e:
+            QMessageBox.warning(self, "Export failed", str(e))
+            return
+        source = Path(resp.get("bundle", ""))
+        if not source.exists():
+            QMessageBox.warning(self, "Export failed", "The service did not produce a log bundle.")
+            return
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Save logs to zip", save_start_path(None, source.name), "Zip archive (*.zip)"
+        )
+        if not dest:
+            return
+        try:
+            shutil.copyfile(source, dest)
+        except OSError as e:
+            QMessageBox.warning(self, "Export failed", f"Could not save the zip: {e}")
+            return
+        logger.info("Exported diagnostic logs to {}", dest)
+        opened = QMessageBox.question(
+            self,
+            "Logs exported",
+            f"Saved the diagnostic bundle to:\n{dest}\n\nOpen the containing folder?",
+        )
+        if opened == QMessageBox.StandardButton.Yes:
+            os.startfile(str(Path(dest).parent))  # noqa: S606 — deliberate shell open
+
     def _send_support_logs(self) -> None:
         try:
-            recipients = ", ".join(self._api.get_config().get("test", {}).get("developer_bundle_recipients", []))
+            recipients = ", ".join(
+                self._api.get_config().get("test", {}).get("developer_bundle_recipients", [])
+            )
         except ApiError:
             recipients = "the configured support email"
-        confirm = QMessageBox.question(
+        note, ok = QInputDialog.getMultiLineText(
             self,
             "Send logs to support",
             "Send the full diagnostic bundle (logs + sanitized settings, no passwords) "
-            f"to {recipients or 'the configured support email'}?",
+            f"to {recipients or 'the configured support email'}.\n\n"
+            "Describe the problem for the developer (optional):",
+        )
+        if not ok:
+            return
+        try:
+            resp = self._api.send_dev_logs(note)
+        except ApiError as e:
+            QMessageBox.warning(self, "Send failed", str(e))
+            return
+        QMessageBox.information(
+            self, "Sent", f"Diagnostic bundle sent to: {', '.join(resp.get('recipients', []))}"
+        )
+
+    @staticmethod
+    def _purge_summary(stats: dict) -> str:
+        mb = stats.get("bytes_freed", 0) / 1e6
+        return (
+            f"Freed {mb:.1f} MB — {stats.get('run_dirs', 0)} run folder(s), "
+            f"{stats.get('bundles', 0)} bundle(s), {stats.get('log_files', 0)} log file(s), "
+            f"{stats.get('db_rows', 0)} history row(s)."
+        )
+
+    def _purge_old_logs(self) -> None:
+        try:
+            days = int(self._api.get_config().get("app", {}).get("log_retention_days", 30))
+        except ApiError:
+            days = 30
+        confirm = QMessageBox.question(
+            self,
+            "Delete old logs",
+            f"Delete run folders, log files, and diagnostic bundles older than {days} days "
+            f"(the retention setting)?\n\nRun history rows that old are removed too. "
+            "Active runs are never touched.",
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
         try:
-            resp = self._api.send_dev_logs()
+            stats = self._api.purge_logs(days)
         except ApiError as e:
-            QMessageBox.warning(self, "Send failed", str(e))
+            QMessageBox.warning(self, "Delete failed", str(e))
             return
-        QMessageBox.information(self, "Sent", f"Diagnostic bundle sent to: {', '.join(resp.get('recipients', []))}")
+        QMessageBox.information(self, "Old logs deleted", self._purge_summary(stats))
+
+    def _purge_all_logs(self) -> None:
+        confirm = QMessageBox.warning(
+            self,
+            "Delete ALL logs",
+            "This permanently deletes ALL run history, run folders, log files, and "
+            "diagnostic bundles — regardless of age. Only runs currently in progress "
+            "are kept.\n\nThere is no undo. Delete everything?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            stats = self._api.purge_logs(everything=True)
+        except ApiError as e:
+            QMessageBox.warning(self, "Delete failed", str(e))
+            return
+        QMessageBox.information(self, "All logs deleted", self._purge_summary(stats))
+        self.refresh()
 
     # -- help menu actions ----------------------------------------------------------
 
@@ -396,9 +775,11 @@ class MainWindow(QMainWindow):
 
     def _startup_update_check(self) -> None:
         try:
-            enabled = bool(self._api.get_config().get("ui", {}).get("check_updates_on_startup", True))
+            enabled = bool(
+                self._api.get_config().get("ui", {}).get("check_updates_on_startup", False)
+            )
         except ApiError:
-            enabled = True  # config unavailable — the check itself fails silently offline
+            enabled = False  # config unavailable — stick to the default (off)
         if not enabled:
             return
         self._run_update_check(silent=True)
@@ -419,9 +800,12 @@ class MainWindow(QMainWindow):
     def _notify_up_to_date(self, thread: _UpdateCheckThread) -> None:
         # Manual check with no newer version found -> tell the user explicitly.
         if not getattr(thread, "_reported", False):
-            QMessageBox.information(self, "Check for updates", f"You are running the latest version ({about.VERSION}).")
+            QMessageBox.information(
+                self, "Check for updates", f"You are running the latest version ({about.VERSION})."
+            )
 
     def _on_update_found(self, info: UpdateInfo) -> None:
+        logger.info("Update available: v{} (current v{})", info.version, about.VERSION)
         if self._update_thread is not None:
             self._update_thread._reported = True  # type: ignore[attr-defined]
         UpdateDialog(info, self).exec()
