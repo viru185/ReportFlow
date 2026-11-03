@@ -62,7 +62,13 @@ def _make_workbook(path: Path) -> None:
     wb.save(path)
 
 
-_WORKBOOK_KEYS = {"input_excel_path", "output_xlsx_path", "output_pdf_path", "unselected_sheets"}
+_WORKBOOK_KEYS = {
+    "input_excel_path",
+    "output_xlsx_path",
+    "output_pdf_path",
+    "unselected_sheets",
+    "pdf_mode",
+}
 
 
 def _request(tmp_path: Path, sheets, **over) -> WorkerRequest:
@@ -142,7 +148,7 @@ def test_error_cells_deliver_by_default(tmp_path):
 
     assert result.status is RunStatus.SUCCESS
     assert Path(result.output_xlsx_paths[0]).exists()
-    assert result.warnings and "#NAME?" in result.warnings[0]
+    assert any("#NAME?" in warning for warning in result.warnings)
     assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked"
 
 
@@ -205,6 +211,11 @@ def test_hide_mode_keeps_sheets_very_hidden(tmp_path):
     out = openpyxl.load_workbook(result.output_xlsx_paths[0])
     assert "Data" in out.sheetnames  # kept, not deleted
     assert out["Data"].sheet_state == "veryHidden"
+    emailed = openpyxl.load_workbook(
+        next(p for p in result.attachment_paths if p.suffix == ".xlsx")
+    )
+    assert emailed.sheetnames == ["Summary"]
+    emailed.close()
     assert not (_excel_pids() - before)
 
 
@@ -355,3 +366,42 @@ def test_parallel_subprocesses_no_ghost(tmp_path):
         assert read_result(req.result_path).status is RunStatus.SUCCESS
 
     assert not (_excel_pids() - before), "ghost EXCEL.EXE leaked after parallel runs"
+
+
+@pytest.mark.parametrize("excel_selected", [True, False])
+def test_selected_formats_combined_pdf_and_local_copy(tmp_path, excel_selected):
+    from pypdf import PdfReader
+
+    before = _excel_pids()
+    source = tmp_path / "template.xlsx"
+    _make_workbook(source)
+    original = source.read_bytes()
+    result = run_job(
+        _request(
+            tmp_path,
+            [
+                SheetTask(name="Summary", excel=excel_selected),
+                SheetTask(name="Detail", excel=False, hidden=True),
+            ],
+            pdf_mode="combined",
+            unselected_sheets="keep",
+            post_refresh_wait_seconds=0,
+        )
+    )
+    assert result.ok, result.message
+    assert len(result.pdf_paths) == 1
+    assert len(PdfReader(result.pdf_paths[0]).pages) == 2
+    local = openpyxl.load_workbook(result.output_xlsx_paths[0])
+    assert set(local.sheetnames) == {"Data", "Summary", "Detail"}
+    local.close()
+    excels = [p for p in result.attachment_paths if p.suffix == ".xlsx"]
+    assert len(excels) == int(excel_selected)
+    if excels:
+        emailed = openpyxl.load_workbook(excels[0])
+        assert emailed.sheetnames == ["Summary"]
+        assert emailed["Summary"]["B1"].value == 550
+        emailed.close()
+    assert result.output_xlsx_paths[0] not in result.attachment_paths
+    assert not list(tmp_path.glob("pdf-*"))
+    assert source.read_bytes() == original
+    assert not (_excel_pids() - before)

@@ -184,7 +184,7 @@ def _sample_job_dict():
         "workbooks": [
             {
                 "input_excel_path": "C:/t.xlsx",
-                "sheets": [{"name": "Summary", "pdf": True, "hidden": False}],
+                "sheets": [{"name": "Summary", "excel": True, "pdf": True, "hidden": False}],
                 "unselected_sheets": "remove",
             }
         ],
@@ -681,15 +681,16 @@ def _every_field_job():
             {
                 "input_excel_path": "C:/a.xlsx",
                 "sheets": [
-                    {"name": "Summary", "pdf": False, "hidden": False},
-                    {"name": "Raw", "pdf": True, "hidden": True},
+                    {"name": "Summary", "excel": True, "pdf": False, "hidden": False},
+                    {"name": "Raw", "excel": True, "pdf": True, "hidden": True},
                 ],
                 "unselected_sheets": "hide",
             },
             {
                 "input_excel_path": "C:/b.xlsx",
-                "sheets": [{"name": "Detail", "pdf": True, "hidden": False}],
+                "sheets": [{"name": "Detail", "excel": False, "pdf": True, "hidden": False}],
                 "unselected_sheets": "keep",
+                "pdf_mode": "combined",
             },
         ],
         "on_workbook_failure": "send_partial",
@@ -703,6 +704,7 @@ def _every_field_job():
         "post_refresh_wait_seconds": 120,
         "fail_if_sheet_empty": False,
         "fail_if_sheet_has_errors": True,
+        "require_pi_datalink": True,
         "blank_out_values": ["Tag not found"],
         "subject": "Daily {{ today }}",
         "prod": {"to": ["boss@corp.example.com"], "cc": ["c@corp.example.com"], "bcc": []},
@@ -1091,6 +1093,8 @@ def test_main_window_has_logs_menu(qtbot):
 
 
 def test_about_dialog_shows_metadata(qtbot):
+    from PySide6.QtWidgets import QLabel
+
     from reportflow import __about__ as about
     from reportflow.ui.windows.about_dialog import AboutDialog
 
@@ -1098,6 +1102,12 @@ def test_about_dialog_shows_metadata(qtbot):
     qtbot.addWidget(dlg)
     assert about.AUTHOR == "Viren Hirpara"
     assert "viru185/ReportFlow" in about.REPO_URL
+    visible_text = "\n".join(label.text() for label in dlg.findChildren(QLabel))
+    assert about.NAME in visible_text and about.VERSION in visible_text
+    assert all(
+        value not in visible_text
+        for value in (about.AUTHOR, about.REPO_URL, about.GITHUB_URL, about.LINKEDIN_URL)
+    )
 
 
 def test_help_dialog_builds(qtbot):
@@ -1217,7 +1227,7 @@ def test_editor_loads_legacy_single_workbook_job(qtbot):
     assert dlg.nonselected_mode.currentData() == "keep"
     assert dlg.input_excel.text() == "C:/t.xlsx"
     assert dlg.payload()["workbooks"][0]["sheets"] == [
-        {"name": "Summary", "pdf": False, "hidden": False}
+        {"name": "Summary", "excel": True, "pdf": False, "hidden": False}
     ]
 
     job2 = dict(legacy, keep_only_selected_sheets=True, unselected_sheets_mode="hide")
@@ -1235,26 +1245,26 @@ def test_editor_per_sheet_pdf_and_hidden(qtbot):
     qtbot.addWidget(dlg)
     dlg.input_excel.setText("C:/t.xlsx")
     dlg._discover_sheets()
-    _sheet_cell(dlg, "Detail", 2).setCheckState(Qt.CheckState.Unchecked)  # no PDF
-    _sheet_cell(dlg, "Raw", 3).setCheckState(Qt.CheckState.Checked)  # hidden
+    _sheet_cell(dlg, "Detail", 3).setCheckState(Qt.CheckState.Unchecked)  # no PDF
+    _sheet_cell(dlg, "Raw", 4).setCheckState(Qt.CheckState.Checked)  # hidden
     sheets = dlg.payload()["workbooks"][0]["sheets"]
     assert sheets == [
-        {"name": "Summary", "pdf": True, "hidden": False},
-        {"name": "Detail", "pdf": False, "hidden": False},
-        {"name": "Raw", "pdf": True, "hidden": True},
+        {"name": "Summary", "excel": True, "pdf": True, "hidden": False},
+        {"name": "Detail", "excel": True, "pdf": False, "hidden": False},
+        {"name": "Raw", "excel": True, "pdf": True, "hidden": True},
     ]
 
     # Excluding a sheet greys out its PDF/Hidden boxes and drops it from the payload.
     _sheet_cell(dlg, "Raw", 1).setCheckState(Qt.CheckState.Unchecked)
-    assert not _sheet_cell(dlg, "Raw", 2).flags() & Qt.ItemFlag.ItemIsEnabled
+    assert not _sheet_cell(dlg, "Raw", 3).flags() & Qt.ItemFlag.ItemIsEnabled
     assert [s["name"] for s in dlg.payload()["workbooks"][0]["sheets"]] == ["Summary", "Detail"]
 
     # Clicking a column title ticks/unticks the whole column (included sheets only).
-    dlg._toggle_column(2)
-    assert _sheet_cell(dlg, "Detail", 2).checkState() == Qt.CheckState.Checked
-    dlg._toggle_column(2)
-    assert _sheet_cell(dlg, "Summary", 2).checkState() == Qt.CheckState.Unchecked
-    assert _sheet_cell(dlg, "Raw", 2).checkState() == Qt.CheckState.Checked  # excluded: untouched
+    dlg._toggle_column(3)
+    assert _sheet_cell(dlg, "Detail", 3).checkState() == Qt.CheckState.Checked
+    dlg._toggle_column(3)
+    assert _sheet_cell(dlg, "Summary", 3).checkState() == Qt.CheckState.Unchecked
+    assert _sheet_cell(dlg, "Raw", 3).checkState() == Qt.CheckState.Checked  # excluded: untouched
 
 
 def test_editor_requires_one_visible_sheet(qtbot):
@@ -1265,9 +1275,35 @@ def test_editor_requires_one_visible_sheet(qtbot):
     dlg = JobEditorDialog(FakeApi(), _sample_job_dict())
     qtbot.addWidget(dlg)
     assert dlg._validation_error() is None
-    _sheet_cell(dlg, "Summary", 3).setCheckState(Qt.CheckState.Checked)  # hide the only one
+    _sheet_cell(dlg, "Summary", 4).setCheckState(Qt.CheckState.Checked)  # hide the only one
     tab, message = dlg._validation_error()
     assert tab == 0 and "must stay visible" in message
+
+
+def test_editor_attachment_choices_survive_switch_and_rediscovery(qtbot):
+    from PySide6.QtCore import Qt
+
+    from reportflow.core.config.models import JobConfig
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi(sheets=["Summary", "Detail"]), _sample_job_dict())
+    qtbot.addWidget(dlg)
+    dlg._discover_sheets()
+    _sheet_cell(dlg, "Summary", 2).setCheckState(Qt.CheckState.Unchecked)
+    assert not _sheet_cell(dlg, "Summary", 4).flags() & Qt.ItemFlag.ItemIsEnabled
+    dlg.combine_pdf.setChecked(True)
+    dlg.require_pi.setChecked(True)
+    dlg._add_workbook("C:/second.xlsx")
+    assert not dlg.combine_pdf.isChecked()
+    dlg.workbook_tabs.setCurrentIndex(0)
+    dlg._discover_sheets()
+    assert dlg.combine_pdf.isChecked()
+    assert _sheet_cell(dlg, "Summary", 2).checkState() == Qt.CheckState.Unchecked
+    job = JobConfig.model_validate(dlg.payload())
+    assert job.require_pi_datalink
+    assert job.workbooks[0].pdf_mode == "combined"
+    assert not job.workbooks[0].sheets[0].excel
+    assert job.workbooks[1].pdf_mode == "separate"
 
 
 def test_editor_multiple_workbooks(qtbot, monkeypatch):

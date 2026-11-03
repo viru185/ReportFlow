@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS runs (
     output_xlsx     TEXT,
     output_xlsx_paths TEXT NOT NULL DEFAULT '[]',
     pdf_paths       TEXT NOT NULL DEFAULT '[]',
+    attachment_paths TEXT,
     error_summary   TEXT,
     warnings        TEXT NOT NULL DEFAULT '[]',
     worker_log_path TEXT,
@@ -40,6 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC);
 
 # Columns added after the first release; applied to pre-existing databases on open.
 _MIGRATIONS = [
+    "ALTER TABLE runs ADD COLUMN attachment_paths TEXT",
     "ALTER TABLE runs ADD COLUMN email_note TEXT",
     "ALTER TABLE runs ADD COLUMN duration_seconds REAL",
     # warnings existed on the model since 0.6.2 but was never persisted — run history read
@@ -78,11 +80,13 @@ class RunStore:
                 """
                 INSERT INTO runs (run_id, job_name, trigger, status, is_test, started_at,
                                   finished_at, duration_seconds, exit_code, output_xlsx,
-                                  output_xlsx_paths, pdf_paths, error_summary, warnings,
+                                  output_xlsx_paths, pdf_paths, attachment_paths,
+                                  error_summary, warnings,
                                   worker_log_path, email_sent, email_note)
                 VALUES (:run_id, :job_name, :trigger, :status, :is_test, :started_at,
                         :finished_at, :duration_seconds, :exit_code, :output_xlsx,
-                        :output_xlsx_paths, :pdf_paths, :error_summary, :warnings,
+                        :output_xlsx_paths, :pdf_paths, :attachment_paths,
+                        :error_summary, :warnings,
                         :worker_log_path, :email_sent, :email_note)
                 ON CONFLICT(run_id) DO UPDATE SET
                     status=excluded.status,
@@ -92,6 +96,7 @@ class RunStore:
                     output_xlsx=excluded.output_xlsx,
                     output_xlsx_paths=excluded.output_xlsx_paths,
                     pdf_paths=excluded.pdf_paths,
+                    attachment_paths=excluded.attachment_paths,
                     error_summary=excluded.error_summary,
                     warnings=excluded.warnings,
                     worker_log_path=excluded.worker_log_path,
@@ -116,6 +121,9 @@ class RunStore:
             "output_xlsx": r.output_xlsx,
             "output_xlsx_paths": json.dumps(r.output_xlsx_paths),
             "pdf_paths": json.dumps(r.pdf_paths),
+            "attachment_paths": (
+                json.dumps(r.attachment_paths) if r.attachment_paths is not None else None
+            ),
             "error_summary": r.error_summary,
             "warnings": json.dumps(r.warnings),
             "worker_log_path": r.worker_log_path,
@@ -140,6 +148,9 @@ class RunStore:
             output_xlsx_paths=json.loads(row["output_xlsx_paths"] or "[]")
             or ([row["output_xlsx"]] if row["output_xlsx"] else []),
             pdf_paths=json.loads(row["pdf_paths"]),
+            attachment_paths=(
+                json.loads(row["attachment_paths"]) if row["attachment_paths"] is not None else None
+            ),
             error_summary=row["error_summary"],
             warnings=json.loads(row["warnings"] or "[]"),
             worker_log_path=row["worker_log_path"],

@@ -589,3 +589,70 @@ section of their own).
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/); the changelog is
 generated from history by [git-cliff](https://git-cliff.org/).
 ```
+
+
+### Sheet-level email attachments
+
+Each included sheet has independent **Excel attachment** and **PDF** choices. One emailed
+Excel file per workbook contains exactly the Excel-selected sheets. The regular local
+Excel copy is retained even for PDF-only emails and follows the workbook's existing
+keep/hide/remove setting for other sheets. Local **Open report** still opens that copy.
+**Combine selected sheets into one PDF** produces one PDF per workbook in the listed
+sheet order, preserving each sheet's print settings. No selected attachments means a
+local build without email.
+
+### Diagnosing PI activation under the service account
+
+Enable **Edit → Advanced → Require PI DataLink** for reports that depend on PI. Run
+**Build only** through the existing service account, then **Logs → Export logs to zip…**.
+The run's `pi_diagnostics/activation.json` records the actual Windows identity, session,
+Excel version/bitness, add-in registration and activation errors. New PI-related VSTO
+logs and relevant Application events are collected there too. Diagnostics enable
+`VSTO_LOGALERTS=1` and suppress VSTO dialogs within the worker process only. No login
+as the service account or account change is needed.
+
+Retain the configured service account while investigating. If a log contains only
+VSTO's outer “The add-in could not be installed” error, inspect the detailed deployment
+exception to determine the repair (manifest access, runtime dependencies, registration,
+trust, disabled add-ins or profile access). Pasted values do not establish recovery.
+Excel startup access denial (`0x80070005`) is reported separately.
+
+Recovery requires an original-formula test workbook to retrieve a controlled recent-data
+query through the service, match an independently checked reference, and repeat after a
+service restart. Add-in connection alone, cached values, and manually pasted reports do
+not establish fresh PI data. Local tests do not establish recovery on the affected server.
+
+### Investigating VSTO publisher-trust failures
+
+If diagnostic events identify `System.Security.SecurityException` in `VerifyAddInTrust`,
+inspect the installed vendor certificate and the executing account's inclusion list.
+Use the detailed exception to establish the cause before choosing an approved repair.
+The helper below is an inspection tool by default, not an automatic repair.
+
+From a PowerShell terminal on the server, inspect the installed public certificates first:
+
+```powershell
+$piManifests = @(
+    "$env:ProgramFiles\PIPC\Excel\OSIsoft.PIDataLink.UI.vsto"
+    "${env:ProgramFiles(x86)}\PIPC\AF\PIAFBuilder.vsto"
+)
+.\scripts\repair-pi-publisher-trust.ps1 -ManifestPath $piManifests
+```
+
+The helper defaults to inspection only. IT must independently verify the actual vendor
+signing certificate SHA-256 fingerprints against an approved package or certificate.
+After approval, an administrator can run the helper with `-ApprovedSha256` and `-Apply`
+to import only those certificates into `LocalMachine\TrustedPublisher`. This grants
+publisher trust to all code signed by those certificates on the device. The helper requires
+valid code-signing certificates and a valid Windows certificate chain, and never installs
+root certificates or changes Office policy. Expired certificates or invalid chains require
+vendor/IT repair instead. IT can deploy the same approved certificates through Group Policy.
+
+Once current runs finish, restart ReportFlow, enable **Require PI DataLink** on PI jobs,
+and use **Build only** with the original formulas. Verify both connection and fresh PI
+results before normal delivery. If a template's sheet names have changed, use
+**Discover sheets** and select the intended sheets explicitly. ReportFlow must not
+silently substitute renamed sheets.
+
+Microsoft references: [VSTO trust](https://learn.microsoft.com/en-us/visualstudio/vsto/granting-trust-to-office-solutions),
+[machine-scope ClickOnce publisher deployment](https://learn.microsoft.com/en-us/visualstudio/deployment/how-to-add-a-trusted-publisher-to-a-client-computer-for-clickonce-applications).

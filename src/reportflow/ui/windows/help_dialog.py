@@ -332,6 +332,17 @@ release when it comes out.</p>
     troubleshooting; the run history and Logs → Application logs show far more detail.</li>
 </ul>
 
+<h2>Choose email attachments</h2>
+<p>For each included sheet, tick <b>Excel attachment</b>, <b>PDF</b>, or both.
+The emailed Excel file contains exactly the Excel-ticked sheets. A full processed Excel
+copy is always saved locally; <b>Local sheets not included</b> controls its extra sheets.
+Untick Excel for every sheet to send only PDFs. If no attachments are selected, the report
+is built locally and no email is sent.</p>
+<p>Tick <b>Combine selected sheets into one PDF</b> to produce one PDF per workbook,
+in the order shown in the sheet table. Otherwise each PDF-ticked sheet gets its own PDF.
+<b>Hidden</b> applies to Excel-ticked sheets, with at least one visible Excel sheet required.
+Removing other sheets can break references in an Excel attachment when freezing is disabled.</p>
+
 <h2 id="pidatalink">Workbooks using PI DataLink (or other Excel add-ins)</h2>
 <p><b>The single most important rule:</b> PI DataLink is a <i>VSTO</i> add-in that uses
 Windows-integrated security. It <b>cannot load when the service runs as LocalSystem</b> (the
@@ -370,6 +381,24 @@ included</b> to <i>Keep them, hidden</i> (General tab) — the file will always 
 Mark-of-the-Web from being downloaded: right-click → Properties → <b>Unblock</b> (or add its
 folder as a Trusted Location).
 ReportFlow still generates reports from it because the service opens files via automation.</p>
+
+<h3>PI DataLink fails under an existing service account</h3>
+<p>Using a real account is necessary for PI access, but does not guarantee that the VSTO
+add-in can load. <b>Require PI DataLink</b> (Edit → Advanced) stops the workbook if the
+add-in is missing or fails to connect, even when pasted or cached values look healthy.
+Ordinary error-cell strictness remains a separate setting.</p>
+<p>Use <b>Build only</b>, then <b>Logs → Export logs to zip…</b>. Each run contains a
+<b>pi_diagnostics</b> folder with the worker identity, Excel details, add-in registrations,
+connection failures, recent VSTO logs and relevant Application events. This is collected
+through the service account; you do not need to log in as that account. VSTO alerts are
+suppressed so an invisible prompt cannot block the worker.</p>
+<p><b>“The add-in could not be installed”</b> is an outer VSTO error. Use the detailed
+exception to identify inaccessible/missing manifests, runtime dependencies, trust,
+disabled add-ins or profile issues before repairing the relevant component. Excel startup
+<b>0x80070005</b> is a separate access-denied failure, before add-in loading.</p>
+<p>A report containing manually pasted values does not verify automatic PI refresh.
+Check a copy containing original PI formulas against a known current-data query through
+Build only, then repeat after a service restart.</p>
 
 <h2 id="dryrun">Build only — check the report without emailing</h2>
 <p>Each job card has a <b>👁 Build only</b> button (previously "Dry run"). It builds the full

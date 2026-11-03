@@ -181,6 +181,26 @@ def test_same_workbook_twice_is_rejected():
         _sample_job(input_excel_path=None, sheet_names=None, workbooks=[workbook, workbook])
 
 
+def test_attachment_defaults_and_pdf_only_config_round_trip():
+    from reportflow.core.config.models import WorkbookConfig
+
+    legacy = _sample_job()
+    assert legacy.require_pi_datalink is False
+    assert all(s.excel for s in legacy.workbooks[0].sheets)
+    assert legacy.workbooks[0].pdf_mode == "separate"
+    pdf_only = WorkbookConfig(
+        input_excel_path="C:/t.xlsx",
+        sheets=[{"name": "Report", "excel": False, "pdf": True, "hidden": True}],
+        pdf_mode="combined",
+    )
+    assert WorkbookConfig.model_validate_json(pdf_only.model_dump_json()) == pdf_only
+    with pytest.raises(ValidationError, match="must stay visible"):
+        WorkbookConfig(
+            input_excel_path="C:/t.xlsx",
+            sheets=[{"name": "PDF only", "excel": False}, {"name": "Excel", "hidden": True}],
+        )
+
+
 def test_stage_defaults_to_testing_and_round_trips():
     assert _sample_job().stage == "testing"  # new jobs verify internally first
 

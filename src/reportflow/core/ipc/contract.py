@@ -30,6 +30,7 @@ class SheetTask(_IpcBase):
     """An included sheet. ``pdf``: export it; ``hidden``: hide it in the saved output."""
 
     name: str
+    excel: bool = True
     pdf: bool = True
     hidden: bool = False
 
@@ -43,6 +44,7 @@ class WorkbookTask(_IpcBase):
     output_pdf_path: Path | None = None
     sheets: list[SheetTask] = Field(min_length=1)
     unselected_sheets: Literal["remove", "hide", "keep"] = "remove"
+    pdf_mode: Literal["separate", "combined"] = "separate"
 
     @property
     def sheet_names(self) -> list[str]:
@@ -62,6 +64,7 @@ class WorkerRequest(_IpcBase):
     post_refresh_wait_seconds: int = Field(default=10, ge=0)
     fail_if_sheet_empty: bool = True
     fail_if_sheet_has_errors: bool = False
+    require_pi_datalink: bool = False
     blank_out_values: list[str] = Field(default_factory=list)
 
     timeout_seconds: int = Field(gt=0)
@@ -81,6 +84,8 @@ class WorkerResult(_IpcBase):
     # One output workbook per successfully built input workbook, in job order.
     output_xlsx_paths: list[Path] = Field(default_factory=list)
     pdf_paths: list[Path] = Field(default_factory=list)
+    # Explicit delivery manifest: local Excel copies must never leak into PDF-only mail.
+    attachment_paths: list[Path] = Field(default_factory=list)
     # Input file names skipped under continue_on_workbook_failure (their reason is a warning).
     failed_workbooks: list[str] = Field(default_factory=list)
 

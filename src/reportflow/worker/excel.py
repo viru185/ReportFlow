@@ -13,10 +13,12 @@ Reliability is the whole point of this module:
 
 from __future__ import annotations
 
+import gc
 import os
 import re
 import stat
 import time
+import traceback
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal
@@ -27,6 +29,8 @@ import win32api
 import win32event
 import xlwings as xw
 from loguru import logger
+
+from reportflow.worker.diagnostics import VstoDiagnostics, redact_diagnostic_text, windows_identity
 
 # Excel COM constants (avoid importing the type library).
 _XL_CALC_DONE = 0  # xlDone
@@ -50,10 +54,6 @@ _XL_SHEET_VERY_HIDDEN = 2  # xlSheetVeryHidden — only VBA can unhide it
 _SETTLE_STEP_SECONDS = 4.0
 _SETTLE_STABLE_ROUNDS = 2
 _SETTLE_GRACE_SECONDS = 30.0
-
-# Substring that marks a VSTO add-in that refused to activate (e.g. PI DataLink under a
-# service/LocalSystem context). Captured so the runner can name it in the failure message.
-_VSTO_INSTALL_FAILURE = "the add-in could not be installed"
 
 # Launching several Excel instances at the exact same moment races the COM/DCOM
 # registration and yields "RPC server is unavailable". We serialize only the brief
@@ -221,15 +221,19 @@ def _pdf_path_for_sheet(template: Path, sheet_name: str, *, single: bool) -> Pat
 class ExcelRun:
     """Context manager that owns a single disposable Excel instance for one run."""
 
-    def __init__(self, *, deadline: float | None = None) -> None:
+    def __init__(
+        self, *, deadline: float | None = None, diagnostics: VstoDiagnostics | None = None
+    ) -> None:
         self._deadline = deadline
+        self.diagnostics = diagnostics
+        self.pi_datalink_connected = False
+        self._source_paths: dict[int, Path] = {}
         self._com_initialized = False
         self._startup_mutex: int | None = None
         self.app: xw.App | None = None
         self.excel_pid: int | None = None
         self.excel_pid_reaped: bool = False
-        # Add-ins that failed to activate with the VSTO "could not be installed" signature
-        # (e.g. PI DataLink under a service account) — surfaced in the failure message.
+        # Add-ins that failed to activate — surfaced even when cached cells look healthy.
         self.failed_addins: list[str] = []
         # Per-sheet populated counts captured at open (the template's cached values) —
         # the settle loop's "expected shape" for each selected sheet of the OPEN workbook.
@@ -248,6 +252,8 @@ class ExcelRun:
             self.app = self._create_app_with_retry()
             self.excel_pid = int(self.app.pid)
             logger.info("Excel session started (pid={})", self.excel_pid)
+            if self.diagnostics is not None:
+                self.diagnostics.excel(self.app)
             self._harden(self.app)
             self._connect_com_addins(self.app)
         except Exception:
@@ -265,10 +271,9 @@ class ExcelRun:
         of names + states is deliberate — support bundles must show whether the add-in
         the workbook depends on actually loaded.
 
-        Add-ins that fail with the VSTO "could not be installed" signature (typical when a
-        VSTO add-in like PI DataLink is asked to activate under a service/LocalSystem
-        account with no user profile) are recorded in ``self.failed_addins`` so the runner
-        can name them in the failure message.
+        Every failed connection is recorded in ``self.failed_addins`` so healthy-looking
+        cached values cannot suppress a run warning. VSTO diagnostics capture the
+        underlying loader failure in the worker security context.
         """
         try:
             addins = app.api.COMAddIns
@@ -284,16 +289,36 @@ class ExcelRun:
             return
         for i in range(1, count + 1):
             name = f"#{i}"
+            details: dict[str, Any] = {}
             try:
                 addin = addins.Item(i)
                 name = str(addin.Description or addin.ProgId)
+                details.update(name=name, progid=str(addin.ProgId), before=bool(addin.Connect))
                 if not addin.Connect:
                     addin.Connect = True
-                logger.info("COM add-in {!r}: connected={}", name, bool(addin.Connect))
-            except Exception as e:  # noqa: BLE001 — one bad add-in must not stop the rest
-                logger.warning("COM add-in {!r} could not be connected: {}", name, e)
-                if _VSTO_INSTALL_FAILURE in str(e).lower():
+                connected = bool(addin.Connect)
+                details["after"] = connected
+                logger.info("COM add-in {!r}: connected={}", name, connected)
+                key = re.sub(r"[^a-z0-9]", "", (name + details["progid"]).lower())
+                if "pidatalink" in key:
+                    self.pi_datalink_connected |= connected
+                if not connected:
                     self.failed_addins.append(name)
+            except Exception as e:  # one failed add-in must not suppress the others
+                details.update(
+                    name=name,
+                    error=redact_diagnostic_text(repr(e)),
+                    traceback=redact_diagnostic_text(traceback.format_exc()),
+                )
+                logger.warning(
+                    "COM add-in {!r} could not be connected: {}",
+                    name,
+                    redact_diagnostic_text(str(e)),
+                )
+                self.failed_addins.append(name)
+            finally:
+                if self.diagnostics is not None:
+                    self.diagnostics.addin(details)
 
     def _acquire_startup_lock(self) -> None:
         try:
@@ -335,7 +360,14 @@ class ExcelRun:
                         app.kill()
                     except Exception:  # noqa: BLE001
                         pass
-                time.sleep(_APP_START_BACKOFF_SECONDS * attempt)
+                if getattr(e, "hresult", e.args[0] if e.args else None) == -2147024891:
+                    raise ExcelJobError(
+                        f"Excel startup access denied (0x80070005) for {windows_identity()}. "
+                        "Check Excel launch permissions for this service account; "
+                        "this occurs before PI DataLink activation."
+                    ) from e
+                if attempt < _APP_START_ATTEMPTS:
+                    time.sleep(_APP_START_BACKOFF_SECONDS * attempt)
         raise ExcelJobError(
             f"could not start Excel after {_APP_START_ATTEMPTS} attempts: {last_error}"
         )
@@ -372,6 +404,7 @@ class ExcelRun:
         """Guaranteed cleanup. Every step isolated so one failure cannot skip the rest."""
         self._release_startup_lock()  # safety net: normally released after open_workbook
         app = self.app
+        book: xw.Book | None = None
         if app is not None:
             try:
                 for book in list(app.books):
@@ -394,6 +427,13 @@ class ExcelRun:
 
         self.excel_pid_reaped = self._reap_pid(self.excel_pid)
 
+        # Release proxies while this thread still has a COM apartment. Exception
+        # tracebacks can otherwise release them after CoUninitialize and emit RPC faults.
+        self.app = None
+        app = None
+        book = None
+        gc.collect()
+
         if self._com_initialized:
             try:
                 pythoncom.CoUninitialize()
@@ -401,7 +441,6 @@ class ExcelRun:
                 logger.debug("CoUninitialize failed: {}", e)
             self._com_initialized = False
 
-        self.app = None
         logger.info(
             "Excel session torn down (pid={}, reaped={})",
             self.excel_pid,
@@ -456,7 +495,6 @@ class ExcelRun:
         assert self.app is not None
         if not template_path.exists():
             raise ExcelJobError(f"workbook template not found: {template_path}")
-        self._clear_read_only_attribute(template_path)
         logger.info("Opening workbook: {}", template_path)
         book = self.app.books.open(
             str(template_path),
@@ -473,15 +511,21 @@ class ExcelRun:
         except Exception as e:  # noqa: BLE001
             logger.debug("Could not query ReadOnly state: {}", e)
 
+        self._source_paths[id(book)] = template_path.resolve()
         existing = [s.name for s in book.sheets]
         missing = [n for n in sheet_names if n not in existing]
         if missing:
+            self.close_book(book)
+            del book
             raise ExcelJobError(
                 f"selected sheet(s) not found in workbook: {missing} (available: {existing})"
             )
         # The template's cached values are the settle loop's "expected shape": after the
         # refresh, a selected sheet holding fewer values than it OPENED with means async
         # data (PI archive pulls) hasn't caught up yet — keep waiting, then warn.
+        # Output visibility is configured later; PDF export needs these sheets visible now.
+        for name in sheet_names:
+            book.sheets[name].api.Visible = -1
         self.baseline_counts = _count_values_by_sheet(book, sheet_names)
         self.settle_warnings = []  # per-workbook, like the baselines
         logger.info("Opening populated-cell baselines: {}", self.baseline_counts)
@@ -768,6 +812,9 @@ class ExcelRun:
         self._log_name_references(book, doomed)
         for name in doomed:
             try:
+                # Excel can refuse Delete on very-hidden sheets. The local copy is
+                # already saved before pruning the email copy; expose only in memory.
+                book.sheets[name].api.Visible = -1
                 book.sheets[name].delete()
                 logger.info("Deleted unselected sheet from output: {!r}", name)
             except Exception as e:  # noqa: BLE001 — a stubborn sheet must not fail the run
@@ -853,7 +900,7 @@ class ExcelRun:
         Hard guard: refuse to save onto the input file even if a job misconfiguration
         resolves the output to the same path.
         """
-        source = Path(str(book.api.FullName))
+        source = self._source_paths.get(id(book), Path(str(book.api.FullName)))
         if output_xlsx_path.resolve() == source.resolve():
             raise ExcelJobError(
                 f"output path equals the input workbook ({source}) — refusing to "

@@ -68,9 +68,11 @@ def _free_port() -> int:
 class _Capture:
     def __init__(self):
         self.envelopes = []
+        self.messages = []
 
     async def handle_DATA(self, server, session, envelope):
         self.envelopes.append(list(envelope.rcpt_tos))
+        self.messages.append(envelope.content)
         return "250 OK"
 
 
@@ -293,6 +295,48 @@ def test_scheduled_run_in_testing_also_emails_test_recipients(tmp_path, monkeypa
 
     assert rec.is_test is True
     assert handler.envelopes and set(handler.envelopes[0]) == {"dev@corp.example.com"}
+
+
+def test_pdf_only_email_uses_manifest_and_keeps_local_excel(tmp_path, monkeypatch):
+    from email import policy
+    from email.parser import BytesParser
+
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    handler = _Capture()
+    port = _free_port()
+    controller = Controller(handler, hostname="127.0.0.1", port=port)
+    job = _job(tmp_path)
+    job.workbooks[0].pdf_mode = "combined"
+    for sheet in job.workbooks[0].sheets:
+        sheet.excel = False
+    controller.start()
+    try:
+        launcher = _launcher(tmp_path, _config(job, smtp_port=port))
+        rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
+    finally:
+        controller.stop()
+    assert rec.email_sent and Path(rec.output_xlsx).exists()
+    message = BytesParser(policy=policy.default).parsebytes(handler.messages[0])
+    attached_names = [part.get_filename() for part in message.iter_attachments()]
+    assert attached_names == [Path(rec.pdf_paths[0]).name]
+    assert rec.attachment_paths == rec.pdf_paths
+    stored = launcher.run_store.get(rec.run_id)
+    assert stored.attachment_paths == rec.attachment_paths
+    context = launcher._email_context(job, stored)
+    assert context["attachments"] == attached_names and context["attachment_count"] == 1
+    assert handler.envelopes == [["dev@corp.example.com"]]
+
+
+def test_no_attachments_builds_locally_without_attempting_email(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "success")
+    job = _job(tmp_path)
+    for sheet in job.workbooks[0].sheets:
+        sheet.excel = sheet.pdf = False
+    launcher = _launcher(tmp_path, _config(job, smtp_port=1))
+    rec = launcher.run_job_by_name("daily", RunTrigger.MANUAL)
+    assert rec.status is RunStatus.SUCCESS and Path(rec.output_xlsx).exists()
+    assert rec.attachment_paths == []
+    assert not rec.email_sent and rec.email_note == "not sent — no attachments selected"
 
 
 def test_live_stage_run_emails_production(tmp_path, monkeypatch):

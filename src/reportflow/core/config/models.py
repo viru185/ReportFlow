@@ -84,6 +84,7 @@ class SheetOptions(_Base):
     """One INCLUDED sheet: refreshed, checked, frozen — and optionally PDF'd / hidden."""
 
     name: str
+    excel: bool = True
     pdf: bool = True
     # Hidden in the OUTPUT workbook (normal hidden — recipients can unhide it). The sheet is
     # still refreshed and frozen, and can still get a PDF: export runs before hiding.
@@ -99,6 +100,7 @@ class WorkbookConfig(_Base):
     # names/charts that referenced them -> Office may refuse to open it); "hide" makes them
     # very-hidden (references intact, always openable); "keep" leaves them visible.
     unselected_sheets: UnselectedSheets = "remove"
+    pdf_mode: Literal["separate", "combined"] = "separate"
 
     @property
     def sheet_names(self) -> list[str]:
@@ -112,9 +114,11 @@ class WorkbookConfig(_Base):
             raise ValueError(f"{label}: a sheet is listed twice")
         # Excel cannot save a workbook with no visible sheet — and a report nobody can see
         # is pointless. Not-included sheets may be removed, so only included ones count.
-        if all(s.hidden for s in self.sheets):
+        excel_sheets = [s for s in self.sheets if s.excel]
+        if excel_sheets and all(s.hidden for s in excel_sheets):
             raise ValueError(
-                f"{label}: at least one included sheet must stay visible (untick Hidden on one)"
+                f"{label}: at least one Excel attachment sheet must stay visible "
+                "(untick Hidden on one)"
             )
         return self
 
@@ -178,6 +182,9 @@ class JobConfig(_Base):
     # report is delivered anyway; use "Blank out values" below to strip specific error
     # strings from the output.
     fail_if_sheet_has_errors: bool = False
+    # Unlike ordinary error-cell strictness, this guards against failed PI activation
+    # even when pasted/cached values make the workbook appear healthy.
+    require_pi_datalink: bool = False
     # Cell values blanked out of the OUTPUT after saving (e.g. PI DataLink error strings
     # like "Tag not found", "No Data", "#REF!").
     blank_out_values: list[str] = Field(default_factory=list)

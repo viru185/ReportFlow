@@ -51,7 +51,7 @@ from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 from reportflow.ui.windows.schedule_widget import ScheduleWidget
 
 # Sheet table columns.
-_COL_NAME, _COL_INCLUDE, _COL_PDF, _COL_HIDDEN = range(4)
+_COL_NAME, _COL_INCLUDE, _COL_EXCEL, _COL_PDF, _COL_HIDDEN = range(5)
 
 # What the output copy does with the sheets that are NOT included (stored per workbook).
 _UNSELECTED_MODES = [
@@ -73,6 +73,7 @@ def _join_csv(items: list[str] | None) -> str:
 class _SheetRow:
     name: str
     include: bool
+    excel: bool = True
     pdf: bool = True
     hidden: bool = False
 
@@ -84,6 +85,7 @@ class _WorkbookState:
     path: str = ""
     rows: list[_SheetRow] = field(default_factory=list)
     unselected: str = "remove"
+    pdf_mode: str = "separate"
 
     @property
     def label(self) -> str:
@@ -154,15 +156,12 @@ class JobEditorDialog(QDialog):
             self.template_status.setText("Using the default template (as the original).")
 
     # -- construction ------------------------------------------------------------
-
     def _build(self) -> None:
         outer = QVBoxLayout(self)
         self.tabs = QTabWidget()
-
         # ---- General tab ----
         general_tab = QWidget()
         input_form = QFormLayout(general_tab)
-
         self.name = QLineEdit()
         self.name.setToolTip(
             "A unique name for this job; it is also used in output filenames. Renaming keeps "
@@ -175,7 +174,6 @@ class JobEditorDialog(QDialog):
         name_row = QHBoxLayout()
         name_row.addWidget(self.name)
         name_row.addWidget(self.enabled)
-
         # One tab per input workbook; × removes one. A run builds them all and sends ONE email.
         self.workbook_tabs = QTabBar()
         self.workbook_tabs.setExpanding(False)
@@ -192,7 +190,6 @@ class JobEditorDialog(QDialog):
         wbs_row = QHBoxLayout()
         wbs_row.addWidget(self.workbook_tabs, 1)
         wbs_row.addWidget(add_wb)
-
         self.input_excel = QLineEdit()
         self.input_excel.setToolTip("The Excel workbook to open, refresh, and export.")
         self.input_excel.textChanged.connect(self._on_input_path_edited)
@@ -205,32 +202,34 @@ class JobEditorDialog(QDialog):
         wb_row.addWidget(self.input_excel)
         wb_row.addWidget(browse_wb)
         wb_row.addWidget(discover)
-
-        self.sheets = QTableWidget(0, 4)
-        self.sheets.setHorizontalHeaderLabels(["Sheet", "Include", "PDF", "Hidden"])
+        self.sheets = QTableWidget(0, 5)
+        self.sheets.setHorizontalHeaderLabels(
+            ["Sheet", "Include", "Excel attachment", "PDF", "Hidden"]
+        )
         self.sheets.verticalHeader().setVisible(False)
         self.sheets.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.sheets.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.sheets.setShowGrid(False)
         header = self.sheets.horizontalHeader()
         header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        for col in (_COL_INCLUDE, _COL_PDF, _COL_HIDDEN):
+        for col in (_COL_INCLUDE, _COL_EXCEL, _COL_PDF, _COL_HIDDEN):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         header.setToolTip("Click a column title to tick or untick the whole column.")
         header.sectionClicked.connect(self._toggle_column)
         self.sheets.itemChanged.connect(self._on_sheet_item_changed)
         self.sheets.setToolTip(
             "Include: the sheet is refreshed, checked and frozen.\n"
-            "PDF: also export it as its own PDF.\n"
+            "Excel attachment: include this sheet in the emailed Excel file.\n"
+            "PDF: include this sheet in PDF output.\n"
             "Hidden: keep it in the Excel file but hidden (recipients can unhide it)."
         )
         sheets_hint = QLabel(
-            "PDF = export the sheet as its own PDF · Hidden = in the Excel file but hidden "
-            "(recipients can unhide it). Click a column title to tick it for every sheet."
+            "Choose Excel, PDF, or both for each included sheet. A full Excel copy is "
+            "always saved locally. Hidden applies to the Excel attachment. "
+            "Click a column title to tick it for every applicable sheet."
         )
         sheets_hint.setProperty("muted", True)
         sheets_hint.setWordWrap(True)
-
         # What the output copy does with the sheets you did NOT include. One choice covers
         # "keep or remove" and "if kept, hidden or visible".
         self.nonselected_mode = QComboBox()
@@ -246,19 +245,20 @@ class JobEditorDialog(QDialog):
             "inside it.\n"
             "• Keep, visible — leave every sheet as it is."
         )
-
+        self.combine_pdf = QCheckBox("Combine selected sheets into one PDF")
+        self.combine_pdf.setToolTip("One PDF for this workbook, in the listed sheet order.")
+        self.combine_pdf.toggled.connect(self._update_output_example)
         input_form.addRow("Job name", name_row)
         input_form.addRow("Workbooks", wbs_row)
         input_form.addRow("Input Excel file", wb_row)
         input_form.addRow("Sheets", self.sheets)
         input_form.addRow("", sheets_hint)
-        input_form.addRow("Sheets not included", self.nonselected_mode)
-
+        input_form.addRow("Local sheets not included", self.nonselected_mode)
+        input_form.addRow("PDF output", self.combine_pdf)
         # ---- Output tab ----
         output_tab = QWidget()
         output_form = QFormLayout(output_tab)
         self._output_form = output_form
-
         self.output_dir = QLineEdit()
         self.output_dir.setPlaceholderText("(same folder as the input file)")
         self.output_dir.setToolTip(
@@ -271,7 +271,6 @@ class JobEditorDialog(QDialog):
         dir_row = QHBoxLayout()
         dir_row.addWidget(self.output_dir)
         dir_row.addWidget(browse_dir)
-
         self.output_name = QLineEdit()
         self.output_name.setPlaceholderText(DEFAULT_OUTPUT_STEM)
         self.output_name.setToolTip(
@@ -280,18 +279,15 @@ class JobEditorDialog(QDialog):
             f"file's name). Leave empty for {DEFAULT_OUTPUT_STEM}."
         )
         self.output_name.textChanged.connect(self._update_output_example)
-
         self.output_example = QLabel("")
         self.output_example.setProperty("muted", True)
         self.output_example.setWordWrap(True)
-
         self.freeze = QCheckBox("Freeze formulas to values")
         self.freeze.setChecked(True)
         self.freeze.setToolTip(
             "Convert formulas to plain values on the included sheets in the output copy, so "
             "recipients see the numbers without needing your data connections."
         )
-
         # Only meaningful with several workbooks (row hidden otherwise).
         self.on_failure = QComboBox()
         self.on_failure.addItem("Fail the whole run — send nothing", "fail_run")
@@ -301,24 +297,20 @@ class JobEditorDialog(QDialog):
             "(the safe default), or the email goes out with the workbooks that did work and "
             "the run lists the failed one as a warning."
         )
-
         output_form.addRow("Output folder", dir_row)
         output_form.addRow("Filename (optional)", self.output_name)
         output_form.addRow("", self.output_example)
         output_form.addRow("", self.freeze)
         output_form.addRow("If a workbook fails", self.on_failure)
-
         # ---- Schedule tab ----
         schedule_tab = QWidget()
         schedule_lay = QVBoxLayout(schedule_tab)
         self.schedule = ScheduleWidget()
         schedule_lay.addWidget(self.schedule)
         schedule_lay.addStretch()
-
         # ---- Email tab ----
         email_tab = QWidget()
         email_form = QFormLayout(email_tab)
-
         self.subject = QLineEdit()
         self.subject.setPlaceholderText("e.g. Daily production report — {{ today }}")
         self.subject.setToolTip(
@@ -339,7 +331,6 @@ class JobEditorDialog(QDialog):
         )
         if not self._editing:
             self.stage.setEnabled(False)  # new jobs always start in Testing
-
         self.prod_to = QLineEdit()
         self.prod_to.setToolTip("Production To — required. Comma-separated addresses.")
         self.prod_cc = QLineEdit()
@@ -352,7 +343,6 @@ class JobEditorDialog(QDialog):
         self.test_cc.setToolTip("Test Cc — optional.")
         self.test_bcc = QLineEdit()
         self.test_bcc.setToolTip("Test Bcc — optional.")
-
         edit_template = QPushButton("Edit email template…")
         edit_template.setToolTip(
             "Author the email body in-app (simple text or HTML) with a live preview."
@@ -364,7 +354,6 @@ class JobEditorDialog(QDialog):
         tpl_row.addWidget(edit_template)
         tpl_row.addWidget(self.template_status)
         tpl_row.addStretch()
-
         email_form.addRow("Subject", self.subject)
         email_form.addRow("Stage", self.stage)
         email_form.addRow("Prod: To", self.prod_to)
@@ -374,14 +363,12 @@ class JobEditorDialog(QDialog):
         email_form.addRow("Test: Cc (optional)", self.test_cc)
         email_form.addRow("Test: Bcc (optional)", self.test_bcc)
         email_form.addRow("Body", tpl_row)
-
         # ---- Advanced tab ----
         advanced_tab = QWidget()
         adv_form = QFormLayout(advanced_tab)
         adv_hint = QLabel("Optional tuning — most jobs don't need these.")
         adv_hint.setProperty("muted", True)
         adv_form.addRow(adv_hint)
-
         # The two run-time knobs carry an always-visible one-line explanation: users hit a
         # 20+ minute PI report timing out and never found the tooltip that said what to do.
         default_minutes = self._default_timeout_minutes()
@@ -437,6 +424,12 @@ class JobEditorDialog(QDialog):
             "(#REF!, #NAME?, …). Off = the report is delivered anyway and the error cells are "
             "reported as a warning; use 'Blank out values' below to strip specific errors."
         )
+        self.require_pi = QCheckBox("Require PI DataLink to connect before building the report")
+        self.require_pi.setToolTip(
+            "Fail this workbook if PI DataLink is missing or fails to load, even when "
+            "pasted or cached values contain no errors. Diagnostic logs are collected "
+            "under the service account; no interactive login is needed."
+        )
         self.blank_values = QLineEdit()
         self.blank_values.setPlaceholderText("#REF!, #N/A, Tag not found, No Data")
         self.blank_values.setToolTip(
@@ -445,7 +438,6 @@ class JobEditorDialog(QDialog):
         )
         self.notes = QPlainTextEdit()
         self.notes.setToolTip("Free-form description of this job.")
-
         for spin in (self.timeout, self.post_refresh_wait):
             spin.setMaximumWidth(220)  # a number, not a text field — keep it compact
         adv_form.addRow("Time limit", self.timeout)
@@ -455,21 +447,19 @@ class JobEditorDialog(QDialog):
         adv_form.addRow("Concurrency group", self.group)
         adv_form.addRow("", self.fail_if_empty)
         adv_form.addRow("", self.fail_if_errors)
+        adv_form.addRow("", self.require_pi)
         adv_form.addRow("Blank out values", self.blank_values)
         adv_form.addRow("Notes", self.notes)
-
         self.tabs.addTab(general_tab, "General")
         self.tabs.addTab(output_tab, "Output")
         self.tabs.addTab(schedule_tab, "Schedule")
         self.tabs.addTab(email_tab, "Email")
         self.tabs.addTab(advanced_tab, "Advanced")
-
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
-
         outer.addWidget(self.tabs)
         outer.addWidget(buttons)
         self._refresh_workbook_chrome()
@@ -490,13 +480,13 @@ class JobEditorDialog(QDialog):
         return max(1, -(-seconds // 60))
 
     # -- workbooks -----------------------------------------------------------------
-
     def _commit_current(self) -> None:
         """Copy the widgets back into the current workbook's state."""
         wb = self._workbooks[self._current_wb]
         wb.path = self.input_excel.text().strip()
         wb.rows = self._rows()
         wb.unselected = self.nonselected_mode.currentData()
+        wb.pdf_mode = "combined" if self.combine_pdf.isChecked() else "separate"
 
     def _show_workbook(self, index: int) -> None:
         self._current_wb = index
@@ -504,6 +494,7 @@ class JobEditorDialog(QDialog):
         self._syncing = True
         try:
             self.input_excel.setText(wb.path)
+            self.combine_pdf.setChecked(wb.pdf_mode == "combined")
             mode_index = self.nonselected_mode.findData(wb.unselected)
             self.nonselected_mode.setCurrentIndex(max(mode_index, 0))
         finally:
@@ -588,7 +579,6 @@ class JobEditorDialog(QDialog):
         self._update_output_example()
 
     # -- sheet table -----------------------------------------------------------------
-
     @staticmethod
     def _check_item(checked: bool) -> QTableWidgetItem:
         item = QTableWidgetItem()
@@ -607,6 +597,7 @@ class JobEditorDialog(QDialog):
                 name.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 self.sheets.setItem(r, _COL_NAME, name)
                 self.sheets.setItem(r, _COL_INCLUDE, self._check_item(row.include))
+                self.sheets.setItem(r, _COL_EXCEL, self._check_item(row.excel))
                 self.sheets.setItem(r, _COL_PDF, self._check_item(row.pdf))
                 self.sheets.setItem(r, _COL_HIDDEN, self._check_item(row.hidden))
                 self._sync_row_enabled(r)
@@ -626,6 +617,7 @@ class JobEditorDialog(QDialog):
             _SheetRow(
                 name=name(r),
                 include=checked(r, _COL_INCLUDE),
+                excel=checked(r, _COL_EXCEL),
                 pdf=checked(r, _COL_PDF),
                 hidden=checked(r, _COL_HIDDEN),
             )
@@ -636,18 +628,22 @@ class JobEditorDialog(QDialog):
         """PDF / Hidden only apply to included sheets — grey them out otherwise."""
         include = self.sheets.item(r, _COL_INCLUDE)
         on = include is not None and include.checkState() == Qt.CheckState.Checked
-        for col in (_COL_PDF, _COL_HIDDEN):
+        excel = self.sheets.item(r, _COL_EXCEL)
+        excel_on = excel is not None and excel.checkState() == Qt.CheckState.Checked
+        for col in (_COL_EXCEL, _COL_PDF, _COL_HIDDEN):
             item = self.sheets.item(r, col)
             if item is not None:
                 flags = Qt.ItemFlag.ItemIsUserCheckable | (
-                    Qt.ItemFlag.ItemIsEnabled if on else Qt.ItemFlag.NoItemFlags
+                    Qt.ItemFlag.ItemIsEnabled
+                    if on and (col != _COL_HIDDEN or excel_on)
+                    else Qt.ItemFlag.NoItemFlags
                 )
                 item.setFlags(flags)
 
     def _on_sheet_item_changed(self, item: QTableWidgetItem) -> None:
         if self._syncing:
             return
-        if item.column() == _COL_INCLUDE:
+        if item.column() in (_COL_INCLUDE, _COL_EXCEL):
             self._syncing = True
             try:
                 self._sync_row_enabled(item.row())
@@ -661,7 +657,11 @@ class JobEditorDialog(QDialog):
             return
         rows = self._rows()
         # PDF/Hidden only apply to included sheets.
-        targets = [r for r, row in enumerate(rows) if col == _COL_INCLUDE or row.include]
+        targets = [
+            r
+            for r, row in enumerate(rows)
+            if col == _COL_INCLUDE or (row.include and (col != _COL_HIDDEN or row.excel))
+        ]
         items = [self.sheets.item(r, col) for r in targets]
         all_on = all(i is not None and i.checkState() == Qt.CheckState.Checked for i in items)
         state = Qt.CheckState.Unchecked if all_on else Qt.CheckState.Checked
@@ -674,7 +674,6 @@ class JobEditorDialog(QDialog):
         return [row.name for row in self._rows() if row.include]
 
     # -- actions -----------------------------------------------------------------
-
     def _pick_input_excel(self) -> None:
         # Reopen at the currently-selected file's folder, else the Downloads folder.
         start = open_start_dir(self.input_excel.text().strip())
@@ -724,8 +723,10 @@ class JobEditorDialog(QDialog):
         )
         folder = self.output_dir.text().strip() or "(input file's folder)"
         example = f"→ {folder}\\{stem}.xlsx"
+        if any(row.include and row.excel for row in self._rows()):
+            example += f" · email: {stem}_email.xlsx"
         if any(row.include and row.pdf for row in self._rows()):
-            example += f", {stem}_<sheet>.pdf"
+            example += f", {stem}.pdf" if self.combine_pdf.isChecked() else f", {stem}_<sheet>.pdf"
         if multi:
             example += f" — one per workbook ({len(self._workbooks)})"
         if overwrites_same_day(pattern):
@@ -798,9 +799,10 @@ class JobEditorDialog(QDialog):
             included = [row for row in wb.rows if row.include]
             if not included:
                 return i, f"Include at least one sheet of {wb.label}."
-            if all(row.hidden for row in included):
+            excel_rows = [row for row in included if row.excel]
+            if excel_rows and all(row.hidden for row in excel_rows):
                 return i, (
-                    f"{wb.label}: at least one included sheet must stay visible — untick "
+                    f"{wb.label}: at least one Excel attachment sheet must stay visible — untick "
                     "Hidden on one of them."
                 )
         subject_problem = template_error(self.subject.text())
@@ -829,7 +831,6 @@ class JobEditorDialog(QDialog):
         self.accept()
 
     # -- payload -----------------------------------------------------------------
-
     def payload(self) -> dict[str, Any]:
         self._commit_current()
         data: dict[str, Any] = {
@@ -839,11 +840,12 @@ class JobEditorDialog(QDialog):
                 {
                     "input_excel_path": wb.path,
                     "sheets": [
-                        {"name": row.name, "pdf": row.pdf, "hidden": row.hidden}
+                        {"name": row.name, "excel": row.excel, "pdf": row.pdf, "hidden": row.hidden}
                         for row in wb.rows
                         if row.include
                     ],
                     "unselected_sheets": wb.unselected,
+                    "pdf_mode": wb.pdf_mode,
                 }
                 for wb in self._workbooks
             ],
@@ -857,6 +859,7 @@ class JobEditorDialog(QDialog):
             "post_refresh_wait_seconds": self.post_refresh_wait.value(),
             "fail_if_sheet_empty": self.fail_if_empty.isChecked(),
             "fail_if_sheet_has_errors": self.fail_if_errors.isChecked(),
+            "require_pi_datalink": self.require_pi.isChecked(),
             "blank_out_values": _split_csv(self.blank_values.text()),
             "subject": self.subject.text().strip() or None,
             "stage": self.stage.currentData(),
@@ -914,12 +917,14 @@ class JobEditorDialog(QDialog):
                         _SheetRow(
                             s["name"],
                             include=True,
+                            excel=s.get("excel", True),
                             pdf=s.get("pdf", True),
                             hidden=s.get("hidden", False),
                         )
                         for s in wb.get("sheets", [])
                     ],
                     unselected=wb.get("unselected_sheets", "remove"),
+                    pdf_mode=wb.get("pdf_mode", "separate"),
                 )
                 for wb in job.get("workbooks", [])
             ]
@@ -938,6 +943,7 @@ class JobEditorDialog(QDialog):
         self.post_refresh_wait.setValue(job.get("post_refresh_wait_seconds") or 0)
         self.fail_if_empty.setChecked(job.get("fail_if_sheet_empty", True))
         self.fail_if_errors.setChecked(job.get("fail_if_sheet_has_errors", False))
+        self.require_pi.setChecked(job.get("require_pi_datalink", False))
         self.blank_values.setText(_join_csv(job.get("blank_out_values")))
         self.notes.setPlainText(job.get("notes", ""))
         self.subject.setText(job.get("subject") or "")
@@ -948,7 +954,6 @@ class JobEditorDialog(QDialog):
             self.template_status.setText("This job has a custom template.")
             if self._editing:
                 self._detect_template_link(job.get("name", ""))
-
         prod = job.get("prod", {})
         self.prod_to.setText(_join_csv(prod.get("to")))
         self.prod_cc.setText(_join_csv(prod.get("cc")))

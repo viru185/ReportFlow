@@ -1,9 +1,13 @@
 # ReportFlow — project guide for Claude
 
 Windows desktop automation for Excel-based reporting.
+
+Public-repository privacy: use fictional identities and generic examples only. Never
+commit customer names, domains, accounts, server names, identifying paths, or diagnostic
+output. Keep operational evidence outside tracked files and release artifacts.
 A job = "open these workbooks, refresh their data, freeze formulas to values, export per-sheet
 PDFs, email the result — on a schedule". A job has one or more workbooks
-(`JobConfig.workbooks`), each with per-sheet options (`SheetOptions`: pdf / hidden) and what
+(`JobConfig.workbooks`), each with per-sheet options (`SheetOptions`: excel / pdf / hidden) and what
 happens to the sheets it doesn't include (`unselected_sheets`: remove / hide / keep). One run
 builds every workbook in ONE Excel session and sends ONE email.
 
@@ -21,7 +25,7 @@ Flow: **UI → HTTP (localhost:8787) → Service → spawns one disposable Worke
 The UI never touches Excel or config directly — everything goes through `ui/api_client.py`.
 The service writes `request.json`, the worker writes `result.json` (`core/ipc/contract.py`
 is the schema; it is the contract between the two processes — `WorkerRequest.workbooks`
-in, `WorkerResult.output_xlsx_paths` out). Service and worker ship in one installer, so the
+in, `WorkerResult.output_xlsx_paths` for local reports and `attachment_paths` for email out). Service and worker ship in one installer, so the
 contract can change freely; the CONFIG cannot — old job shapes must keep loading.
 
 - Data root: `%ProgramData%\ReportFlow` (config / logs / state / runs / templates) so the
@@ -70,7 +74,7 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
   Mark-of-the-Web → Unblock / Trusted Location (automation still opens it).
 - **PI data arrives AFTER Excel says calculation is done — and a spill can COLLAPSE
   mid-recalc.** A fixed sleep froze sheets half-populated (0.6.2 added adaptive settle);
-  then the Equipment/Sensor report shipped one sheet empty because the settle judged
+  then a report shipped one sheet empty because the settle judged
   stability with `sig <= prev` over a SUMMED count — a collapsed `PINCompDat` dynamic-array
   spill (count *drops*) read as "stable". The settle now tracks counts **per sheet**
   against **opening baselines** (the template's cached values, captured in
@@ -170,3 +174,20 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   actions (Open report / Edit / Logs / Duplicate / Pause / Delete) live behind the card's ⋯
   menu; only daily actions (Run, Build only, Go live/Resume) stay as visible buttons. Don't
   "fix" that back to a button row — 9+ visible buttons per card was the problem.
+
+
+## Attachment and PI activation invariants (0.11.1 beta)
+
+- Email uses only the worker's explicit `attachment_paths`, never local `output_xlsx_paths`.
+  The local `.xlsx` is retained; the `_email.xlsx` contains exactly Excel-ticked sheets.
+  Removal is verified before delivery. PDF exports run before sheet pruning/hiding so
+  formula dependencies and print layout are intact. Combined PDFs are per workbook.
+- `require_pi_datalink` is optional and separate from ordinary error-cell strictness.
+  Failure to activate PI can never be considered successful when this setting is enabled,
+  including workbooks containing cached or manually pasted values.
+- VSTO diagnostics run under the existing worker token, use process-local environment
+  settings, suppress dialogs, and capture only current PI-related, redacted evidence.
+  A real service-account identity alone is not proof that VSTO activation works.
+- Keep the original input path across SaveAs operations; every save must preserve it.
+  Historical run records have `attachment_paths=None`; a new empty list means explicitly
+  no attachments. Never fall back from an empty delivery manifest to local Excel files.

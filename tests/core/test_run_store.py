@@ -23,6 +23,28 @@ def test_upsert_and_get(tmp_path):
     assert got.status is RunStatus.SUCCESS
 
 
+def test_attachment_migration_distinguishes_historical_and_explicit_empty(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "runs.db"
+    store = RunStore(path)
+    old = _rec("old")
+    old.output_xlsx = "local.xlsx"
+    store.upsert(old)
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE runs DROP COLUMN attachment_paths")
+    reopened = RunStore(path)
+    assert reopened.get("old").attachment_paths is None
+    empty = _rec("empty")
+    empty.attachment_paths = []
+    selected = _rec("selected")
+    selected.attachment_paths = ["report.pdf"]
+    reopened.upsert(empty)
+    reopened.upsert(selected)
+    assert reopened.get("empty").attachment_paths == []
+    assert reopened.get("selected").attachment_paths == ["report.pdf"]
+
+
 def test_upsert_updates_existing(tmp_path):
     store = RunStore(tmp_path / "runs.db")
     store.upsert(_rec(status=RunStatus.SUCCESS))

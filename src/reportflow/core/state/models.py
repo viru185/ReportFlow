@@ -35,6 +35,8 @@ class RunRecord(BaseModel):
     output_xlsx: str | None = None
     output_xlsx_paths: list[str] = Field(default_factory=list)
     pdf_paths: list[str] = Field(default_factory=list)
+    # None denotes historical rows from before explicit attachment selection.
+    attachment_paths: list[str] | None = None
 
     error_summary: str | None = None
     # Non-fatal notes from the worker shown even on success (e.g. error cells delivered anyway).

@@ -39,11 +39,21 @@ def main() -> int:
     # success: create the output artifacts (one per workbook) and report them
     outputs = []
     pdfs = []
+    attachments = []
     for task in request.workbooks:
         task.output_xlsx_path.parent.mkdir(parents=True, exist_ok=True)
         task.output_xlsx_path.write_bytes(b"PK\x03\x04fake-xlsx")
         outputs.append(task.output_xlsx_path)
+        if any(s.excel for s in task.sheets):
+            email_xlsx = task.output_xlsx_path.with_name(f"{task.output_xlsx_path.stem}_email.xlsx")
+            email_xlsx.write_bytes(b"PK\x03\x04fake-xlsx")
+            attachments.append(email_xlsx)
         if task.output_pdf_path is None:
+            continue
+        if task.pdf_mode == "combined" and any(s.pdf for s in task.sheets):
+            p = task.output_xlsx_path.with_suffix(".pdf")
+            p.write_bytes(b"%PDF-1.4 fake")
+            pdfs.append(p)
             continue
         for sheet in task.sheets:
             if not sheet.pdf:
@@ -60,6 +70,7 @@ def main() -> int:
             message="completed with 1 warning(s)" if mode == "warn" else "completed",
             output_xlsx_paths=outputs,
             pdf_paths=pdfs,
+            attachment_paths=[*attachments, *pdfs],
             warnings=warnings if mode == "warn" else [],
             excel_pid_reaped=True,
         ),

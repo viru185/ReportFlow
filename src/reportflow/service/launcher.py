@@ -129,9 +129,9 @@ def resolve_output_paths(
         # Two inputs with the same file name (from different folders) must not overwrite
         # each other's output.
         unique, n = stem, 2
-        while str(base / unique).casefold() in taken:
+        while any(str(base / name).casefold() in taken for name in (unique, unique + "_email")):
             unique, n = f"{stem}_{n}", n + 1
-        taken.add(str(base / unique).casefold())
+        taken.update(str(base / name).casefold() for name in (unique, unique + "_email"))
         output_pdf = base / f"{unique}_{{sheet}}.pdf" if any(s.pdf for s in wb.sheets) else None
         resolved.append((base / f"{unique}.xlsx", output_pdf))
     return resolved
@@ -160,7 +160,6 @@ class Launcher:
         self._inflight: dict[str, str] = {}
 
     # -- public ------------------------------------------------------------------
-
     def run_job_by_name(self, name: str, trigger: RunTrigger) -> RunRecord:
         """Synchronous run (blocks until the worker finishes). Used by tests and internally."""
         config = self.get_config()
@@ -195,7 +194,6 @@ class Launcher:
             return set(self._inflight.values())
 
     # -- internals ---------------------------------------------------------------
-
     def _group_lock(self, group: str | None) -> threading.Lock | None:
         if not group:
             return None
@@ -227,7 +225,6 @@ class Launcher:
         now = datetime.now()
         run_dir = paths.run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
-
         request = self._build_request(config, job, run_id, run_dir, now, is_test=is_test)
         record = RunRecord(
             run_id=run_id,
@@ -281,7 +278,11 @@ class Launcher:
                 input_excel_path=wb.input_excel_path,
                 output_xlsx_path=out_xlsx,
                 output_pdf_path=out_pdf,
-                sheets=[SheetTask(name=s.name, pdf=s.pdf, hidden=s.hidden) for s in wb.sheets],
+                sheets=[
+                    SheetTask(name=s.name, excel=s.excel, pdf=s.pdf, hidden=s.hidden)
+                    for s in wb.sheets
+                ],
+                pdf_mode=wb.pdf_mode,
                 unselected_sheets=wb.unselected_sheets,
             )
             for wb, (out_xlsx, out_pdf) in zip(job.workbooks, outputs, strict=True)
@@ -295,6 +296,7 @@ class Launcher:
             post_refresh_wait_seconds=job.post_refresh_wait_seconds,
             fail_if_sheet_empty=job.fail_if_sheet_empty,
             fail_if_sheet_has_errors=job.fail_if_sheet_has_errors,
+            require_pi_datalink=job.require_pi_datalink,
             blank_out_values=job.blank_out_values,
             timeout_seconds=timeout,
             is_test=is_test,
@@ -308,7 +310,6 @@ class Launcher:
     ) -> None:
         req_path = write_request(request, request.result_path.parent / "request.json")
         stdio_path = request.result_path.parent / "worker_stdio.log"
-
         logger.info("Launching worker for run {} (job {!r})", request.run_id, job.name)
         try:
             command = self._worker_command or default_worker_command()
@@ -335,7 +336,6 @@ class Launcher:
             return
         with self._active_guard:
             self._active[request.run_id] = proc
-
         timed_out = False
         try:
             exit_code = proc.wait(timeout=request.timeout_seconds)
@@ -347,7 +347,6 @@ class Launcher:
         finally:
             with self._active_guard:
                 self._active.pop(request.run_id, None)
-
         self._finalize(config, job, request, record, exit_code, timed_out=timed_out)
 
     def _finalize(
@@ -363,14 +362,12 @@ class Launcher:
         record.exit_code = exit_code
         record.finished_at = datetime.now().isoformat(timespec="seconds")
         record.duration_seconds = _elapsed_seconds(record.started_at, record.finished_at)
-
         result = None
         if request.result_path.exists():
             try:
                 result = read_result(request.result_path)
             except Exception as e:  # noqa: BLE001
                 logger.error("Could not parse result for run {}: {}", request.run_id, e)
-
         if timed_out:
             record.status = RunStatus.TIMED_OUT
             # Say what to do: the usual cause is simply a big report (lots of PI data).
@@ -386,16 +383,15 @@ class Launcher:
             record.output_xlsx_paths = [str(p) for p in result.output_xlsx_paths]
             record.output_xlsx = record.output_xlsx_paths[0] if record.output_xlsx_paths else None
             record.pdf_paths = [str(p) for p in result.pdf_paths]
+            record.attachment_paths = [str(p) for p in result.attachment_paths]
             record.warnings = list(result.warnings)
             if result.duration_seconds is not None:
                 # Prefer the worker's own measurement over the launcher-bracket fallback.
                 record.duration_seconds = result.duration_seconds
             if not result.ok:
                 record.error_summary = (result.message or "run failed").strip()[:500]
-
         self.run_store.upsert(record)
         logger.info("Run {} finished: status={} exit={}", request.run_id, record.status, exit_code)
-
         self._maybe_email(config, job, record, request)
 
     def _maybe_email(
@@ -410,6 +406,8 @@ class Launcher:
             record.email_note = _DRY_RUN_NOTE
         elif record.status is not RunStatus.SUCCESS:
             record.email_note = "not sent — run did not succeed"
+        elif not record.attachment_paths:
+            record.email_note = "not sent — no attachments selected"
         else:
             template = job.email_template_path
             if template is not None and not Path(template).exists():
@@ -418,7 +416,7 @@ class Launcher:
                 note = f"email template not found: {template} — sent with the default template"
                 logger.warning("Run {}: {}", record.run_id, note)
                 record.warnings.append(note)
-            attachments = [Path(p) for p in [*record.output_xlsx_paths, *record.pdf_paths]]
+            attachments = [Path(p) for p in record.attachment_paths or []]
             context = self._email_context(job, record)
             kind = (
                 "test recipient(s) — job is in Testing"
@@ -442,7 +440,7 @@ class Launcher:
             started = datetime.fromisoformat(record.started_at or "")
         except ValueError:
             started = datetime.now()
-        attachments = [Path(p).name for p in [*record.output_xlsx_paths, *record.pdf_paths]]
+        attachments = [Path(p).name for p in record.attachment_paths or []]
         context = {
             "job_name": job.name,
             "status": str(record.status),
