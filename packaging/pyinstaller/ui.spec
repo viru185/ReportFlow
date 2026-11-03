@@ -68,6 +68,8 @@ a = Analysis(
     datas=[
         (os.path.join(ROOT, "assets", "reportflow.png"), "assets"),
         (os.path.join(ROOT, "assets", "check.svg"), "assets"),
+        (os.path.join(ROOT, "assets", "arrow-up.png"), "assets"),
+        (os.path.join(ROOT, "assets", "arrow-down.png"), "assets"),
         # The version lives only in pyproject.toml; frozen exes read package metadata.
         *copy_metadata("reportflow"),
     ],

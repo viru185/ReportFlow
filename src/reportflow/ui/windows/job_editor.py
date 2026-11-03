@@ -1,6 +1,6 @@
 """Job editor dialog — compact tabs (General / Output / Schedule / Email / Advanced).
 
-No scrolling: each tab is small and focused. Everything non-mandatory is optional.
+Each tab is focused and scrolls on smaller screens. Non-mandatory settings are optional.
 A job has one or more workbooks (one tab each on the General tab), and each included sheet
 has its own PDF / Hidden choice. Outputs are a folder + optional filename stem; the schedule
 is built visually; the email body is authored in-app via EmailTemplateDialog.
@@ -47,6 +47,7 @@ from reportflow.core.output_names import (
 )
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.fs_util import open_start_dir
+from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 from reportflow.ui.windows.schedule_widget import ScheduleWidget
 
@@ -121,7 +122,7 @@ class JobEditorDialog(QDialog):
         self._current_wb = 0
         self._syncing = False  # guards widget signals while the editor fills widgets itself
         self.setWindowTitle("Edit Job" if self._editing else "New Job")
-        self.resize(660, 600)
+        self.resize(900, 680)
         self._build()
         if job:
             self._load(job)
@@ -162,13 +163,15 @@ class JobEditorDialog(QDialog):
         # ---- General tab ----
         general_tab = QWidget()
         input_form = QFormLayout(general_tab)
+        input_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        input_form.setVerticalSpacing(10)
         self.name = QLineEdit()
         self.name.setToolTip(
             "A unique name for this job; it is also used in output filenames. Renaming keeps "
             "the job's run history and email template."
         )
         self.name.textChanged.connect(self._update_output_example)
-        self.enabled = QCheckBox("Enabled")
+        self.enabled = QCheckBox("Run on schedule")
         self.enabled.setChecked(True)
         self.enabled.setToolTip("Untick to keep the job configured but never run it on schedule.")
         name_row = QHBoxLayout()
@@ -177,6 +180,8 @@ class JobEditorDialog(QDialog):
         # One tab per input workbook; × removes one. A run builds them all and sends ONE email.
         self.workbook_tabs = QTabBar()
         self.workbook_tabs.setExpanding(False)
+        self.workbook_tabs.setElideMode(Qt.TextElideMode.ElideMiddle)
+        self.workbook_tabs.setUsesScrollButtons(True)
         self.workbook_tabs.setDocumentMode(True)
         self.workbook_tabs.addTab(self._workbooks[0].label)
         self.workbook_tabs.currentChanged.connect(self._on_workbook_switched)
@@ -207,6 +212,10 @@ class JobEditorDialog(QDialog):
             ["Sheet", "Include", "Excel attachment", "PDF", "Hidden"]
         )
         self.sheets.verticalHeader().setVisible(False)
+        self.sheets.verticalHeader().setDefaultSectionSize(34)
+        self.sheets.setMinimumHeight(150)
+        self.sheets.setMaximumHeight(320)
+        self.sheets.setTabKeyNavigation(True)
         self.sheets.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.sheets.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.sheets.setShowGrid(False)
@@ -214,6 +223,7 @@ class JobEditorDialog(QDialog):
         header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         for col in (_COL_INCLUDE, _COL_EXCEL, _COL_PDF, _COL_HIDDEN):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+            self.sheets.setItemDelegateForColumn(col, CenteredCheckDelegate(self.sheets))
         header.setToolTip("Click a column title to tick or untick the whole column.")
         header.sectionClicked.connect(self._toggle_column)
         self.sheets.itemChanged.connect(self._on_sheet_item_changed)
@@ -224,9 +234,8 @@ class JobEditorDialog(QDialog):
             "Hidden: keep it in the Excel file but hidden (recipients can unhide it)."
         )
         sheets_hint = QLabel(
-            "Choose Excel, PDF, or both for each included sheet. A full Excel copy is "
-            "always saved locally. Hidden applies to the Excel attachment. "
-            "Click a column title to tick it for every applicable sheet."
+            "Include sheets to process, then choose their Excel and PDF attachments. "
+            "A full Excel copy is saved locally. Click a column heading to select all."
         )
         sheets_hint.setProperty("muted", True)
         sheets_hint.setWordWrap(True)
@@ -251,9 +260,10 @@ class JobEditorDialog(QDialog):
         input_form.addRow("Job name", name_row)
         input_form.addRow("Workbooks", wbs_row)
         input_form.addRow("Input Excel file", wb_row)
-        input_form.addRow("Sheets", self.sheets)
-        input_form.addRow("", sheets_hint)
-        input_form.addRow("Local sheets not included", self.nonselected_mode)
+        input_form.addRow(QLabel("Sheets and email attachments"))
+        input_form.addRow(self.sheets)
+        input_form.addRow(sheets_hint)
+        input_form.addRow("Other local sheets", self.nonselected_mode)
         input_form.addRow("PDF output", self.combine_pdf)
         # ---- Output tab ----
         output_tab = QWidget()
@@ -356,9 +366,9 @@ class JobEditorDialog(QDialog):
         tpl_row.addStretch()
         email_form.addRow("Subject", self.subject)
         email_form.addRow("Stage", self.stage)
-        email_form.addRow("Prod: To", self.prod_to)
-        email_form.addRow("Prod: Cc (optional)", self.prod_cc)
-        email_form.addRow("Prod: Bcc (optional)", self.prod_bcc)
+        email_form.addRow("Production: To", self.prod_to)
+        email_form.addRow("Production: Cc (optional)", self.prod_cc)
+        email_form.addRow("Production: Bcc (optional)", self.prod_bcc)
         email_form.addRow("Test: To", self.test_to)
         email_form.addRow("Test: Cc (optional)", self.test_cc)
         email_form.addRow("Test: Bcc (optional)", self.test_bcc)
@@ -450,14 +460,15 @@ class JobEditorDialog(QDialog):
         adv_form.addRow("", self.require_pi)
         adv_form.addRow("Blank out values", self.blank_values)
         adv_form.addRow("Notes", self.notes)
-        self.tabs.addTab(general_tab, "General")
-        self.tabs.addTab(output_tab, "Output")
-        self.tabs.addTab(schedule_tab, "Schedule")
-        self.tabs.addTab(email_tab, "Email")
-        self.tabs.addTab(advanced_tab, "Advanced")
+        self.tabs.addTab(scroll_page(general_tab), "General")
+        self.tabs.addTab(scroll_page(output_tab), "Output")
+        self.tabs.addTab(scroll_page(schedule_tab), "Schedule")
+        self.tabs.addTab(scroll_page(email_tab), "Email")
+        self.tabs.addTab(scroll_page(advanced_tab), "Advanced")
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("accent", True)
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
         outer.addWidget(self.tabs)
@@ -582,7 +593,11 @@ class JobEditorDialog(QDialog):
     @staticmethod
     def _check_item(checked: bool) -> QTableWidgetItem:
         item = QTableWidgetItem()
-        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsUserCheckable
+            | Qt.ItemFlag.ItemIsSelectable
+        )
         item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
         return item
 
@@ -633,10 +648,14 @@ class JobEditorDialog(QDialog):
         for col in (_COL_EXCEL, _COL_PDF, _COL_HIDDEN):
             item = self.sheets.item(r, col)
             if item is not None:
-                flags = Qt.ItemFlag.ItemIsUserCheckable | (
-                    Qt.ItemFlag.ItemIsEnabled
-                    if on and (col != _COL_HIDDEN or excel_on)
-                    else Qt.ItemFlag.NoItemFlags
+                flags = (
+                    Qt.ItemFlag.ItemIsUserCheckable
+                    | Qt.ItemFlag.ItemIsSelectable
+                    | (
+                        Qt.ItemFlag.ItemIsEnabled
+                        if on and (col != _COL_HIDDEN or excel_on)
+                        else Qt.ItemFlag.NoItemFlags
+                    )
                 )
                 item.setFlags(flags)
 

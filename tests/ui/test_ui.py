@@ -1375,7 +1375,7 @@ def test_update_dialog_shows_from_and_to_versions(qtbot):
     assert "9.9.9" in dlg.windowTitle()
 
 
-def test_editor_is_tabbed_not_scrollable(qtbot):
+def test_editor_is_tabbed_with_scrollable_pages(qtbot):
     from PySide6.QtWidgets import QScrollArea, QTabWidget
 
     from reportflow.ui.windows.job_editor import JobEditorDialog
@@ -1384,7 +1384,7 @@ def test_editor_is_tabbed_not_scrollable(qtbot):
     qtbot.addWidget(dlg)
     assert isinstance(dlg.tabs, QTabWidget)
     assert dlg.tabs.count() == 5  # General / Output / Schedule / Email / Advanced
-    assert not dlg.findChildren(QScrollArea)  # compact: no scrolling anywhere
+    assert len(dlg.findChildren(QScrollArea)) == 5  # actions stay outside page scrolling
 
 
 def test_settings_smtp_test_uses_form_values(qtbot, monkeypatch):

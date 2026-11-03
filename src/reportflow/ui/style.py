@@ -17,13 +17,13 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QFrame, QLabel
 
 
-def _check_svg_url() -> str:
+def _asset_url(name: str) -> str:
     """QSS url() for the white checkmark used by checked indicators ('' if missing)."""
     if getattr(sys, "frozen", False):
         base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "assets"
     else:
         base = Path(__file__).resolve().parents[3] / "assets"
-    svg = base / "check.svg"
+    svg = base / name
     return svg.as_posix() if svg.exists() else ""
 
 
@@ -74,7 +74,9 @@ LOG_LOCATION = TEXT_MUTED  # module:function:line
 
 # -- app-wide stylesheet ------------------------------------------------------------
 
-_CHECK_URL = _check_svg_url()
+_CHECK_URL = _asset_url("check.svg")
+_DOWN_URL = _asset_url("arrow-down.png")
+_UP_URL = _asset_url("arrow-up.png")
 
 APP_QSS = f"""
 QMainWindow, QDialog, QMessageBox {{
@@ -156,6 +158,50 @@ QLineEdit:read-only {{
 }}
 QLineEdit::placeholder {{
     color: {TEXT_MUTED};
+}}
+QPushButton:focus, QToolButton:focus {{
+    border-color: {ACCENT_HOVER};
+}}
+QComboBox::drop-down {{
+    background: {CARD_BG};
+    border: none;
+    border-left: 1px solid {BORDER};
+    width: 24px;
+}}
+QSpinBox, QTimeEdit {{
+    min-height: 24px;
+    padding-right: 28px;
+}}
+QSpinBox::up-button, QTimeEdit::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    background: {CARD_BG};
+    border: none;
+    border-left: 1px solid {BORDER};
+    width: 24px;
+}}
+QSpinBox::down-button, QTimeEdit::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    background: {CARD_BG};
+    border: none;
+    border-left: 1px solid {BORDER};
+    border-top: 1px solid {BORDER};
+    width: 24px;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QTimeEdit::up-button:hover, QTimeEdit::down-button:hover {{
+    background: {BORDER};
+}}
+QComboBox::down-arrow, QSpinBox::down-arrow, QTimeEdit::down-arrow {{
+    image: url("{_DOWN_URL}");
+    width: 12px;
+    height: 12px;
+}}
+QSpinBox::up-arrow, QTimeEdit::up-arrow {{
+    image: url("{_UP_URL}");
+    width: 12px;
+    height: 12px;
 }}
 QComboBox QAbstractItemView {{
     background: {CARD_BG};
