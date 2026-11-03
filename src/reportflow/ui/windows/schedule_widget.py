@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -73,7 +74,7 @@ class _RuleRow(QFrame):
             self.kind.addItem(label, key)
         self.kind.setCurrentIndex(max(self.kind.findData(rule.kind), 0))
         self.kind.currentIndexChanged.connect(self._on_kind_changed)
-        delete = QPushButton("🗑 Delete")
+        delete = QPushButton("Delete schedule")
         delete.setToolTip("Delete this schedule")
         delete.setStyleSheet("padding: 3px 10px;")
         delete.clicked.connect(lambda *_: self.remove_requested.emit(self))
@@ -97,7 +98,9 @@ class _RuleRow(QFrame):
 
         self.month_days = QLineEdit(", ".join(str(d) for d in rule.month_days))
         self.month_days.setPlaceholderText("Days of the month, e.g. 1, 15")
-        self.month_days.setToolTip("Comma-separated days of the month (1-31).")
+        self.month_days.setToolTip(
+            "Comma-separated days, e.g. 1, 15. Days absent from a month are skipped."
+        )
         self.month_days.textChanged.connect(self.changed)
         self.month_row = QWidget()
         month_lay = QHBoxLayout(self.month_row)
@@ -107,22 +110,32 @@ class _RuleRow(QFrame):
         lay.addWidget(self.month_row)
 
         self.times_row = QWidget()
-        times_lay = QHBoxLayout(self.times_row)
+        times_lay = QVBoxLayout(self.times_row)
         times_lay.setContentsMargins(0, 0, 0, 0)
-        times_lay.addWidget(QLabel("Run at:"))
+        times_lay.addWidget(QLabel("Selected run times"))
         # Chips live in their own layout so they can be rebuilt without touching the picker.
-        self._chips = QHBoxLayout()
+        self._chips = QGridLayout()
         self._chips.setSpacing(4)
         times_lay.addLayout(self._chips)
         self.time_edit = QTimeEdit(QTime(6, 0))
         self.time_edit.setDisplayFormat("HH:mm")
         self.time_edit.setToolTip("Pick a run time, then click Add. Add several to run more often.")
-        add_time = QPushButton("Add")
+        self.add_time_button = QPushButton("Add time")
+        add_time = self.add_time_button
+        add_time.setAutoDefault(False)
         add_time.setToolTip("Add this run time")
         add_time.clicked.connect(self._add_time)
-        times_lay.addWidget(self.time_edit)
-        times_lay.addWidget(add_time)
-        times_lay.addStretch()
+        picker = QHBoxLayout()
+        picker.addWidget(QLabel("Add another time"))
+        picker.addWidget(self.time_edit)
+        picker.addWidget(add_time)
+        picker.addStretch()
+        times_lay.addLayout(picker)
+        self.time_hint = QLabel()
+        self.time_hint.setProperty("muted", True)
+        self.time_hint.setWordWrap(True)
+        times_lay.addWidget(self.time_hint)
+        self.time_edit.timeChanged.connect(self._update_time_picker)
         lay.addWidget(self.times_row)
 
         self.cron_edit = QPlainTextEdit("\n".join(rule.crons))
@@ -152,15 +165,27 @@ class _RuleRow(QFrame):
             if widget is not None:
                 widget.deleteLater()
         if not self._times:
-            none = QLabel("no time yet")
+            none = QLabel("No run times selected. Choose a time below and click Add time.")
             none.setProperty("muted", True)
-            self._chips.addWidget(none)
-        for t in self._times:
-            chip = QPushButton(f"{t}  ✕")
+            self._chips.addWidget(none, 0, 0)
+        for i, t in enumerate(self._times):
+            chip = QPushButton(f"{t}  ×")
+            chip.setAutoDefault(False)
+            chip.setAccessibleName(f"Remove run time {t}")
             chip.setToolTip(f"Remove {t}")
             chip.setStyleSheet("padding: 2px 8px;")
             chip.clicked.connect(self._remover(t))
-            self._chips.addWidget(chip)
+            self._chips.addWidget(chip, i // 4, i % 4)
+        self._update_time_picker()
+
+    def _update_time_picker(self) -> None:
+        duplicate = self.time_edit.time().toString("HH:mm") in self._times
+        self.add_time_button.setEnabled(not duplicate)
+        self.time_hint.setText(
+            "This time is already selected. Choose a different time to add another run."
+            if duplicate
+            else "The time above is included only after you click Add time."
+        )
 
     def _remover(self, t: str) -> Callable[..., None]:
         def remove(*_: object) -> None:
@@ -215,6 +240,13 @@ class ScheduleWidget(QWidget):
         self.manual_hint.setProperty("muted", True)
         self.manual_hint.setWordWrap(True)
         layout.addWidget(self.manual_hint)
+        zone_hint = QLabel(
+            "Times use the ReportFlow server’s local time (24-hour clock). "
+            "Each schedule adds runs; overlapping runs are not allowed."
+        )
+        zone_hint.setProperty("muted", True)
+        zone_hint.setWordWrap(True)
+        layout.addWidget(zone_hint)
 
         self._rules_lay = QVBoxLayout()
         self._rules_lay.setSpacing(6)
@@ -258,8 +290,10 @@ class ScheduleWidget(QWidget):
         try:
             crons = self.to_crons()
         except ValueError as e:
-            self.summary.setText(f"⚠ {e}")
+            self.summary.setText(f"Check schedule: {e}")
+            self.summary.setStyleSheet("color: #fbbf24;")
             return
+        self.summary.setStyleSheet("")
         self.summary.setText(describe(crons) if crons else "")
 
     # -- public API ----------------------------------------------------------------

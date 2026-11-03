@@ -36,3 +36,40 @@ def test_editor_pages_scroll_with_actions_outside_content(qtbot):
     assert all(isinstance(dialog.tabs.widget(i), QScrollArea) for i in range(5))
     buttons = dialog.findChild(QDialogButtonBox)
     assert buttons.button(QDialogButtonBox.StandardButton.Save).property("accent")
+
+
+def test_schedule_pending_time_requires_add_and_duplicates_are_disabled(qtbot):
+    from PySide6.QtCore import QTime
+    from PySide6.QtWidgets import QPushButton
+
+    from reportflow.ui.schedule_compile import ScheduleRule
+    from reportflow.ui.windows.schedule_widget import ScheduleWidget
+
+    schedule = ScheduleWidget()
+    qtbot.addWidget(schedule)
+    row = schedule.add_rule(ScheduleRule(kind="daily", times=["06:00"]))
+    assert not row.add_time_button.isEnabled()
+    row.time_edit.setTime(QTime(18, 30))
+    assert schedule.to_crons() == ["0 6 * * *"]
+    assert row.add_time_button.isEnabled()
+    row.add_time_button.click()
+    assert schedule.to_crons() == ["0 6 * * *", "30 18 * * *"]
+    assert not row.add_time_button.isEnabled()
+    chip = next(b for b in row.findChildren(QPushButton) if b.text().startswith("18:30"))
+    chip.click()
+    assert schedule.to_crons() == ["0 6 * * *"]
+    assert row.add_time_button.isEnabled()
+
+
+def test_monthly_validation_remains_visible_and_recoverable(qtbot):
+    from reportflow.ui.schedule_compile import ScheduleRule
+    from reportflow.ui.windows.schedule_widget import ScheduleWidget
+
+    schedule = ScheduleWidget()
+    qtbot.addWidget(schedule)
+    row = schedule.add_rule(ScheduleRule(kind="monthly", times=["06:00"], month_days=[1]))
+    row.month_days.setText("32")
+    assert schedule.summary.text().startswith("Check schedule:")
+    row.month_days.setText("1, 15")
+    assert schedule.to_crons() == ["0 6 1,15 * *"]
+    assert not schedule.summary.styleSheet()
