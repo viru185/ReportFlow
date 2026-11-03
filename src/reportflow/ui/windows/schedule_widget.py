@@ -116,6 +116,7 @@ class _RuleRow(QFrame):
         # Chips live in their own layout so they can be rebuilt without touching the picker.
         self._chips = QGridLayout()
         self._chips.setSpacing(4)
+        self._chips.setColumnStretch(4, 1)
         times_lay.addLayout(self._chips)
         self.time_edit = QTimeEdit(QTime(6, 0))
         self.time_edit.setDisplayFormat("HH:mm")

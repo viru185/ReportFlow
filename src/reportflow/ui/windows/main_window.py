@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -326,7 +327,13 @@ class MainWindow(QMainWindow):
         info = QVBoxLayout()
         info.setSpacing(1)
         name_row = QHBoxLayout()
-        name = QLabel(f"<b>{job.get('name', '')}</b>")
+        name = QLabel(str(job.get("name", "")))
+        name.setTextFormat(Qt.TextFormat.PlainText)
+        name.setWordWrap(True)
+        name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        name_font = name.font()
+        name_font.setBold(True)
+        name.setFont(name_font)
         name_row.addWidget(name)
         name_row.addWidget(stage_badge(job.get("stage", "testing")))
         if not enabled:
@@ -365,6 +372,8 @@ class MainWindow(QMainWindow):
         workbooks = int(job.get("workbook_count") or 1)
         parts.append(f"{workbooks} files · {sheets}" if workbooks > 1 else sheets)
         detail = QLabel(" · ".join(parts))
+        detail.setWordWrap(True)
+        detail.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         detail.setProperty("muted", True)
         info.addWidget(detail)
         lay.addLayout(info, 1)
@@ -406,7 +415,8 @@ class MainWindow(QMainWindow):
         lay.addWidget(
             _btn(
                 "👁 Build only",
-                "Builds and verifies the report (checks PI DataLink data) without emailing anyone.",
+                "Builds the report without emailing anyone. Enable Require PI DataLink in "
+                "Advanced to require add-in connection.",
                 lambda *_: self._trigger(job_name, mode="dry"),
                 active=not running,
             )

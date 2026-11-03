@@ -162,7 +162,10 @@ class JobEditorDialog(QDialog):
         self.tabs = QTabWidget()
         # ---- General tab ----
         general_tab = QWidget()
-        input_form = QFormLayout(general_tab)
+        general_layout = QVBoxLayout(general_tab)
+        input_form = QFormLayout()
+        general_layout.addLayout(input_form)
+        general_layout.addStretch()
         input_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         input_form.setVerticalSpacing(10)
         self.name = QLineEdit()
@@ -604,6 +607,7 @@ class JobEditorDialog(QDialog):
     def _set_rows(self, rows: list[_SheetRow]) -> None:
         self._syncing = True
         try:
+            self.sheets.setMaximumHeight(min(320, max(150, 36 * (len(rows) + 1))))
             self.sheets.setRowCount(0)
             for row in rows:
                 r = self.sheets.rowCount()

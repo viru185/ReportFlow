@@ -1621,3 +1621,33 @@ def test_duplicate_of_a_linked_job_links_the_same_file(qtbot):
     dlg.name.setText("copy")
     assert dlg.payload()["email_template_path"] == "S:/reports/daily.html"
     assert dlg.template_html() is None
+
+
+def test_settings_save_never_applies_pending_service_credentials(qtbot):
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    api = FakeApi()
+    dialog = SettingsDialog(api)
+    qtbot.addWidget(dialog)
+    dialog.account_user.setText("OTHER\\pending")
+    dialog.account_password.setText("not-applied")
+    dialog._save()
+    assert api.saved_settings is not None
+    assert not hasattr(api, "applied_account")
+    assert dialog.settings_tabs.count() == 3
+
+
+def test_dashboard_long_job_names_are_plain_text_and_wrap(qtbot):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    job = _sample_job_dict()
+    job["name"] = "<b>Daily & monthly</b> " * 20
+    window = MainWindow(FakeApi(jobs=[job]))
+    qtbot.addWidget(window)
+    labels = [x for x in window.findChildren(QLabel) if x.text() == job["name"]]
+    assert len(labels) == 1
+    assert labels[0].textFormat() == Qt.TextFormat.PlainText
+    assert labels[0].wordWrap()

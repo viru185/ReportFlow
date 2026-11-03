@@ -17,11 +17,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.widgets import scroll_page
 
 
 def _split_csv(text: str) -> list[str]:
@@ -39,10 +41,12 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._api = api
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(880)
+        self.setMinimumWidth(620)
+        self.resize(800, 650)
         self._build()
         self._load()
         if focus_service_account:
+            self.settings_tabs.setCurrentIndex(2)
             self.account_user.setFocus()
 
     # -- construction ------------------------------------------------------------
@@ -205,6 +209,13 @@ class SettingsDialog(QDialog):
         apply_row.addStretch()
         apply_row.addWidget(apply_account)
 
+        account_hint = QLabel(
+            "Updates preserve the existing service account. Changing it here is a separate "
+            "operation: Validate & apply restarts the service. Save does not change the account."
+        )
+        account_hint.setWordWrap(True)
+        account_hint.setProperty("muted", True)
+        account_form.addRow(account_hint)
         account_form.addRow("Runs as", self.service_account)
         account_form.addRow("User", user_row)
         account_form.addRow("Password", self.account_password)
@@ -213,23 +224,23 @@ class SettingsDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("accent", True)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
 
-        # Two columns so the whole dialog fits on screen: email-related settings on the
-        # left, machine/service settings on the right.
-        columns = QHBoxLayout()
-        left = QVBoxLayout()
-        left.addWidget(smtp_box)
-        left.addWidget(rcpt_box)
-        left.addStretch()
-        right = QVBoxLayout()
-        right.addWidget(app_box)
-        right.addWidget(account_box)
-        right.addStretch()
-        columns.addLayout(left, 1)
-        columns.addLayout(right, 1)
-        layout.addLayout(columns)
+        self.settings_tabs = QTabWidget()
+        for title, boxes in (
+            ("Email", [smtp_box, rcpt_box]),
+            ("Application", [app_box]),
+            ("Service account", [account_box]),
+        ):
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            for box in boxes:
+                page_layout.addWidget(box)
+            page_layout.addStretch()
+            self.settings_tabs.addTab(scroll_page(page), title)
+        layout.addWidget(self.settings_tabs)
         layout.addWidget(buttons)
 
     # -- data --------------------------------------------------------------------
