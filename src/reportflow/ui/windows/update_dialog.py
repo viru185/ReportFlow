@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from reportflow import __about__ as about
 from reportflow.ui.updater import UpdateInfo
+from reportflow.ui.widgets import space_layout
 
 
 class _DownloadThread(QThread):
@@ -81,6 +82,7 @@ class UpdateDialog(QDialog):
         layout.addWidget(self.progress)
 
         self.status = QLabel("")
+        self.status.setWordWrap(True)
         self.status.setProperty("muted", True)
         layout.addWidget(self.status)
 
@@ -98,6 +100,7 @@ class UpdateDialog(QDialog):
         buttons.addWidget(later)
         buttons.addWidget(self.update_btn)
         layout.addLayout(buttons)
+        space_layout(layout)
 
         if info.installer_url is None:
             self.update_btn.setEnabled(False)

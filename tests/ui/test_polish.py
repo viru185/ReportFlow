@@ -1,12 +1,35 @@
 """Interaction regressions for the polished editor, independent of a live service."""
 
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialogButtonBox, QScrollArea, QStyleOptionViewItem
 
 from reportflow.ui.widgets import CenteredCheckDelegate
 from reportflow.ui.windows.job_editor import JobEditorDialog, _SheetRow
+
+
+@pytest.fixture
+def themed_app(qapp):
+    from PySide6.QtGui import QFont, QFontDatabase
+
+    from reportflow.ui.style import apply_theme
+
+    # Offscreen Qt does not discover Windows fonts automatically.
+    font_path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/segoeui.ttf"
+    font_id = QFontDatabase.addApplicationFont(str(font_path)) if font_path.exists() else -1
+    old_font, old_palette, old_qss = qapp.font(), qapp.palette(), qapp.styleSheet()
+    qapp.setFont(QFont("Segoe UI", 10))
+    apply_theme(qapp)
+    yield qapp
+    qapp.setStyleSheet(old_qss)
+    qapp.setPalette(old_palette)
+    qapp.setFont(old_font)
+    if font_id >= 0:
+        QFontDatabase.removeApplicationFont(font_id)
 
 
 def test_sheet_checkbox_center_mouse_and_keyboard(qtbot):
@@ -94,3 +117,27 @@ def test_schedule_overview_precedes_rules_and_tracks_added_times(qtbot):
     assert first.times_row.mapTo(first, QPoint()).y() < first.picker_row.y()
     first.kind.setCurrentIndex(first.kind.findData("cron"))
     assert first.times_row.isHidden() and first.picker_row.isHidden()
+
+
+@pytest.mark.parametrize("size", [(640, 480), (960, 760)])
+def test_editor_reflows_without_horizontal_scrolling_and_keeps_save_visible(
+    qtbot, themed_app, size
+):
+    from PySide6.QtCore import QPoint
+    from tests.ui.test_ui import FakeApi, _every_field_job
+
+    job = _every_field_job().model_dump(mode="json")
+    dialog = JobEditorDialog(FakeApi(), job)
+    qtbot.addWidget(dialog)
+    dialog.resize(*size)
+    dialog.show()
+    buttons = dialog.findChild(QDialogButtonBox)
+    save = buttons.button(QDialogButtonBox.StandardButton.Save)
+    for i in range(dialog.tabs.count()):
+        dialog.tabs.setCurrentIndex(i)
+        page = dialog.tabs.widget(i)
+        qtbot.waitUntil(lambda page=page: page.horizontalScrollBar().maximum() == 0)
+        page.verticalScrollBar().setValue(page.verticalScrollBar().maximum())
+        assert save.isVisible()
+        assert dialog.rect().contains(save.mapTo(dialog, QPoint(0, save.height() - 1)))
+    assert dialog.payload()["workbooks"] == job["workbooks"]

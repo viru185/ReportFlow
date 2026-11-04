@@ -48,7 +48,7 @@ class CenteredCheckDelegate(QStyledItemDelegate):
     @staticmethod
     def indicator_rect(option: Any) -> QRect:
         style = option.widget.style() if option.widget else QApplication.style()
-        size = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth)
+        size = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, None, option.widget)
         rect = QRect(0, 0, size, size)
         rect.moveCenter(option.rect.center())
         return rect
@@ -67,7 +67,7 @@ class CenteredCheckDelegate(QStyledItemDelegate):
             button.state |= QStyle.StateFlag.State_HasFocus
         style = option.widget.style() if option.widget else QApplication.style()
         style.drawPrimitive(
-            QStyle.PrimitiveElement.PE_IndicatorCheckBox, button, painter, option.widget
+            QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck, button, painter, option.widget
         )
 
     def editorEvent(self, event: Any, model: Any, option: Any, index: Any) -> bool:

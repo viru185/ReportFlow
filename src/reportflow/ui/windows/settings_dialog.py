@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
-from reportflow.ui.widgets import scroll_page
+from reportflow.ui.widgets import scroll_page, space_layout
 
 
 def _split_csv(text: str) -> list[str]:
@@ -42,7 +42,7 @@ class SettingsDialog(QDialog):
         self._api = api
         self.setWindowTitle("Settings")
         self.setMinimumWidth(620)
-        self.resize(800, 650)
+        self.resize(800, 680)
         self._build()
         self._load()
         if focus_service_account:
@@ -109,6 +109,9 @@ class SettingsDialog(QDialog):
             "is set) to verify they work — no email is sent."
         )
         test_btn.clicked.connect(self._test_connection)
+        test_row = QHBoxLayout()
+        test_row.addWidget(test_btn)
+        test_row.addStretch()
 
         smtp_form.addRow("Host", self.smtp_host)
         smtp_form.addRow("Port", self.smtp_port)
@@ -117,7 +120,7 @@ class SettingsDialog(QDialog):
         smtp_form.addRow("Username", self.smtp_user)
         smtp_form.addRow("Password", pw_row)
         smtp_form.addRow("", self.password_status)
-        smtp_form.addRow("", test_btn)
+        smtp_form.addRow("", test_row)
 
         # Recipients
         rcpt_box = QGroupBox("Test && support email")
@@ -229,6 +232,15 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         self.settings_tabs = QTabWidget()
+        for form in (smtp_form, rcpt_form, app_form, account_form):
+            space_layout(form)
+        for spin in (
+            self.smtp_port,
+            self.max_concurrency,
+            self.default_timeout,
+            self.log_retention,
+        ):
+            spin.setMaximumWidth(220)
         for title, boxes in (
             ("Email", [smtp_box, rcpt_box]),
             ("Application", [app_box]),
@@ -239,9 +251,11 @@ class SettingsDialog(QDialog):
             for box in boxes:
                 page_layout.addWidget(box)
             page_layout.addStretch()
+            space_layout(page_layout)
             self.settings_tabs.addTab(scroll_page(page), title)
         layout.addWidget(self.settings_tabs)
         layout.addWidget(buttons)
+        space_layout(layout)
 
     # -- data --------------------------------------------------------------------
 

@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from reportflow.core.config.defaults import DEFAULT_EMAIL_TEMPLATE
 from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
 from reportflow.ui.fs_util import open_start_dir
+from reportflow.ui.widgets import space_layout
 
 _TOKEN_ROLE = Qt.ItemDataRole.UserRole
 
@@ -141,6 +142,7 @@ class EmailTemplateDialog(QDialog):
         side = QVBoxLayout()
         side.addWidget(QLabel("<b>Placeholders</b> — click to insert"))
         self.placeholders = QListWidget()
+        self.placeholders.setWordWrap(True)
         self.placeholders.setToolTip("Click a placeholder to insert it at the cursor.")
         samples = sample_context()
         group = ""
@@ -189,7 +191,11 @@ class EmailTemplateDialog(QDialog):
         self.preview.setStyleSheet(
             "QTextBrowser { background: #ffffff; color: #1a1a1a; border: 1px solid #363b47; }"
         )
-        layout.addWidget(preview_btn)
+        preview_row = QHBoxLayout()
+        preview_row.addWidget(QLabel("Email preview"))
+        preview_row.addStretch()
+        preview_row.addWidget(preview_btn)
+        layout.addLayout(preview_row)
         layout.addWidget(self.preview, 2)
 
         buttons = QDialogButtonBox(
@@ -197,7 +203,9 @@ class EmailTemplateDialog(QDialog):
         )
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("accent", True)
         layout.addWidget(buttons)
+        space_layout(layout)
 
     # -- behavior ----------------------------------------------------------------
 

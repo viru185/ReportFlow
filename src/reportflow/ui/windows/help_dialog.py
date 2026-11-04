@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayo
 
 from reportflow import __about__ as about
 from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
+from reportflow.ui.widgets import space_layout
 
 
 def _placeholder_html() -> str:
@@ -432,6 +433,7 @@ class HelpDialog(QDialog):
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
         browser.setHtml(_HELP_HTML)
+        browser.document().setDocumentMargin(16)
         self.browser = browser
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -441,6 +443,7 @@ class HelpDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(browser)
         layout.addWidget(buttons)
+        space_layout(layout)
         if anchor:
             # After the first layout pass — before it the anchor has no position yet.
             QTimer.singleShot(0, lambda: browser.scrollToAnchor(anchor))

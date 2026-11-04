@@ -43,6 +43,8 @@ class RunHistoryDialog(QDialog):
 
         # -- left: runs list --
         self.runs = QListWidget()
+        self.runs.setWordWrap(True)
+        self.runs.setSpacing(4)
         self.runs.currentItemChanged.connect(lambda *_: self._show_selected())
         left = QWidget()
         left_lay = QVBoxLayout(left)
@@ -102,6 +104,7 @@ class RunHistoryDialog(QDialog):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
         splitter.setSizes([220, 640])
+        splitter.setHandleWidth(12)
 
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.reload)
@@ -115,6 +118,11 @@ class RunHistoryDialog(QDialog):
         root = QVBoxLayout(self)
         root.addWidget(splitter, 1)
         root.addLayout(btns)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
+        left_lay.setSpacing(12)
+        right_lay.setSpacing(12)
+        filter_row.setSpacing(8)
 
         self._timer = QTimer(self)
         self._timer.setInterval(2000)

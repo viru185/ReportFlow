@@ -1651,3 +1651,7 @@ def test_dashboard_long_job_names_are_plain_text_and_wrap(qtbot):
     assert len(labels) == 1
     assert labels[0].textFormat() == Qt.TextFormat.PlainText
     assert labels[0].wordWrap()
+    window.resize(920, 620)
+    window.show()
+    qtbot.waitUntil(lambda: labels[0].width() > 100)
+    assert labels[0].height() >= labels[0].fontMetrics().height()

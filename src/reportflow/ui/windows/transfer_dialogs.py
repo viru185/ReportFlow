@@ -29,6 +29,7 @@ from reportflow.ui.transfer import (
     parse_jobs_file,
     parse_settings_file,
 )
+from reportflow.ui.widgets import space_layout
 
 
 class _SelectListDialog(QDialog):
@@ -50,6 +51,8 @@ class _SelectListDialog(QDialog):
         layout.addWidget(label)
 
         self.list = QListWidget()
+        self.list.setWordWrap(True)
+        self.list.setSpacing(4)
         for name in names:
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -66,7 +69,9 @@ class _SelectListDialog(QDialog):
         )
         buttons.accepted.connect(self._on_ok)
         buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setProperty("accent", True)
         layout.addWidget(buttons)
+        space_layout(layout)
 
     def _toggle(self) -> None:
         all_checked = all(

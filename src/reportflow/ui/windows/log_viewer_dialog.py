@@ -43,7 +43,7 @@ class LogViewerDialog(QDialog):
         self._proc_group = QButtonGroup(self)
         self._proc_group.setExclusive(True)
         proc_row = QHBoxLayout()
-        proc_row.setSpacing(5)
+        proc_row.setSpacing(8)
         proc_label = QLabel("Show log for:")
         proc_label.setProperty("muted", True)
         proc_row.addWidget(proc_label)
@@ -101,6 +101,9 @@ class LogViewerDialog(QDialog):
         layout.addLayout(proc_row)
         layout.addLayout(filters)
         layout.addWidget(self.text)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(16)
+        filters.setSpacing(8)
 
         self.reload()
 

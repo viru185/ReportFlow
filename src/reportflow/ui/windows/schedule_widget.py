@@ -70,6 +70,7 @@ class _RuleRow(QFrame):
         lay.setSpacing(12)
 
         top = QHBoxLayout()
+        top.setSpacing(8)
         self.kind = QComboBox()
         for label, key in _KINDS:
             self.kind.addItem(label, key)
@@ -86,6 +87,7 @@ class _RuleRow(QFrame):
         self.weekday_row = QWidget()
         wd_lay = QHBoxLayout(self.weekday_row)
         wd_lay.setContentsMargins(0, 0, 0, 0)
+        wd_lay.setSpacing(12)
         self.weekday_checks: dict[str, QCheckBox] = {}
         for day in WEEKDAYS:
             cb = QCheckBox(day.capitalize())
@@ -105,6 +107,7 @@ class _RuleRow(QFrame):
         self.month_row = QWidget()
         month_lay = QHBoxLayout(self.month_row)
         month_lay.setContentsMargins(0, 0, 0, 0)
+        month_lay.setSpacing(8)
         month_lay.addWidget(QLabel("Days of the month:"))
         month_lay.addWidget(self.month_days)
         lay.addWidget(self.month_row)

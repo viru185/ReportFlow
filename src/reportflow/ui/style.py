@@ -125,7 +125,7 @@ QGroupBox {{
     border: 1px solid {BORDER};
     border-radius: 8px;
     margin-top: 12px;
-    padding: 10px 8px 8px 8px;
+    padding: 0;
     font-weight: 600;
 }}
 QGroupBox::title {{
@@ -211,6 +211,9 @@ QSpinBox::up-button, QTimeEdit::up-button {{
     background: {CARD_BG};
     border: none;
     border-left: 1px solid {BORDER};
+    border-right: 1px solid {BORDER};
+    border-top: 1px solid {BORDER};
+    border-top-right-radius: 6px;
     width: 24px;
     height: 16px;
 }}
@@ -221,6 +224,9 @@ QSpinBox::down-button, QTimeEdit::down-button {{
     border: none;
     border-left: 1px solid {BORDER};
     border-top: 1px solid {BORDER};
+    border-right: 1px solid {BORDER};
+    border-bottom: 1px solid {BORDER};
+    border-bottom-right-radius: 6px;
     width: 24px;
     height: 16px;
 }}

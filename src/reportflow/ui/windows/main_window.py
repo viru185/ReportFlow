@@ -153,11 +153,12 @@ class MainWindow(QMainWindow):
     def _build(self) -> None:
         central = QWidget()
         root = QVBoxLayout(central)
-        root.setContentsMargins(8, 6, 8, 6)
-        root.setSpacing(6)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
 
         # Header: logo + title + stat strip + actions + connection pill, one tight row.
         header = QHBoxLayout()
+        header.setSpacing(8)
         logo = QLabel()
         logo.setPixmap(logo_pixmap(24))
         title = QLabel(about.NAME)
@@ -210,7 +211,7 @@ class MainWindow(QMainWindow):
         self.jobs_container = QWidget()
         self.jobs_layout = QVBoxLayout(self.jobs_container)
         self.jobs_layout.setContentsMargins(0, 0, 0, 0)
-        self.jobs_layout.setSpacing(6)
+        self.jobs_layout.setSpacing(12)
         self.jobs_layout.addStretch()
 
         scroll = QScrollArea()
@@ -321,12 +322,13 @@ class MainWindow(QMainWindow):
         # states that need attention (running / paused / email failed).
         card = card_frame(edge=status_edge(job.get("last_status"), paused=not enabled))
         lay = QHBoxLayout(card)
-        lay.setContentsMargins(10, 6, 10, 6)
-        lay.setSpacing(6)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(12)
 
         info = QVBoxLayout()
-        info.setSpacing(1)
+        info.setSpacing(8)
         name_row = QHBoxLayout()
+        name_row.setSpacing(8)
         name = QLabel(str(job.get("name", "")))
         name.setTextFormat(Qt.TextFormat.PlainText)
         name.setWordWrap(True)
@@ -334,7 +336,9 @@ class MainWindow(QMainWindow):
         name_font = name.font()
         name_font.setBold(True)
         name.setFont(name_font)
-        name_row.addWidget(name)
+        # Ignored size policy permits wrapping, but it needs a stretch allocation:
+        # a trailing spacer previously took all the width and made the name disappear.
+        name_row.addWidget(name, 1)
         name_row.addWidget(stage_badge(job.get("stage", "testing")))
         if not enabled:
             name_row.addWidget(disabled_badge())
@@ -350,7 +354,6 @@ class MainWindow(QMainWindow):
                 job.get("last_email_note") or "The last run's report email failed to send."
             )
             name_row.addWidget(email_warn)
-        name_row.addStretch()
         info.addLayout(name_row)
 
         parts: list[str] = []

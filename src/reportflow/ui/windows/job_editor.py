@@ -465,10 +465,14 @@ class JobEditorDialog(QDialog):
         self.notes.setToolTip("Free-form description of this job.")
         for spin in (self.timeout, self.post_refresh_wait):
             spin.setMaximumWidth(220)  # a number, not a text field — keep it compact
-        adv_form.addRow("Time limit", self.timeout)
-        adv_form.addRow("", timeout_help)
-        adv_form.addRow("Wait for add-in data", self.post_refresh_wait)
-        adv_form.addRow("", wait_help)
+        timeout_group = QVBoxLayout()
+        timeout_group.addWidget(self.timeout)
+        timeout_group.addWidget(timeout_help)
+        wait_group = QVBoxLayout()
+        wait_group.addWidget(self.post_refresh_wait)
+        wait_group.addWidget(wait_help)
+        adv_form.addRow("Time limit", timeout_group)
+        adv_form.addRow("Wait for add-in data", wait_group)
         adv_form.addRow("Concurrency group", self.group)
         adv_form.addRow(section_title("Report checks"))
         adv_form.addRow("", self.fail_if_empty)
@@ -478,6 +482,8 @@ class JobEditorDialog(QDialog):
         adv_form.addRow("Notes", self.notes)
         for page in (general_tab, output_tab, schedule_tab, email_tab, advanced_tab):
             space_layout(page.layout())
+        timeout_group.setSpacing(8)
+        wait_group.setSpacing(8)
         self.tabs.addTab(scroll_page(general_tab), "General")
         self.tabs.addTab(scroll_page(output_tab), "Output")
         self.tabs.addTab(scroll_page(schedule_tab), "Schedule")
