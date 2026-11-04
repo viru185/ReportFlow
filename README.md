@@ -334,35 +334,97 @@ Set **`REPORTFLOW_DATA_DIR`** to redirect the data root (config/logs/state) away
 $env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
 ```
 
-### Test the full app locally — no build, no installer
+### Test the full report and email flow locally
 
-Goal: exercise the real service + UI + worker against a real workbook (e.g. a PI DataLink
-file) on your dev machine before pushing anything.
+Run these PowerShell commands from the repository root. Excel must be installed for report
+building. The SMTP capture tool saves complete messages, including HTML and attachments,
+as `.eml` files. Its terminal shows the subject, attachment filenames and envelope recipients,
+including Bcc.
+
+**Terminal 1 — install dependencies and start SMTP capture**
 
 ```powershell
-# 1) Isolated data dir so your real ProgramData isn't touched (per terminal!)
-$env:REPORTFLOW_DATA_DIR = "C:\temp\reportflow-dev"
+uv sync --all-extras
+uv run python scripts/dev_smtp_server.py --outbox build/local-test/outbox
+```
 
-# 2) Start the service (terminal 1)
+Keep this terminal open. The default SMTP port is `2525`. Use `--port 2526` if it is
+occupied, and set the same port in ReportFlow's Email settings.
+
+**Terminal 2 — configure and start the development service**
+
+```powershell
+$env:REPORTFLOW_DATA_DIR = Join-Path (Get-Location) "build/local-test/data"
+@'
+from reportflow.core import paths
+from reportflow.core.config.defaults import default_config
+from reportflow.core.config.loader import load_config, save_config
+from reportflow.core.config.models import SmtpConfig
+
+cfg = load_config() if paths.config_file().exists() else default_config()
+cfg.app.api_port = 8788
+cfg.ui.api_base_url = "http://127.0.0.1:8788"
+cfg.smtp = SmtpConfig(host="127.0.0.1", port=2525, use_starttls=False,
+                      use_ssl=False, from_address="reportflow@example.com", username="")
+cfg.test.recipients = ["tester@example.com"]
+cfg.test.developer_bundle_recipients = []
+save_config(cfg)
+print("Development configuration saved to", paths.config_file())
+'@ | uv run python -
 uv run python -m reportflow.service
+```
 
-# 3) Start the UI (terminal 2 — set REPORTFLOW_DATA_DIR here too)
+This uses the ignored `build/local-test/data` directory and API port `8788`. The setup
+command preserves existing development jobs. Run it with the development service stopped.
+Keep the service terminal open while testing.
+
+**Terminal 3 — start the development UI**
+
+```powershell
+$env:REPORTFLOW_DATA_DIR = Join-Path (Get-Location) "build/local-test/data"
 uv run python -m reportflow.ui
 ```
 
-Create the job in the UI exactly as on the server (pick your workbook, tick the report
-sheets), hit **🧪 Test**, and inspect the run log + output files.
+Confirm the UI shows **Connected**. Its About dialog should show API
+`http://127.0.0.1:8788` and the development data directory.
 
-**Fake the email sending** (nothing leaves your machine): in a third terminal run
+Open **File → Settings → Email**. The setup command fills these settings automatically.
+
+| Field | Value |
+|---|---|
+| Host | `127.0.0.1` |
+| Port | `2525` |
+| Use STARTTLS | Unchecked |
+| Use SSL | Unchecked |
+| From address | `reportflow@example.com` |
+| Username | Empty |
+| Password | Leave empty |
+| Test recipients | `tester@example.com` |
+
+Click **Test connection**, then **Save**. A connection test checks SMTP connectivity.
+Click **Run** on a job to capture an actual report email.
+
+Create or import a job in the development UI. Set its stage to **Testing**, Test To to
+`tester@example.com`, and Production To to `production@example.com`. Leave **Run on
+schedule** unchecked for manual testing. Select at least one **Excel attachment** or **PDF**
+in General, and use Browse to choose a local Output folder such as `build/local-test/reports`.
+Click **Run** on the job card. **Build only** creates reports without email.
+
+After completion, check run history for report and email success. The SMTP terminal shows
+`[TEST]` in the subject and the selected attachment filenames. Open the latest captured
+message with a mail client that supports `.eml`, such as Outlook.
 
 ```powershell
-uv run python scripts/dev_smtp_server.py        # listens on 127.0.0.1:2525
+$latestEmail = Get-ChildItem -LiteralPath build/local-test/outbox -Filter *.eml |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($latestEmail) { Invoke-Item -LiteralPath $latestEmail.FullName }
 ```
 
-then in the UI set Settings → SMTP to host `127.0.0.1`, port `2525`, no TLS, empty
-username/password. Every email ReportFlow "sends" is printed by that terminal and saved
-under `scripts\sample\outbox\*.eml` (double-click opens in Outlook). **Test connection**
-also works against it.
+Inspect the email body and open its Excel/PDF attachments. These are the actual attachments
+submitted by ReportFlow. Local SMTP acceptance verifies the application flow. External
+mailbox delivery, spam filtering and authenticated/TLS SMTP require separate tests.
+Captures stay under ignored build output. Press **Ctrl+C** in the SMTP and service terminals
+to stop them, and close the development UI when finished.
 
 Worker-only quick loop (no service/UI):
 
