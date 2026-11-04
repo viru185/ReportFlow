@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -47,7 +48,7 @@ from reportflow.core.output_names import (
 )
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.fs_util import open_start_dir
-from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page
+from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 from reportflow.ui.windows.schedule_widget import ScheduleWidget
 
@@ -165,9 +166,6 @@ class JobEditorDialog(QDialog):
         general_layout = QVBoxLayout(general_tab)
         input_form = QFormLayout()
         general_layout.addLayout(input_form)
-        general_layout.addStretch()
-        input_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        input_form.setVerticalSpacing(10)
         self.name = QLineEdit()
         self.name.setToolTip(
             "A unique name for this job; it is also used in output filenames. Renaming keeps "
@@ -261,17 +259,27 @@ class JobEditorDialog(QDialog):
         self.combine_pdf.setToolTip("One PDF for this workbook, in the listed sheet order.")
         self.combine_pdf.toggled.connect(self._update_output_example)
         input_form.addRow("Job name", name_row)
-        input_form.addRow("Workbooks", wbs_row)
-        input_form.addRow("Input Excel file", wb_row)
-        input_form.addRow(QLabel("Sheets and email attachments"))
-        input_form.addRow(self.sheets)
-        input_form.addRow(sheets_hint)
-        input_form.addRow("Other local sheets", self.nonselected_mode)
-        input_form.addRow("PDF output", self.combine_pdf)
+        workbook_box = QGroupBox("Workbooks")
+        workbook_layout = QVBoxLayout(workbook_box)
+        workbook_layout.addLayout(wbs_row)
+        source_form = QFormLayout()
+        source_form.addRow("Input Excel file", wb_row)
+        workbook_layout.addLayout(source_form)
+        workbook_layout.addWidget(section_title("Sheets and email attachments"))
+        workbook_layout.addWidget(self.sheets)
+        workbook_layout.addWidget(sheets_hint)
+        options_form = QFormLayout()
+        options_form.addRow("Other local sheets", self.nonselected_mode)
+        options_form.addRow("PDF output", self.combine_pdf)
+        workbook_layout.addLayout(options_form)
+        space_layout(workbook_layout)
+        general_layout.addWidget(workbook_box)
+        general_layout.addStretch()
         # ---- Output tab ----
         output_tab = QWidget()
         output_form = QFormLayout(output_tab)
         self._output_form = output_form
+        output_form.addRow(section_title("Report files"))
         self.output_dir = QLineEdit()
         self.output_dir.setPlaceholderText("(same folder as the input file)")
         self.output_dir.setToolTip(
@@ -369,12 +377,15 @@ class JobEditorDialog(QDialog):
         tpl_row.addStretch()
         email_form.addRow("Subject", self.subject)
         email_form.addRow("Stage", self.stage)
+        email_form.addRow(section_title("Production recipients"))
         email_form.addRow("Production: To", self.prod_to)
         email_form.addRow("Production: Cc (optional)", self.prod_cc)
         email_form.addRow("Production: Bcc (optional)", self.prod_bcc)
+        email_form.addRow(section_title("Test recipients"))
         email_form.addRow("Test: To", self.test_to)
         email_form.addRow("Test: Cc (optional)", self.test_cc)
         email_form.addRow("Test: Bcc (optional)", self.test_bcc)
+        email_form.addRow(section_title("Email content"))
         email_form.addRow("Body", tpl_row)
         # ---- Advanced tab ----
         advanced_tab = QWidget()
@@ -450,6 +461,7 @@ class JobEditorDialog(QDialog):
             "codes (#REF!, #N/A, #NAME?) or PI DataLink strings. Leave empty to keep everything."
         )
         self.notes = QPlainTextEdit()
+        self.notes.setMaximumHeight(96)
         self.notes.setToolTip("Free-form description of this job.")
         for spin in (self.timeout, self.post_refresh_wait):
             spin.setMaximumWidth(220)  # a number, not a text field — keep it compact
@@ -458,11 +470,14 @@ class JobEditorDialog(QDialog):
         adv_form.addRow("Wait for add-in data", self.post_refresh_wait)
         adv_form.addRow("", wait_help)
         adv_form.addRow("Concurrency group", self.group)
+        adv_form.addRow(section_title("Report checks"))
         adv_form.addRow("", self.fail_if_empty)
         adv_form.addRow("", self.fail_if_errors)
         adv_form.addRow("", self.require_pi)
         adv_form.addRow("Blank out values", self.blank_values)
         adv_form.addRow("Notes", self.notes)
+        for page in (general_tab, output_tab, schedule_tab, email_tab, advanced_tab):
+            space_layout(page.layout())
         self.tabs.addTab(scroll_page(general_tab), "General")
         self.tabs.addTab(scroll_page(output_tab), "Output")
         self.tabs.addTab(scroll_page(schedule_tab), "Schedule")
@@ -476,6 +491,7 @@ class JobEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         outer.addWidget(self.tabs)
         outer.addWidget(buttons)
+        space_layout(outer)
         self._refresh_workbook_chrome()
 
     @staticmethod

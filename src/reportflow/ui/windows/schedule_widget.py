@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QTime, Signal
+from PySide6.QtCore import Qt, QTime, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -33,6 +33,7 @@ from reportflow.ui.schedule_compile import (
     describe,
     parse_crons,
 )
+from reportflow.ui.widgets import section_title
 
 _KINDS = [
     ("Daily", "daily"),
@@ -65,8 +66,8 @@ class _RuleRow(QFrame):
         self.setProperty("card", True)  # the app QSS styles card frames
         self._times: list[str] = list(rule.times)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(4)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(12)
 
         top = QHBoxLayout()
         self.kind = QComboBox()
@@ -76,7 +77,6 @@ class _RuleRow(QFrame):
         self.kind.currentIndexChanged.connect(self._on_kind_changed)
         delete = QPushButton("Delete schedule")
         delete.setToolTip("Delete this schedule")
-        delete.setStyleSheet("padding: 3px 10px;")
         delete.clicked.connect(lambda *_: self.remove_requested.emit(self))
         top.addWidget(self.kind)
         top.addStretch()
@@ -112,10 +112,12 @@ class _RuleRow(QFrame):
         self.times_row = QWidget()
         times_lay = QVBoxLayout(self.times_row)
         times_lay.setContentsMargins(0, 0, 0, 0)
-        times_lay.addWidget(QLabel("Selected run times"))
+        times_lay.setSpacing(12)
+        times_lay.addWidget(section_title("Added run times"))
         # Chips live in their own layout so they can be rebuilt without touching the picker.
         self._chips = QGridLayout()
-        self._chips.setSpacing(4)
+        self._chips.setSpacing(8)
+        self._chips.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._chips.setColumnStretch(4, 1)
         times_lay.addLayout(self._chips)
         self.time_edit = QTimeEdit(QTime(6, 0))
@@ -127,17 +129,24 @@ class _RuleRow(QFrame):
         add_time.setToolTip("Add this run time")
         add_time.clicked.connect(self._add_time)
         picker = QHBoxLayout()
-        picker.addWidget(QLabel("Add another time"))
+        picker.setSpacing(8)
+        picker.addWidget(QLabel("New time"))
         picker.addWidget(self.time_edit)
         picker.addWidget(add_time)
         picker.addStretch()
-        times_lay.addLayout(picker)
+        self.picker_row = QWidget()
+        picker_layout = QVBoxLayout(self.picker_row)
+        picker_layout.setContentsMargins(0, 0, 0, 0)
+        picker_layout.setSpacing(8)
+        picker_layout.addLayout(picker)
         self.time_hint = QLabel()
         self.time_hint.setProperty("muted", True)
         self.time_hint.setWordWrap(True)
-        times_lay.addWidget(self.time_hint)
+        picker_layout.addWidget(self.time_hint)
         self.time_edit.timeChanged.connect(self._update_time_picker)
-        lay.addWidget(self.times_row)
+        # Give saved times the first reading position, above the editing controls.
+        lay.insertWidget(1, self.times_row)
+        lay.addWidget(self.picker_row)
 
         self.cron_edit = QPlainTextEdit("\n".join(rule.crons))
         self.cron_edit.setPlaceholderText("0 6 * * MON-FRI\n30 18 1,15 * *")
@@ -156,6 +165,7 @@ class _RuleRow(QFrame):
         self.weekday_row.setVisible(kind == "weekly")
         self.month_row.setVisible(kind == "monthly")
         self.times_row.setVisible(kind != "cron")
+        self.picker_row.setVisible(kind != "cron")
         self.cron_edit.setVisible(kind == "cron")
         self.changed.emit()
 
@@ -174,7 +184,8 @@ class _RuleRow(QFrame):
             chip.setAutoDefault(False)
             chip.setAccessibleName(f"Remove run time {t}")
             chip.setToolTip(f"Remove {t}")
-            chip.setStyleSheet("padding: 2px 8px;")
+            chip.setProperty("timeChip", True)
+            chip.setMinimumWidth(100)
             chip.clicked.connect(self._remover(t))
             self._chips.addWidget(chip, i // 4, i % 4)
         self._update_time_picker()
@@ -232,6 +243,14 @@ class ScheduleWidget(QWidget):
     def _build(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
+
+        layout.addWidget(section_title("Schedule overview"))
+        self.summary = QLabel("")
+        self.summary.setObjectName("scheduleOverview")
+        self.summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
 
         self.manual_hint = QLabel(
             "Manual — this job only runs when you click Run. Add a schedule to run it "
@@ -250,7 +269,7 @@ class ScheduleWidget(QWidget):
         layout.addWidget(zone_hint)
 
         self._rules_lay = QVBoxLayout()
-        self._rules_lay.setSpacing(6)
+        self._rules_lay.setSpacing(16)
         layout.addLayout(self._rules_lay)
 
         add = QPushButton("+ Add schedule")
@@ -260,11 +279,6 @@ class ScheduleWidget(QWidget):
         add_row.addWidget(add)
         add_row.addStretch()
         layout.addLayout(add_row)
-
-        self.summary = QLabel("")
-        self.summary.setProperty("muted", True)
-        self.summary.setWordWrap(True)
-        layout.addWidget(self.summary)
 
         self._update_summary()
 
@@ -295,7 +309,7 @@ class ScheduleWidget(QWidget):
             self.summary.setStyleSheet("color: #fbbf24;")
             return
         self.summary.setStyleSheet("")
-        self.summary.setText(describe(crons) if crons else "")
+        self.summary.setText(describe(crons) if crons else "Manual only — no scheduled runs")
 
     # -- public API ----------------------------------------------------------------
 

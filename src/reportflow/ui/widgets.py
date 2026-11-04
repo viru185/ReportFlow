@@ -5,12 +5,41 @@ from typing import Any
 from PySide6.QtCore import QEvent, QRect, Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLayout,
     QScrollArea,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionButton,
     QWidget,
 )
+
+
+def space_layout(layout: QLayout | None, *, margin: int = 16) -> None:
+    """Apply explicit gaps; nested Qt forms otherwise inherit zero horizontal spacing."""
+    if layout is None:
+        return
+    layout.setContentsMargins(margin, margin, margin, margin)
+    if isinstance(layout, QFormLayout):
+        layout.setHorizontalSpacing(16)
+        layout.setVerticalSpacing(12)
+        layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    else:
+        layout.setSpacing(8 if isinstance(layout, QHBoxLayout) else 16)
+    for i in range(layout.count()):
+        item = layout.itemAt(i)
+        if item is not None and item.layout() is not None:
+            space_layout(item.layout(), margin=0)
+
+
+def section_title(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setProperty("section", True)
+    return label
 
 
 class CenteredCheckDelegate(QStyledItemDelegate):

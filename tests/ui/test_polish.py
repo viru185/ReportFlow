@@ -73,3 +73,24 @@ def test_monthly_validation_remains_visible_and_recoverable(qtbot):
     row.month_days.setText("1, 15")
     assert schedule.to_crons() == ["0 6 1,15 * *"]
     assert not schedule.summary.styleSheet()
+
+
+def test_schedule_overview_precedes_rules_and_tracks_added_times(qtbot):
+    from PySide6.QtCore import QPoint, QTime
+
+    from reportflow.ui.windows.schedule_widget import ScheduleWidget
+
+    schedule = ScheduleWidget()
+    qtbot.addWidget(schedule)
+    schedule.load(["0 6 * * *", "0 10 * * SUN"])
+    schedule.show()
+    first, second = schedule.rows()
+    assert schedule.summary.y() < first.y() < second.y()
+    assert "06:00" in schedule.summary.text() and "10:00" in schedule.summary.text()
+    first.time_edit.setTime(QTime(18, 30))
+    assert "18:30" not in schedule.summary.text()
+    first.add_time_button.click()
+    assert "18:30" in schedule.summary.text()
+    assert first.times_row.mapTo(first, QPoint()).y() < first.picker_row.y()
+    first.kind.setCurrentIndex(first.kind.findData("cron"))
+    assert first.times_row.isHidden() and first.picker_row.isHidden()

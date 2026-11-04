@@ -98,6 +98,27 @@ QLabel[h1="true"] {{
     font-weight: 700;
     color: {TEXT};
 }}
+QLabel[section="true"] {{
+    font-weight: 600;
+    padding-top: 4px;
+    padding-bottom: 4px;
+}}
+QLabel#scheduleOverview {{
+    background: #172c48;
+    border: 1px solid #355d8c;
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 15px;
+    font-weight: 600;
+}}
+QPushButton[timeChip="true"] {{
+    background: #172c48;
+    border-color: #507eaf;
+    color: #dbeafe;
+    font-size: 16px;
+    font-weight: 600;
+    padding: 8px 12px;
+}}
 QGroupBox {{
     background: {CARD_BG};
     color: {TEXT};
@@ -118,7 +139,8 @@ QPushButton {{
     color: {TEXT};
     border: 1px solid {BORDER};
     border-radius: 6px;
-    padding: 5px 14px;
+    padding: 6px 12px;
+    min-height: 20px;
 }}
 QPushButton:hover {{
     border-color: {ACCENT};
@@ -140,6 +162,11 @@ QPushButton[accent="true"] {{
 QPushButton[accent="true"]:hover {{
     background: {ACCENT_HOVER};
 }}
+QPushButton[accent="true"]:disabled {{
+    background: {CARD_BG};
+    border-color: {BORDER};
+    color: {TEXT_MUTED};
+}}
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QTextBrowser, QListWidget,
 QTimeEdit, QTableWidget {{
     background: {FIELD_BG};
@@ -152,6 +179,12 @@ QTimeEdit, QTableWidget {{
 }}
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QPlainTextEdit:focus, QTimeEdit:focus {{
     border-color: {ACCENT};
+}}
+QLineEdit, QComboBox {{
+    min-height: 24px;
+}}
+QComboBox {{
+    padding-right: 28px;
 }}
 QLineEdit:read-only {{
     color: {TEXT_MUTED};
@@ -179,6 +212,7 @@ QSpinBox::up-button, QTimeEdit::up-button {{
     border: none;
     border-left: 1px solid {BORDER};
     width: 24px;
+    height: 16px;
 }}
 QSpinBox::down-button, QTimeEdit::down-button {{
     subcontrol-origin: border;
@@ -188,6 +222,7 @@ QSpinBox::down-button, QTimeEdit::down-button {{
     border-left: 1px solid {BORDER};
     border-top: 1px solid {BORDER};
     width: 24px;
+    height: 16px;
 }}
 QSpinBox::up-button:hover, QSpinBox::down-button:hover,
 QTimeEdit::up-button:hover, QTimeEdit::down-button:hover {{
