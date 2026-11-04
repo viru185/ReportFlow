@@ -45,6 +45,7 @@ dev = [
 ]
 
 [project.scripts]
+smtpserver = "reportflow.dev_smtp:main"
 reportflow-worker = "reportflow.worker.__main__:main"
 reportflow-service = "reportflow.service.__main__:main"
 
