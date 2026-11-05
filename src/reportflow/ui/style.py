@@ -13,8 +13,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QFrame, QLabel
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QSizePolicy
 
 
 def _asset_url(name: str) -> str:
@@ -505,10 +506,8 @@ def card_frame(edge: str | None = None) -> QFrame:
     return frame
 
 
-def status_edge(status: str | None, *, paused: bool = False) -> str:
+def status_edge(status: str | None) -> str:
     """Map a job's last run status to a card edge colour key."""
-    if paused:
-        return "muted"
     s = (status or "").lower()
     if s == "success":
         return "success"
@@ -533,22 +532,15 @@ def status_badge(status: str | None, suffix: str = "") -> QLabel:
     return label
 
 
-def disabled_badge() -> QLabel:
-    """Grey pill marking a job whose scheduling is paused (manual runs still work)."""
-    label = QLabel("⏸ PAUSED")
-    label.setToolTip("Scheduling is paused — click ▸ Resume to re-enable. Manual runs still work.")
-    label.setStyleSheet(
-        "color: #c3c8d4; background: #2b2f3a; border-radius: 8px; padding: 2px 10px; "
-        "font-weight: 600;"
-    )
-    return label
-
-
 def stage_badge(stage: str) -> QLabel:
     """Lifecycle pill: amber TESTING (emails testers) / green LIVE (emails the client)."""
     live = stage == "live"
     fg, bg = ("#4ade80", "#14331f") if live else ("#fbbf24", "#3a2c10")
-    label = QLabel("LIVE" if live else "TESTING")
+    label = QLabel("Live" if live else "Testing")
+    label.setObjectName("jobStage")
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    label.setFixedWidth(76)
+    label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     label.setToolTip(
         "Runs email the Production recipients."
         if live

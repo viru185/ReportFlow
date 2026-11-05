@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -45,7 +44,6 @@ from reportflow.ui.style import (
     TEXT_MUTED,
     card_frame,
     connection_pill,
-    disabled_badge,
     stage_badge,
     status_badge,
     status_edge,
@@ -318,9 +316,8 @@ class MainWindow(QMainWindow):
         enabled = bool(job.get("enabled", True))
         running = (job.get("last_status") or "") == "running"
 
-        # The coloured left edge carries the last-run status; a pill only appears for
-        # states that need attention (running / paused / email failed).
-        card = card_frame(edge=status_edge(job.get("last_status"), paused=not enabled))
+        # Scheduling and run status are independent: paused jobs can still run manually.
+        card = card_frame(edge=status_edge(job.get("last_status")))
         lay = QHBoxLayout(card)
         lay.setContentsMargins(16, 12, 16, 12)
         lay.setSpacing(12)
@@ -339,14 +336,6 @@ class MainWindow(QMainWindow):
         # Ignored size policy permits wrapping, but it needs a stretch allocation:
         # a trailing spacer previously took all the width and made the name disappear.
         name_row.addWidget(name, 1)
-        name_row.addWidget(stage_badge(job.get("stage", "testing")))
-        if not enabled:
-            name_row.addWidget(disabled_badge())
-        elif running:
-            # Elapsed time rides the dashboard's 4s refresh — no extra polling machinery.
-            name_row.addWidget(
-                status_badge("running", f"· {_elapsed_text(job.get('last_run_at'))}")
-            )
         if job.get("last_email_failed"):
             email_warn = QLabel("✉ failed")
             email_warn.setStyleSheet("color: #e06c6c; font-size: 11px;")
@@ -357,9 +346,7 @@ class MainWindow(QMainWindow):
         info.addLayout(name_row)
 
         parts: list[str] = []
-        if not enabled:
-            parts.append("schedule paused")
-        else:
+        if enabled:
             next_at = friendly_time(job.get("next_run_at"))
             parts.append(
                 f"next: {next_at}" if next_at else describe(job.get("schedule_crons") or [])
@@ -380,17 +367,19 @@ class MainWindow(QMainWindow):
         detail.setProperty("muted", True)
         info.addWidget(detail)
         lay.addLayout(info, 1)
+        if running:
+            # Elapsed time rides the dashboard's existing refresh timer.
+            badge = status_badge("running", f"· {_elapsed_text(job.get('last_run_at'))}")
+            lay.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(stage_badge(job.get("stage", "testing")), 0, Qt.AlignmentFlag.AlignVCenter)
 
         def _btn(
             label: str, tip: str, slot, *, accent: bool = False, active: bool = True
         ) -> QPushButton:
             b = QPushButton(label)
             b.setToolTip(tip)
-            # No accent glow on a paused card — the dimming should read as "asleep".
             if accent and enabled:
                 b.setProperty("accent", True)
-            else:
-                b.setStyleSheet("padding: 3px 10px;")
             if not active:
                 b.setEnabled(False)
                 b.setToolTip("Already running — wait for it to finish.")
@@ -466,12 +455,6 @@ class MainWindow(QMainWindow):
         more.setMenu(menu)
         lay.addWidget(more)
 
-        if not enabled:
-            # One effect dims the ENTIRE card uniformly — pills, text, buttons — so a
-            # paused job cannot be mistaken for a live one at any glance distance.
-            effect = QGraphicsOpacityEffect(card)
-            effect.setOpacity(0.55)
-            card.setGraphicsEffect(effect)
         return card
 
     # -- job actions --------------------------------------------------------------

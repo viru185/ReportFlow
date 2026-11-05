@@ -445,7 +445,7 @@ def test_main_window_testing_card_buttons_and_pill(qtbot):
     assert any("Build only" in t for t in labels)
     assert any("Go live" in t for t in labels)
     assert len(labels) == 3  # everything occasional lives behind ⋯
-    assert any(w.text() == "TESTING" for w in win.findChildren(QLabel))
+    assert any(w.text() == "Testing" for w in win.findChildren(QLabel))
     # The last-run status lives on the card edge + detail line, not in a pill.
     assert _card_frames(win)[0].property("edge") == "success"
     assert not any(w.text().startswith("success") for w in win.findChildren(QLabel))
@@ -529,10 +529,10 @@ def test_main_window_live_card_hides_go_live(qtbot):
     qtbot.addWidget(win)
     labels = [b.text() for b in win.findChildren(QPushButton)]
     assert not any("Go live" in t for t in labels)
-    assert any(w.text() == "LIVE" for w in win.findChildren(QLabel))
+    assert any(w.text() == "Live" for w in win.findChildren(QLabel))
 
 
-def test_main_window_disabled_card_is_unmissable(qtbot):
+def test_main_window_paused_card_keeps_result_visible_and_has_resume(qtbot):
     from PySide6.QtWidgets import QLabel, QPushButton
 
     from reportflow.ui.windows.main_window import MainWindow
@@ -541,14 +541,12 @@ def test_main_window_disabled_card_is_unmissable(qtbot):
     win = MainWindow(FakeApi(jobs=[disabled]))
     qtbot.addWidget(win)
 
-    # The whole card is dimmed via a graphics effect, with a muted status edge…
     frames = _card_frames(win)
-    assert frames and frames[0].graphicsEffect() is not None
-    assert frames[0].property("edge") == "muted"
-    # …with a loud pill, a paused schedule line, and a one-click Resume.
+    assert frames and frames[0].graphicsEffect() is None
+    assert frames[0].property("edge") == "success"
     labels = [w.text() for w in win.findChildren(QLabel)]
-    assert any("⏸ PAUSED" in t for t in labels)
-    assert any("schedule paused" in t for t in labels)
+    assert not any("PAUSED" in t for t in labels)
+    assert any("last: success" in t for t in labels)
     buttons = [b.text() for b in win.jobs_container.findChildren(QPushButton)]
     assert any("Resume" in t for t in buttons)
     # Pause disappears from the menu; Go live stays reachable there (Resume took its slot).
@@ -1518,8 +1516,6 @@ def test_status_edge_mapping():
     assert status_edge("crashed") == "failed"
     assert status_edge("running") == "running"
     assert status_edge(None) == "muted"
-    # A paused card reads "asleep" regardless of how its last run ended.
-    assert status_edge("success", paused=True) == "muted"
 
 
 def test_status_colors_cover_all_run_states():

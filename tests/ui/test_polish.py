@@ -141,3 +141,38 @@ def test_editor_reflows_without_horizontal_scrolling_and_keeps_save_visible(
         assert save.isVisible()
         assert dialog.rect().contains(save.mapTo(dialog, QPoint(0, save.height() - 1)))
     assert dialog.payload()["workbooks"] == job["workbooks"]
+
+
+@pytest.mark.parametrize("stage", ["live", "testing"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_job_card_run_status_and_stage_alignment(qtbot, themed_app, stage, enabled):
+    from datetime import datetime
+
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QLabel, QPushButton
+    from tests.ui.test_ui import FakeApi, _sample_job_dict
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    job = dict(_sample_job_dict(), stage=stage, enabled=enabled)
+    api = FakeApi(jobs=[job])
+    window = MainWindow(api)
+    qtbot.addWidget(window)
+    window.show()
+    for status, edge in [("running", "running"), ("success", "success"), ("failed", "failed")]:
+        job.update(last_status=status, last_run_at=datetime.now().isoformat())
+        window.refresh()
+        card = window.jobs_layout.itemAt(0).widget()
+        assert card.property("edge") == edge
+        assert card.graphicsEffect() is None
+        labels = card.findChildren(QLabel)
+        assert not any("PAUSED" in label.text() for label in labels)
+        assert any("running ·" in label.text() for label in labels) == (status == "running")
+        run = next(b for b in card.findChildren(QPushButton) if b.text() == "▶ Run")
+        build = next(b for b in card.findChildren(QPushButton) if b.text() == "👁 Build only")
+        assert run.isEnabled() == build.isEnabled() == (status != "running")
+        badge = card.findChild(QLabel, "jobStage")
+        qtbot.waitUntil(lambda badge=badge: badge.isVisible() and badge.height() > 0)
+        badge_center = badge.mapTo(card, QPoint(0, badge.height() // 2)).y()
+        run_center = run.mapTo(card, QPoint(0, run.height() // 2)).y()
+        assert abs(badge_center - run_center) <= 1
