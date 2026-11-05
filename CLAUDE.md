@@ -148,8 +148,9 @@ New features ship as a **beta first** (owner's workflow since 0.11):
    **pre-release**, never "latest", no CHANGELOG commit. **Final:** merge to `main`, tag
    `vX.Y.Z`, push both → normal release. The in-app updater reads the LATEST release (betas
    are invisible to it) and runs the setup exe with `/SILENT` (so installer wizard pages,
-   incl. the welcome page, never show on that path). Release notes cover everything since
-   the last stable tag; beta tags are `ignore_tags` in `cliff.toml`. A final release
+   incl. the welcome page, never show on that path). Beta release notes cover changes since the previous release tag. Final release notes cover
+   changes since the previous stable tag. `scripts/release_notes.py` generates one version
+   section and omits internal commit categories. A final release
    regenerates `CHANGELOG.md` and commits it to `main` as the actions bot (`[skip ci]`) —
    don't edit that file by hand.
 
