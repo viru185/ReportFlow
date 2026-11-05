@@ -421,6 +421,9 @@ QFrame[card="true"] {{
     border: 1px solid {BORDER};
     border-radius: 8px;
 }}
+QFrame[card="true"]:focus {{
+    border-color: {ACCENT_HOVER};
+}}
 QFrame[card="true"][edge="success"] {{
     border-left: 3px solid #4ade80;
 }}

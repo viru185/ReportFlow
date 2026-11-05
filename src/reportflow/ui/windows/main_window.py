@@ -15,6 +15,7 @@ from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -86,6 +87,26 @@ class _UpdateCheckThread(QThread):
         info = check_latest()
         if info is not None:
             self.found.emit(info)
+
+
+class _JobCard(QFrame):
+    edit_requested = Signal()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.edit_requested.emit()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Menu or (
+            event.key() == Qt.Key.Key_F10 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+        ):
+            self.customContextMenuRequested.emit(self.rect().center())
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -317,7 +338,12 @@ class MainWindow(QMainWindow):
         running = (job.get("last_status") or "") == "running"
 
         # Scheduling and run status are independent: paused jobs can still run manually.
-        card = card_frame(edge=status_edge(job.get("last_status")))
+        card = _JobCard()
+        card.setProperty("card", True)
+        card.setProperty("edge", status_edge(job.get("last_status")))
+        card.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        card.setAccessibleName(f"Job {job.get('name', '')}")
+        card.setToolTip("Double-click to edit. Right-click for job options.")
         lay = QHBoxLayout(card)
         lay.setContentsMargins(16, 12, 16, 12)
         lay.setSpacing(12)
@@ -387,6 +413,7 @@ class MainWindow(QMainWindow):
             return b
 
         job_name = job.get("name", "")
+        card.edit_requested.connect(lambda: self._edit_job(job_name))
         testing = job.get("stage", "testing") != "live"
         # Daily actions stay single-click; everything occasional lives behind ⋯ (an
         # owner-approved amendment to the single-click policy — keeps cards scannable).
@@ -453,6 +480,8 @@ class MainWindow(QMainWindow):
         menu.addAction("🗑 Delete", lambda *_: self._delete_job(job_name))
         menu.aboutToHide.connect(self._on_card_menu_closed)
         more.setMenu(menu)
+        card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        card.customContextMenuRequested.connect(lambda pos: menu.popup(card.mapToGlobal(pos)))
         lay.addWidget(more)
 
         return card

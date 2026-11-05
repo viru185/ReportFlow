@@ -176,3 +176,73 @@ def test_job_card_run_status_and_stage_alignment(qtbot, themed_app, stage, enabl
         badge_center = badge.mapTo(card, QPoint(0, badge.height() // 2)).y()
         run_center = run.mapTo(card, QPoint(0, run.height() // 2)).y()
         assert abs(badge_center - run_center) <= 1
+
+
+def test_job_card_double_click_text_opens_edit_but_actions_stay_separate(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QLabel, QPushButton
+    from tests.ui.test_ui import FakeApi, _sample_job_dict
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    api = FakeApi(jobs=[_sample_job_dict()])
+    window = MainWindow(api)
+    qtbot.addWidget(window)
+    edits = []
+    actions = []
+    monkeypatch.setattr(window, "_edit_job", edits.append)
+    monkeypatch.setattr(window, "_trigger", lambda name, **kwargs: actions.append(name))
+    window.show()
+    card = window.jobs_layout.itemAt(0).widget()
+    name = next(label for label in card.findChildren(QLabel) if label.text() == "daily")
+    qtbot.mouseClick(name, Qt.MouseButton.LeftButton)
+    assert edits == []
+    qtbot.mouseDClick(name, Qt.MouseButton.LeftButton)
+    assert edits == ["daily"]
+    edits.clear()
+    qtbot.mouseDClick(card, Qt.MouseButton.LeftButton)
+    assert edits == ["daily"]
+    edits.clear()
+    run = next(button for button in card.findChildren(QPushButton) if button.text() == "▶ Run")
+    qtbot.mouseDClick(run, Qt.MouseButton.LeftButton)
+    assert edits == []
+    qtbot.mouseClick(run, Qt.MouseButton.LeftButton)
+    assert actions == ["daily"]
+
+
+def test_job_card_context_menu_uses_existing_actions_and_defers_refresh(qtbot, monkeypatch):
+    from PySide6.QtGui import QContextMenuEvent
+    from PySide6.QtWidgets import QApplication, QLabel, QToolButton
+    from tests.ui.test_ui import FakeApi, _sample_job_dict
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    job = _sample_job_dict()
+    window = MainWindow(FakeApi(jobs=[job]))
+    qtbot.addWidget(window)
+    window.show()
+    card = window.jobs_layout.itemAt(0).widget()
+    menu = card.findChild(QToolButton).menu()
+    edits = []
+    monkeypatch.setattr(window, "_edit_job", edits.append)
+    name = next(label for label in card.findChildren(QLabel) if label.text() == "daily")
+    pos = name.rect().center()
+    event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, name.mapToGlobal(pos))
+    QApplication.sendEvent(name, event)
+    qtbot.waitUntil(menu.isVisible)
+    assert QApplication.activePopupWidget() is menu
+    assert edits == []
+    job["last_status"] = "running"
+    window.refresh()
+    assert window._refresh_pending
+    assert window.jobs_layout.itemAt(0).widget() is card
+    menu.close()
+    qtbot.waitUntil(lambda: window.jobs_layout.itemAt(0).widget() is not card)
+    card = window.jobs_layout.itemAt(0).widget()
+    menu = card.findChild(QToolButton).menu()
+    card.setFocus()
+    qtbot.keyClick(card, Qt.Key.Key_F10, Qt.KeyboardModifier.ShiftModifier)
+    qtbot.waitUntil(menu.isVisible)
+    edit = next(action for action in menu.actions() if "Edit" in action.text())
+    edit.trigger()
+    menu.close()
+    assert edits == ["daily"]
