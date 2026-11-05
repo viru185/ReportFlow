@@ -3,28 +3,24 @@
 from __future__ import annotations
 
 import email.policy
-import runpy
 import smtplib
 import subprocess
 import sys
 from email.parser import BytesParser
-from pathlib import Path
 
 import pytest
 from aiosmtpd.controller import Controller
+from reportflow_smtpserver import _PrintAndSave
 from tests.core.test_email import _config, _ctx, _free_port, _job
 
 from reportflow.core.email import send_report
-
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts/dev_smtp_server.py"
-Capture = runpy.run_path(str(SCRIPT))["_PrintAndSave"]
 
 
 @pytest.fixture
 def capture_server(tmp_path):
     port = _free_port()
     outbox = tmp_path / "outbox"
-    controller = Controller(Capture(outbox), hostname="127.0.0.1", port=port)
+    controller = Controller(_PrintAndSave(outbox), hostname="127.0.0.1", port=port)
     controller.start()
     try:
         yield port, outbox
@@ -67,7 +63,10 @@ def test_capture_reports_storage_failure_to_sender(capture_server, tmp_path, mon
 @pytest.mark.parametrize("args", [["--host", "0.0.0.0"], ["--port", "0"]])
 def test_capture_rejects_invalid_listener_arguments(args):
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, timeout=10
+        [sys.executable, "-c", "from reportflow_smtpserver import main; main()", *args],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     assert result.returncode == 2
     assert "error:" in result.stderr

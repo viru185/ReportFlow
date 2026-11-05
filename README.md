@@ -393,7 +393,7 @@ Local SMTP acceptance verifies the application flow. External mailbox delivery, 
 filtering and authenticated/TLS SMTP require separate tests.
 
 For source development, the service and UI commands above can also use this capture server.
-The compatibility command `uv run python scripts/dev_smtp_server.py` remains available.
+The command is provided by the development-only workspace package in `tools/smtpserver`.
 
 Worker-only quick loop (no service/UI):
 
