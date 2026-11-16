@@ -1,18 +1,49 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
+## [0.11.4] - 2026-11-16
+
+### Bug Fixes
+- Keep a job card's ⋯ menu open across the dashboard auto-refresh
+- Duplicate copies everything, including the email template
+- Align job indicators and show paused job run status
+- Limit beta notes to changes since the previous release
+
+### CI/CD
+- Publish beta tags (vX.Y.Z-beta.N) as GitHub pre-releases
+
+### Chores
+- Un-numbered betas (vX.Y.Z-beta); version 0.11.0-beta
+- Prepare 0.11.2-beta release
+- Prepare 0.11.3-beta release
+- Prepare 0.11.4-beta
+- Prepare 0.11.4
+
+### Documentation
+- 0.11 — workbooks, per-sheet options, schedules, placeholders, beta releases; bump version to 0.11.0-beta.1
+
+### Features
+- Several workbooks per job, with per-sheet PDF and hidden options
+- Put the run time in the default output filename
+- Explain the time limit and the add-in wait right on the Advanced tab
+- Combine several schedules in one job, delete times and rules in one click
+- Rename a job from its editor
+- Date placeholders like {{ today }}, placeholders in the subject, and a how-to guide
+- Load the email template from an .html file, optionally kept linked
+- Turn the startup update check off by default; order betas correctly
+- Add job card edit and context menu shortcuts
+
+### Tests
+- Make the purge db-rows test independent of today's date
+
 ## [0.10.1] - 2026-07-23
 
 ### Bug Fixes
 - Two WizardSilent guards in reportflow.iss — on a silent upgrade the account is already configured from the prior install, so leave it untouched:
 
-### Documentation
-- Update CHANGELOG.md for v0.10.0 [skip ci]
-
 ## [0.10.0] - 2026-07-23
 
 ### Documentation
-- Update CHANGELOG.md for v0.9.0 [skip ci]
 - 0.10.0 — card edge/⋯ menu and two-column Settings in README/help; bump version
 
 ### Features
@@ -20,9 +51,6 @@ All notable changes to ReportFlow are documented here.
 - Two-column Settings dialog so it fits on screen
 
 ## [0.9.0] - 2026-07-22
-
-### Documentation
-- Update CHANGELOG.md for v0.8.0 [skip ci]
 
 ### Features
 - Job summaries expose next run time and last successful report
@@ -91,6 +119,22 @@ All notable changes to ReportFlow are documented here.
 
 ### Refactor
 - Single-source the version in pyproject.toml
+
+## [0.4.3] - 2026-07-07
+
+### Bug Fixes
+- Trying to fix the empty excel problem
+
+### Chores
+- Bump version to 0.4.3
+
+## [0.4.2] - 2026-07-07
+
+### Chores
+- Bump version to 0.4.2
+
+### Features
+- Add fail_if_sheet_empty option and enable debug logging in job settings
 
 ## [0.4.1] - 2026-07-07
 
