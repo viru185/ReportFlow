@@ -1,56 +1,251 @@
-"""Build all three ReportFlow executables with PyInstaller into ``dist/``.
+"""Build ReportFlow: the three executables (PyInstaller) and the installer (Inno Setup).
 
-Usage:
-    uv run python packaging/build_all.py [worker|service|ui ...]
+Usage, from the repo root (after ``uv sync --all-extras``):
+    uv run packaging/build_all.py                  # worker + service + ui (what CI runs)
+    uv run packaging/build_all.py worker           # one executable
+    uv run packaging/build_all.py worker service   # several
+    uv run packaging/build_all.py installer        # the installer, from the exes in dist/
+    uv run packaging/build_all.py all              # all three exes, then the installer
 
-With no args, builds all three. Output layout (staging for the installer):
+Targets combine freely: ``ui installer`` rebuilds the UI, then the installer. The version
+comes from pyproject.toml, and the installer step refuses executables built from another
+version. Inno Setup 7 or 6 is found on PATH, in the registry or in its usual folders;
+``--iscc PATH`` overrides that.
+
+Output:
     dist/worker/reportflow-worker.exe
     dist/service/reportflow-service.exe
     dist/ui/reportflow-ui.exe
+    packaging/innosetup/Output/ReportFlow-Setup-<version>.exe
 """
 
 from __future__ import annotations
 
+import argparse
+import importlib.util
+import os
+import shutil
 import subprocess
 import sys
+import time
+import tomllib
+import winreg
 from pathlib import Path
+
+from packaging.version import InvalidVersion, Version
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_DIR = ROOT / "packaging" / "pyinstaller"
+ISS = ROOT / "packaging" / "innosetup" / "reportflow.iss"
+NSSM = ROOT / "packaging" / "nssm" / "nssm.exe"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 
-TARGETS = ("worker", "service", "ui")
+EXES = ("worker", "service", "ui")
+TARGETS = (*EXES, "installer")
+INNO_MAJORS = ("7", "6")  # newest first
+UNINSTALL_KEYS = (
+    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+)
 
 
-def build(target: str) -> None:
+class BuildError(Exception):
+    """A step failed; the message says why and what to do about it."""
+
+
+def project_version() -> str:
+    with (ROOT / "pyproject.toml").open("rb") as f:
+        return str(tomllib.load(f)["project"]["version"])
+
+
+def build_exe(target: str) -> None:
     spec = SPEC_DIR / f"{target}.spec"
     if not spec.exists():
-        raise SystemExit(f"missing spec: {spec}")
-    print(f"\n=== Building {target} ===", flush=True)
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "PyInstaller",
-            "--clean",
-            "--noconfirm",
-            "--distpath",
-            str(DIST),
-            "--workpath",
-            str(BUILD / target),
-            str(spec),
-        ],
-        check=True,
-        cwd=str(ROOT),
+        raise BuildError(f"missing spec: {spec}")
+    cmd = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--clean",
+        "--noconfirm",
+        "--distpath",
+        str(DIST),
+        "--workpath",
+        str(BUILD / target),
+        str(spec),
+    ]
+    if subprocess.run(cmd, cwd=ROOT).returncode != 0:
+        raise BuildError(f"PyInstaller failed for {target} (see the output above)")
+
+
+def built_version(target: str) -> str | None:
+    """The ReportFlow version dist/<target> was built from; None if its exe is missing."""
+    if not (DIST / target / f"reportflow-{target}.exe").is_file():
+        return None
+    # Every spec bundles the package metadata as a version-stamped dist-info folder.
+    infos = sorted((DIST / target).glob("_internal/reportflow-*.dist-info"))
+    if not infos:
+        return "an unknown version"
+    return infos[-1].name.removeprefix("reportflow-").removesuffix(".dist-info")
+
+
+def _same_version(a: str, b: str) -> bool:
+    try:
+        return Version(a) == Version(b)
+    except InvalidVersion:
+        return False
+
+
+def check_exes(version: str) -> None:
+    """Refuse to package executables that are missing or from another version."""
+    problems: list[tuple[str, str]] = []
+    for target in EXES:
+        got = built_version(target)
+        if got is None:
+            problems.append((target, f"dist\\{target}\\reportflow-{target}.exe is missing"))
+        elif not _same_version(got, version):
+            problems.append((target, f"dist\\{target} was built from {got}, not {version}"))
+    if problems:
+        details = "\n  ".join(text for _, text in problems)
+        stale = [target for target, _ in problems]
+        targets = "all" if len(stale) == len(EXES) else " ".join([*stale, "installer"])
+        raise BuildError(
+            f"the installer needs all three executables built from {version}:\n  {details}\n"
+            f"Rebuild them first: uv run packaging/build_all.py {targets}"
+        )
+
+
+def _registry_installs(major: str) -> list[Path]:
+    found: list[Path] = []
+    for hive, key in UNINSTALL_KEYS:
+        try:
+            with winreg.OpenKey(hive, f"{key}\\Inno Setup {major}_is1") as k:
+                location, _ = winreg.QueryValueEx(k, "InstallLocation")
+        except OSError:
+            continue
+        if location:
+            found.append(Path(location))
+    return found
+
+
+def find_iscc(explicit: str | None) -> Path:
+    """ISCC.exe: --iscc, then PATH, then Inno Setup 7/6 from the registry or usual folders."""
+    if explicit:
+        path = Path(explicit)
+        path = path / "ISCC.exe" if path.is_dir() else path
+        if path.is_file():
+            return path
+        raise BuildError(f"--iscc {explicit}: ISCC.exe not found there")
+    candidates: list[Path] = []
+    on_path = shutil.which("ISCC")
+    if on_path:
+        candidates.append(Path(on_path))
+    bases = [os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles")]
+    if os.environ.get("LOCALAPPDATA"):
+        bases.append(os.path.join(os.environ["LOCALAPPDATA"], "Programs"))  # per-user install
+    for major in INNO_MAJORS:
+        candidates += _registry_installs(major)
+        candidates += [Path(base) / f"Inno Setup {major}" for base in bases if base]
+    for candidate in candidates:
+        exe = candidate if candidate.suffix.lower() == ".exe" else candidate / "ISCC.exe"
+        if exe.is_file():
+            return exe
+    raise BuildError(
+        "Inno Setup not found. Install Inno Setup 7 or 6 (https://jrsoftware.org/isdl.php), "
+        "or pass --iscc <path to ISCC.exe>."
     )
 
 
+def preflight(order: list[str], iscc_arg: str | None) -> Path | None:
+    """Fail before a long PyInstaller run, not after it."""
+    if any(t in EXES for t in order) and importlib.util.find_spec("PyInstaller") is None:
+        raise BuildError("PyInstaller isn't installed. Run: uv sync --all-extras")
+    if "installer" not in order:
+        return None
+    if not NSSM.is_file():
+        raise BuildError(
+            f"missing {NSSM.relative_to(ROOT)}: put the 64-bit nssm.exe there "
+            "(https://nssm.cc/download, or `choco install nssm`)"
+        )
+    return find_iscc(iscc_arg)
+
+
+def build_installer(version: str, iscc: Path) -> Path:
+    check_exes(version)
+    # Windows file versions are numeric only: 0.12.0-beta -> 0.12.0 (as CI does).
+    numeric = Version(version).base_version
+    cmd = [
+        str(iscc),
+        "/Q",
+        f"/DMyAppVersion={version}",
+        f"/DMyAppNumericVersion={numeric}",
+        str(ISS),
+    ]
+    if subprocess.run(cmd, cwd=ROOT).returncode != 0:
+        raise BuildError("Inno Setup failed (see the output above)")
+    setup = ISS.parent / "Output" / f"ReportFlow-Setup-{version}.exe"
+    if not setup.is_file():
+        raise BuildError(f"Inno Setup finished but {setup} is missing")
+    return setup
+
+
+def _elapsed(start: float) -> str:
+    seconds = int(time.monotonic() - start)
+    return f"{seconds // 60}m {seconds % 60:02d}s"
+
+
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="uv run packaging/build_all.py",
+        description="Build the ReportFlow executables and/or the installer.",
+        epilog="With no target: worker, service and ui (no installer). "
+        "'all' = the three executables, then the installer.",
+    )
+    parser.add_argument(
+        "targets", nargs="*", metavar="target", help="worker, service, ui, installer or all"
+    )
+    parser.add_argument("--iscc", help="path to ISCC.exe (default: found automatically)")
+    args = parser.parse_args(argv)
+    unknown = [t for t in args.targets if t not in (*TARGETS, "all")]
+    if unknown:
+        parser.error(
+            f"unknown target {', '.join(unknown)} (use worker, service, ui, installer or all)"
+        )
+    return args
+
+
 def main(argv: list[str]) -> int:
-    targets = [t for t in argv if t in TARGETS] or list(TARGETS)
-    for t in targets:
-        build(t)
-    print(f"\nArtifacts in {DIST}")
+    args = parse(argv)
+    chosen = set(args.targets) or set(EXES)
+    if "all" in chosen:
+        chosen = set(TARGETS)
+    order = [t for t in TARGETS if t in chosen]
+    version = project_version()
+    started = time.monotonic()
+    built: list[str] = []
+    try:
+        iscc = preflight(order, args.iscc)
+        for target in order:
+            step = time.monotonic()
+            if target == "installer":
+                assert iscc is not None
+                print(f"\n=== Installer {version} (Inno Setup: {iscc}) ===", flush=True)
+                setup = build_installer(version, iscc)
+                size = setup.stat().st_size / 1024 / 1024
+                built.append(f"{setup.relative_to(ROOT)}  ({size:.0f} MB)")
+            else:
+                print(f"\n=== {target} {version} ===", flush=True)
+                build_exe(target)
+                built.append(str((DIST / target / f"reportflow-{target}.exe").relative_to(ROOT)))
+            print(f"--- {target} done in {_elapsed(step)}", flush=True)
+    except BuildError as exc:
+        print(f"\nBUILD FAILED: {exc}", file=sys.stderr)
+        return 1
+    print(f"\nBuilt {version} in {_elapsed(started)}:")
+    for line in built:
+        print(f"  {line}")
     return 0
 
 

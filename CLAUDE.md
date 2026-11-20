@@ -135,9 +135,10 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
 ## Dev workflow
 
 ```bash
-uv sync                      # deps
+uv sync --all-extras         # deps (plain `uv sync` removes ruff/mypy/pytest/PyInstaller)
 uv run reportflow-service    # run service locally
 uv run reportflow-ui         # run the UI
+uv run packaging/build_all.py [worker|service|ui|installer|all ...]   # local build
 ```
 
 **The gate — all four must pass before committing:**
@@ -162,9 +163,10 @@ New features ship as a **beta first** (owner's workflow since 0.11):
    for the final release. `release.yml` fails if the tag disagrees
    (`scripts/check_release_tag.py`).
 2. Gate green + `uv run pytest -m excel`.
-3. Validate the installer compiles:
-   `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=X.Y.Z packaging\innosetup\reportflow.iss`
-   (a beta also needs `/DMyAppNumericVersion=X.Y.Z` — Windows file versions are numeric).
+3. Validate the installer builds: `uv run packaging/build_all.py all` (exes + installer;
+   finds Inno Setup 7/6 itself, passes the version and the numeric file version a beta
+   needs, and refuses `dist\` exes from another version). CI still calls ISCC directly
+   (`release.yml`, the runner's preinstalled Inno Setup 6).
 4. **Beta:** tag `vX.Y.Z-beta` (any branch) and push it → published as a GitHub
    **pre-release**, never "latest", no CHANGELOG commit. **Final:** merge to `main`, tag
    `vX.Y.Z`, push both → normal release. The in-app updater reads the LATEST release (betas

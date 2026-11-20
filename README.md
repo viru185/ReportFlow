@@ -426,7 +426,7 @@ uv run python scripts/dev_run_worker.py --template "D:\path\to\MyReport.xlsx" --
 ### Build & test the executables locally
 
 ```powershell
-uv run python packaging/build_all.py            # dist\worker, dist\service, dist\ui
+uv run packaging/build_all.py                   # dist\worker, dist\service, dist\ui
 dist\ui\reportflow-ui.exe --selftest             # exit 0 => UI bundle OK
 
 # Run the FROZEN service + UI against the isolated data dir:
@@ -464,13 +464,20 @@ uv run mypy
 
 ### Build the executables
 
+One script builds any of the three executables and the installer (run `uv sync --all-extras`
+once first):
+
 ```powershell
-uv run python packaging/build_all.py            # all three
-uv run python packaging/build_all.py worker     # just one
+uv run packaging/build_all.py                    # all three executables
+uv run packaging/build_all.py worker             # just one
+uv run packaging/build_all.py worker service     # several
+uv run packaging/build_all.py installer          # the installer, from the exes in dist\
+uv run packaging/build_all.py all                # all three executables, then the installer
 ```
 
-Output (onedir bundles): `dist/worker`, `dist/service`, `dist/ui`. Validate the frozen UI's Qt
-platform plugin without a visible window:
+Targets combine (`ui installer` rebuilds the UI, then the installer). The version always comes
+from `pyproject.toml`. Output (onedir bundles): `dist/worker`, `dist/service`, `dist/ui`.
+Validate the frozen UI's Qt platform plugin without a visible window:
 
 ```powershell
 dist\ui\reportflow-ui.exe --selftest    # exits 0 if qwindows.dll loaded
@@ -478,16 +485,19 @@ dist\ui\reportflow-ui.exe --selftest    # exits 0 if qwindows.dll loaded
 
 ### Build the installer
 
-Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) and `packaging/nssm/nssm.exe`
-(download the 64-bit binary from [nssm.cc](https://nssm.cc/download)).
+Requires [Inno Setup 7 or 6](https://jrsoftware.org/isdl.php) and
+`packaging/nssm/nssm.exe` (download the 64-bit binary from [nssm.cc](https://nssm.cc/download)).
 
 ```powershell
-& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.1.0 packaging\innosetup\reportflow.iss
-# -> packaging\innosetup\Output\ReportFlow-Setup-0.1.0.exe
+uv run packaging/build_all.py all          # exes + installer
+uv run packaging/build_all.py installer    # installer only, from the exes already in dist\
+# -> packaging\innosetup\Output\ReportFlow-Setup-<version>.exe
 ```
 
-For a beta, also pass the numeric part for the Windows file version:
-`/DMyAppVersion=0.11.0-beta /DMyAppNumericVersion=0.11.0`.
+The script finds `ISCC.exe` on `PATH`, in the registry (per-user installs included) or in the
+usual folders; `--iscc <path>` overrides it. It passes the version from `pyproject.toml`, plus
+the numeric part a beta needs for the Windows file version (`0.12.0-beta` → `0.12.0`), and it
+refuses to package executables in `dist\` that were built from another version.
 
 ### Project layout
 
