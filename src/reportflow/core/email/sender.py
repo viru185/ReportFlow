@@ -19,9 +19,9 @@ from reportflow.core import secrets
 from reportflow.core.config.models import AppConfig, JobConfig, Recipients, SmtpConfig
 from reportflow.core.email.recipients import ResolvedRecipients, resolve
 from reportflow.core.email.render import (
+    final_subject,
     html_to_text,
     render_email,
-    render_subject,
     resolve_template,
 )
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
@@ -58,9 +58,7 @@ def build_report_message(
     recipients = resolve_recipients(job, config, is_test=is_test)
 
     # Placeholders work in the subject too ("Daily report — {{ today }}").
-    subject = render_subject(job.subject or f"{job.name} report", context)
-    if is_test:
-        subject = f"[TEST] {subject}"
+    subject = final_subject(job.subject, job.name, context, is_test=is_test)
 
     html = render_email(resolve_template(job, config), context)
     text = html_to_text(html)

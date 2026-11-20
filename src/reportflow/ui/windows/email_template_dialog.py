@@ -11,11 +11,14 @@ edits made to the file outside ReportFlow are picked up. ``linked_path()`` repor
 from __future__ import annotations
 
 import html as html_mod
+import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -34,7 +37,12 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.core.config.defaults import DEFAULT_EMAIL_TEMPLATE
-from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
+from reportflow.core.email.render import (
+    PLACEHOLDERS,
+    final_subject,
+    render_email,
+    sample_context,
+)
 from reportflow.ui.fs_util import open_start_dir
 from reportflow.ui.widgets import space_layout
 
@@ -68,6 +76,29 @@ def _wrap_simple(text: str) -> str:
     return _SIMPLE_SCAFFOLD.format(body="\n".join(paragraphs))
 
 
+def _with_email_header(body: str, subject: str, recipients: dict[str, list[str]]) -> str:
+    """Put an email-client style Subject / To / Cc block above the rendered body."""
+    rows = [("Subject", subject)]
+    for key, label in (("to", "To"), ("cc", "Cc")):
+        addresses = recipients.get(key) or []
+        if addresses:
+            rows.append((label, ", ".join(addresses)))
+    lines = "".join(
+        f'<tr><td style="color:#666;padding:1px 10px 1px 0;">{label}</td>'
+        f"<td>{html_mod.escape(value)}</td></tr>"
+        for label, value in rows
+    )
+    header = (
+        '<table cellspacing="0" style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;'
+        'margin-bottom:10px;">'
+        f"{lines}</table><hr>"
+    )
+    match = re.search(r"<body[^>]*>", body, flags=re.IGNORECASE)
+    if match:
+        return body[: match.end()] + header + body[match.end() :]
+    return header + body
+
+
 class EmailTemplateDialog(QDialog):
     """Edit a job's email body. ``result_html()`` returns the template source to save."""
 
@@ -79,11 +110,15 @@ class EmailTemplateDialog(QDialog):
         *,
         linked_path: str | None = None,
         check_path: Callable[[str], object] | None = None,
+        preview_job: dict[str, Any] | None = None,
     ) -> None:
         """``linked_path``: the job is linked to this file (opens in linked mode).
         ``check_path(path)`` raises with a reason when the SERVICE can't use the file —
-        linking is only allowed once it passes."""
+        linking is only allowed once it passes. ``preview_job`` is what the job editor has
+        on screen (name, subject, stage, sheets, workbooks, recipients per stage), so the
+        preview shows this job's email rather than a sample one."""
         super().__init__(parent)
+        self._preview_job = preview_job or {}
         self.setWindowTitle(f"Email template — {job_name}" if job_name else "Email template")
         self.resize(820, 640)
         self._check_path = check_path
@@ -184,6 +219,23 @@ class EmailTemplateDialog(QDialog):
         preview_btn.setToolTip("Render the template with sample data.")
         preview_btn.clicked.connect(self._preview)
 
+        # One click switches what the preview shows: the email Testing-stage runs send (with
+        # [TEST] and the test recipients) or the one Production runs send.
+        self.preview_testing = QPushButton("Testing")
+        self.preview_production = QPushButton("Production")
+        self._preview_stage = QButtonGroup(self)
+        for button, tip in (
+            (self.preview_testing, "Preview the email Testing-stage runs send."),
+            (self.preview_production, "Preview the email Production runs send."),
+        ):
+            button.setCheckable(True)
+            button.setProperty("segment", True)  # the checked one shows in the accent colour
+            button.setToolTip(tip)
+            self._preview_stage.addButton(button)
+        live = self._preview_job.get("stage") == "live"
+        (self.preview_production if live else self.preview_testing).setChecked(True)
+        self._preview_stage.buttonClicked.connect(lambda *_: self._preview())
+
         self.preview = QTextBrowser()
         self.preview.setPlaceholderText("Click Preview to render the email with sample data.")
         # Emails are designed on white — the preview is a deliberate light island inside the
@@ -194,6 +246,10 @@ class EmailTemplateDialog(QDialog):
         preview_row = QHBoxLayout()
         preview_row.addWidget(QLabel("Email preview"))
         preview_row.addStretch()
+        preview_row.addWidget(QLabel("Preview as:"))
+        preview_row.addWidget(self.preview_testing)
+        preview_row.addWidget(self.preview_production)
+        preview_row.addSpacing(12)
         preview_row.addWidget(preview_btn)
         layout.addLayout(preview_row)
         layout.addWidget(self.preview, 2)
@@ -273,13 +329,30 @@ class EmailTemplateDialog(QDialog):
             return _wrap_simple(self.simple_edit.toPlainText())
         return self.html_edit.toPlainText()
 
+    def preview_is_test(self) -> bool:
+        return not self.preview_production.isChecked()
+
     def _preview(self) -> None:
+        is_test = self.preview_is_test()
+        job = self._preview_job
+        name = str(job.get("name") or "") or None
+        context = sample_context(
+            is_test=is_test,
+            job_name=name,
+            subject=job.get("subject") or None,
+            sheet_names=job.get("sheets") or None,
+            workbooks=job.get("workbooks") or None,
+        )
         try:
-            rendered = render_email(self.result_html(), sample_context())
+            rendered = render_email(self.result_html(), context)
         except Exception as e:  # noqa: BLE001 — template errors surface to the author
             QMessageBox.warning(self, "Template error", str(e))
             return
-        self.preview.setHtml(rendered)
+        subject = final_subject(
+            job.get("subject") or None, context["job_name"], context, is_test=is_test
+        )
+        recipients = (job.get("recipients") or {}).get("testing" if is_test else "live") or {}
+        self.preview.setHtml(_with_email_header(rendered, subject, recipients))
 
     def _on_save(self) -> None:
         linked = self.linked_path()

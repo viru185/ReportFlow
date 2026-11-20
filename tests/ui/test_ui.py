@@ -1931,3 +1931,65 @@ def test_settings_email_groups_need_a_name_and_members(qtbot, monkeypatch):
     dlg._group_name_edited("Empty")
     dlg._save()
     assert "has no addresses" in warned[-1]
+
+
+def test_template_preview_as_testing_or_production(qtbot):
+    """The preview shows the email as recipients get it: subject, To/Cc, body — for either
+    stage, one click apart."""
+    from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
+
+    job = {
+        "name": "Daily Energy",
+        "subject": "Daily energy — {{ job_name }}",
+        "stage": "live",
+        "sheets": ["Summary"],
+        "workbooks": ["Energy.xlsx"],
+        "recipients": {
+            "testing": {"to": ["dev@corp.example.com"], "cc": []},
+            "live": {"to": ["boss@corp.example.com"], "cc": ["ops@corp.example.com"]},
+        },
+    }
+    template = "<html><body><p>{{ stage }}</p>{% if is_test %}TEST RUN{% endif %}</body></html>"
+    dlg = EmailTemplateDialog(template, "Daily Energy", preview_job=job)
+    qtbot.addWidget(dlg)
+    assert dlg.preview_production.isChecked()  # opens on the job's own stage
+
+    dlg._preview()
+    production = dlg.preview.toPlainText()
+    assert "Daily energy — Daily Energy" in production and "[TEST]" not in production
+    assert "boss@corp.example.com" in production and "ops@corp.example.com" in production
+    assert "Production" in production and "TEST RUN" not in production
+
+    dlg.preview_testing.click()  # one click re-renders as Testing
+    testing = dlg.preview.toPlainText()
+    assert "[TEST] Daily energy — Daily Energy" in testing
+    assert "dev@corp.example.com" in testing and "boss@corp.example.com" not in testing
+    assert "TEST RUN" in testing
+
+
+def test_editor_hands_the_template_preview_this_job(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from reportflow.ui.windows import job_editor as je
+
+    seen = {}
+
+    def capture(dlg):
+        seen.update(dlg._preview_job)
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(je.EmailTemplateDialog, "exec", capture)
+    api = FakeApi()
+    api.get_config = lambda: {**FakeApi().get_config(), **_groups_config()}
+    dlg = je.JobEditorDialog(api, _sample_job_dict())
+    qtbot.addWidget(dlg)
+    _type(dlg.prod_cc, "Plant leads, boss@corp.example.com")
+    dlg.subject.setText("Daily — {{ today }}")
+    dlg._edit_template()
+    assert seen["name"] == "daily" and seen["subject"] == "Daily — {{ today }}"
+    assert seen["stage"] == "testing" and seen["sheets"] == ["Summary"]
+    # boss@ is in To already, so Cc does not repeat that address — exactly like the real email.
+    assert seen["recipients"]["live"] == {
+        "to": ["boss@corp.example.com"],
+        "cc": ["ops@corp.example.com", "a@corp.example.com", "b@corp.example.com"],
+    }

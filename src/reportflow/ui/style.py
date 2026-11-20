@@ -185,6 +185,12 @@ QPushButton:disabled {{
     color: {TEXT_MUTED};
     background: {CARD_BG};
 }}
+QPushButton[segment="true"]:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+    color: #ffffff;
+    font-weight: 600;
+}}
 QPushButton[accent="true"] {{
     background: {ACCENT};
     border-color: {ACCENT};

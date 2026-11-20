@@ -301,6 +301,24 @@ def _clear_later(edit: QLineEdit) -> None:
     QTimer.singleShot(0, edit.clear)
 
 
+def header_recipients(
+    to: RecipientField, cc: RecipientField, groups: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """To and Cc as the email shows them: groups expanded, each address once, To first —
+    the same rule the sender applies (``core.email.recipients.resolve``)."""
+    by_name = {name.casefold(): members for name, members in groups.items()}
+    seen: set[str] = set()
+    result: dict[str, list[str]] = {}
+    for key, box in (("to", to), ("cc", cc)):
+        expanded = [m for g in box.groups() for m in by_name.get(g.casefold(), [])]
+        result[key] = []
+        for address in [*box.emails(), *expanded]:
+            if address.casefold() not in seen:
+                seen.add(address.casefold())
+                result[key].append(address)
+    return result
+
+
 def unique_addresses(fields: list[RecipientField], groups: dict[str, list[str]]) -> list[str]:
     """Every distinct address the fields reach, groups expanded (case-insensitive)."""
     by_name = {name.casefold(): members for name, members in groups.items()}

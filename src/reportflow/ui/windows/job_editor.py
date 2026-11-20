@@ -49,7 +49,11 @@ from reportflow.core.output_names import (
 )
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.fs_util import open_start_dir
-from reportflow.ui.recipient_field import RecipientField, unique_addresses
+from reportflow.ui.recipient_field import (
+    RecipientField,
+    header_recipients,
+    unique_addresses,
+)
 from reportflow.ui.suggestions import concurrency_groups, email_groups, known_addresses
 from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
@@ -541,6 +545,21 @@ class JobEditorDialog(QDialog):
             return None
         return max(1, -(-seconds // 60))
 
+    def _preview_job(self) -> dict[str, Any]:
+        """What is on screen now, so the template preview shows this job's real email."""
+        self._commit_current()
+        return {
+            "name": self.name.text().strip(),
+            "subject": self.subject.text().strip(),
+            "stage": self.stage.currentData(),
+            "sheets": [row.name for wb in self._workbooks for row in wb.rows if row.include],
+            "workbooks": [Path(wb.path).name for wb in self._workbooks if wb.path],
+            "recipients": {
+                "testing": header_recipients(self.test_to, self.test_cc, self._email_groups),
+                "live": header_recipients(self.prod_to, self.prod_cc, self._email_groups),
+            },
+        }
+
     def _recipient_field(self, tip: str) -> RecipientField:
         box = RecipientField(placeholder="Type a group or an address…")
         box.setToolTip(
@@ -847,6 +866,7 @@ class JobEditorDialog(QDialog):
             self,
             linked_path=link,
             check_path=self._api.check_email_template,
+            preview_job=self._preview_job(),
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return

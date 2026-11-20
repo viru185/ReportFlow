@@ -224,3 +224,13 @@ def test_every_documented_placeholder_has_a_sample_value():
             render_email(token, ctx)  # must at least render
             continue
         assert render_email(token, ctx).strip(), f"{label} ({token}) renders empty"
+
+
+def test_final_subject_is_shared_by_email_and_preview():
+    from reportflow.core.email.render import final_subject, sample_context
+
+    ctx = sample_context(job_name="Daily", is_test=False)
+    assert final_subject(None, "Daily", ctx, is_test=False) == "Daily report"
+    assert final_subject("R&D {{ job_name }}", "Daily", ctx, is_test=True) == "[TEST] R&D Daily"
+    assert sample_context(is_test=False)["stage"] == "Production"
+    assert sample_context()["stage"] == "Testing" and sample_context()["is_test"] is True

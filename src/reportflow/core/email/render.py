@@ -16,7 +16,7 @@ from jinja2 import Environment, TemplateError, select_autoescape
 
 from reportflow.core import paths
 from reportflow.core.config.defaults import DEFAULT_EMAIL_TEMPLATE
-from reportflow.core.config.models import AppConfig, JobConfig
+from reportflow.core.config.models import AppConfig, JobConfig, stage_label
 
 _env = Environment(autoescape=select_autoescape(["html", "xml"]), enable_async=False)
 # Subjects are plain text — escaping would turn "R&D" into "R&amp;D".
@@ -139,33 +139,61 @@ def html_to_text(html: str) -> str:
     return text.strip()
 
 
-def sample_context(job: JobConfig | None = None, now: datetime | None = None) -> dict[str, Any]:
-    """Placeholder context for the UI's email preview — a value for every placeholder."""
+def final_subject(
+    subject: str | None, job_name: str, context: dict[str, Any], *, is_test: bool
+) -> str:
+    """The subject line recipients see: placeholders filled, ``[TEST]`` on Testing runs.
+
+    Shared by the sender and the template preview, so the preview can't drift from the
+    real email.
+    """
+    rendered = render_subject(subject or f"{job_name} report", context)
+    return f"[TEST] {rendered}" if is_test else rendered
+
+
+def sample_context(
+    job: JobConfig | None = None,
+    now: datetime | None = None,
+    *,
+    is_test: bool = True,
+    job_name: str | None = None,
+    subject: str | None = None,
+    sheet_names: list[str] | None = None,
+    workbooks: list[str] | None = None,
+) -> dict[str, Any]:
+    """Placeholder context for the UI's email preview — a value for every placeholder.
+
+    ``is_test`` previews a Testing-stage email (False: Production). The keyword overrides
+    let the job editor preview with what is on screen before the job is saved.
+    """
     now = now or datetime.now()
-    name = job.name if job else "Sample Job"
-    workbooks = [Path(wb.input_excel_path) for wb in job.workbooks] if job else [Path("Sales.xlsx")]
-    sheets = job.sheet_names if job else ["Summary", "Detail"]
+    name = job_name or (job.name if job else "Sample Job")
+    if workbooks is None:
+        workbooks = (
+            [Path(wb.input_excel_path).name for wb in job.workbooks] if job else ["Sales.xlsx"]
+        )
+    sheets = sheet_names or (job.sheet_names if job else ["Summary", "Detail"])
     stem = f"{name}_{now.strftime('%Y%m%d_%H%M%S')}"
     attachments = [f"{stem}.xlsx", *(f"{stem}_{s}.pdf" for s in sheets[:2])]
     context: dict[str, Any] = {
         "job_name": name,
         "status": "success",
-        "stage": "Testing",
+        "stage": stage_label("testing" if is_test else "live"),
         "run_id": "preview-0001",
         "started_at": now.isoformat(timespec="seconds"),
         "finished_at": (now + timedelta(seconds=12)).isoformat(timespec="seconds"),
         "duration_seconds": 12,
         "sheet_names": sheets,
         "sheet_count": len(sheets),
-        "workbooks": [p.name for p in workbooks],
+        "workbooks": list(workbooks),
         "attachments": attachments,
         "attachment_count": len(attachments),
         "hostname": "REPORTFLOW-HOST",
-        "is_test": True,
+        "is_test": is_test,
         "warnings": [],
         "warning_count": 0,
         **date_context(now),
     }
-    raw_subject = job.subject if job and job.subject else f"{name} report"
-    context["subject"] = render_subject(raw_subject, context)
+    raw_subject = subject or (job.subject if job and job.subject else None)
+    context["subject"] = render_subject(raw_subject or f"{name} report", context)
     return context
