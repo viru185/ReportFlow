@@ -132,10 +132,11 @@ The background <b>service</b> runs jobs on schedule; this app is the control pan
     hidden</i> (very-hidden: references stay intact and the file always opens, but the raw data
     stays inside it) or <i>Keep them, visible</i>.</li>
 <li>More than one Excel file? <b>+ Add workbook…</b> adds another tab with its own file,
-    sheets and choices. Every run builds all of them and sends <b>one email</b> with every
-    file attached. On the Output tab, <b>If a workbook fails</b> decides whether one failing
-    workbook stops the whole run (default — nothing is sent) or the others are still sent
-    with a warning.</li>
+    sheets and choices — pick several files at once in its file dialog. A file that is already
+    in the job is skipped, and you are told which. Every run builds all of them and sends
+    <b>one email</b> with every file attached. On the Output tab, <b>If a workbook
+    fails</b> decides whether one failing workbook stops the whole run (default — nothing is
+    sent) or the others are still sent with a warning.</li>
 <li>Configure Output, Schedule, and Email in their sections (details below), then
     <b>Save</b>.</li>
 </ol>
@@ -179,8 +180,12 @@ refuses it and says why.</p>
 
 <h2 id="email">Email, recipients &amp; the Testing → Production lifecycle</h2>
 <p>Each job has two recipient sets: <b>Production</b> and <b>Test</b>. <i>To</i> is
-required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses). <b>Who gets
-emailed is decided by the job's stage:</b></p>
+required; <i>Cc</i>/<i>Bcc</i> are optional. Each box holds addresses and
+<a href="#groups">email groups</a> as chips: type to search the groups and every address the
+app already knows, then press Enter, Tab, a comma or a semicolon to add it (a pasted list is
+split). Click a chip's × to remove it. Text that is neither a group nor an address stays in
+the box outlined in red until you fix it. <b>Who gets emailed is decided by the job's
+stage:</b></p>
 <ul>
 <li><b>Testing</b> (every new job starts here, amber pill on the card) — <b>every</b> run,
     manual or scheduled, emails only the <i>Test</i> recipients, subject prefixed
@@ -193,9 +198,20 @@ emailed is decided by the job's stage:</b></p>
 <li>Emails attach the output Excel and all per-sheet PDFs, and show the run's duration.</li>
 <li>Every run's history entry shows an <b>email:</b> line — sent to how many recipients,
     or exactly why nothing was sent.</li>
+<li>Each address is emailed <b>once</b>, even when it is in two groups or in both To and a
+    Cc group: To comes first, then Cc, then Bcc. Under each recipient set the editor shows how
+    many unique addresses it reaches.</li>
 </ul>
+<h3 id="groups">Email groups</h3>
+<p><b>File → Settings → Email groups</b>: give a list of addresses a name (say
+<i>Plant managers</i>), then use that name in any job's To, Cc or Bcc instead of typing each
+address. Change the group's members once and every job that uses it follows; renaming it
+keeps those jobs pointing at it. A group that a job still uses can't be deleted — remove it
+from those jobs first, so no report silently loses its recipients.</p>
 <p>Click <b>Edit email template…</b> to author the email body in-app: <b>Simple</b> mode
-(plain text) or <b>HTML</b> mode (full control), with a live preview.
+(plain text) or <b>HTML</b> mode (full control), with a live preview. <b>Preview as:
+Testing | Production</b> shows the email each stage sends — subject (with <code>[TEST]</code>
+on Testing), To and Cc as recipients will see them, and the body.
 Placeholders like <code>{{{{ today }}}}</code>, <code>{{{{ job_name }}}}</code> and
 <code>{{{{ status }}}}</code> are filled in at send time — in the body and in the Subject. See
 <a href="#placeholders">Email placeholders</a> for the full list and examples.</p>
@@ -225,7 +241,7 @@ time ("next: tomorrow 06:00").</p>
 <span style="color:#4ade80;">green</span> = success,
 <span style="color:#f87171;">red</span> = failed,
 <span style="color:#fbbf24;">amber</span> = running,
-grey = paused or never ran. The detail line shows the next fire time, the last outcome
+grey = never ran. The detail line shows the next fire time, the last outcome
 ("last: success 2h ago") and the sheet count.</p>
 <p>Everything occasional lives behind the card's <b>⋯</b> menu, so daily actions stay one
 click:</p>
@@ -236,9 +252,9 @@ click:</p>
 <li><b>⧉ Duplicate</b> — a new job with <i>everything</i> copied from this one — workbooks,
     sheet choices, output, schedules, recipients, advanced options and the email template.
     Only two things differ: you give it a new name, and it starts in Testing.</li>
-<li><b>⏸ Pause</b> — pause scheduling. A paused job is unmistakable: the whole card dims
-    with a grey <b>⏸ PAUSED</b> pill, and a one-click <b>▸ Resume</b> button appears on the
-    card. Manual runs still work while paused.</li>
+<li><b>⏸ Pause</b> — pause scheduling. A paused job's whole card is dimmed — muted
+    name, a grey stage pill and edge — and a one-click <b>▸ Resume</b> button appears on the
+    card. Manual runs still work while paused (the edge turns amber while one runs).</li>
 <li><b>🗑 Delete</b> — remove the job (asks for confirmation).</li>
 </ul>
 <p>Jobs run in parallel, each in its own isolated Excel process. Failed runs are never
@@ -276,7 +292,12 @@ retried automatically — they stay visible in the history.</p>
     check-for-updates-on-startup toggle.</li>
 <li><b>Service account (PI DataLink)</b> — set the Windows user the service runs as, right
     here (see below). Click <b>Use current Windows user</b> to fill in the account you are
-    logged in as, enter its password, and click <b>Validate &amp; apply</b>.</li>
+    logged in as, enter its password, and click <b>Validate &amp; apply</b>. The service
+    restarts as that account by itself; the dialog waits and tells you when it's back. The
+    same tab shows whether <b>PI DataLink is trusted</b> for that account, with a one-click
+    fix.</li>
+<li><b>Email groups</b> — named lists of addresses for job recipients (see
+    <a href="#groups">Email groups</a>).</li>
 </ul>
 
 <h2 id="transfer">Import &amp; export</h2>
@@ -318,7 +339,8 @@ release when it comes out.</p>
     60–300&nbsp;s) if sheets arrive partly empty. This wait counts toward the time limit.</li>
 <li><b>Concurrency group</b> — jobs sharing the same group name run one-at-a-time instead
     of in parallel (useful when several jobs hit the same slow database). Leave empty for
-    normal parallel behavior.</li>
+    normal parallel behavior. Groups other jobs already use are suggested as you type, so a
+    typo doesn't create a second group.</li>
 <li><b>Freeze formulas</b> (Output tab) — converts formulas to plain values on the
     included sheets in the <i>output copy</i>, so recipients see numbers even without your
     data connections.</li>
@@ -359,12 +381,22 @@ add-in's worksheet functions are unregistered and every PI cell comes out as
     DataLink installed), type its password, and click <b>Validate &amp; apply</b>. ReportFlow
     checks the credentials with Windows, reconfigures the service to run as that user, and
     restarts it — no admin prompt and no reinstall. The dashboard's red banner has a
-    <b>Set account…</b> button that jumps straight here.</li>
+    <b>Set account…</b> button that jumps straight here. (Once the service runs as an ordinary
+    user, changing the account again needs an administrator: rerun the installer or the
+    script below.)</li>
 <li><b>On a fresh install:</b> the installer asks for an optional <i>service account</i> and
     validates the credentials before continuing — enter the PI-enabled user there.</li>
 <li><b>Admin PowerShell (alternative):</b> run
     <code>scripts\\set-service-account.ps1 -User "DOMAIN\\your_pi_user"</code>.</li>
 </ul>
+<p><b>Then trust PI DataLink for that account.</b> Windows only loads PI DataLink for an
+account that has accepted its one-time trust prompt. A person accepts it the first time they
+open Excel; a service account never sees the prompt, so PI DataLink stays off and every PI
+cell keeps the value last saved in the workbook — the report still goes out, with stale
+data. In <b>File → Settings → Service account</b>, the <i>PI DataLink</i> line shows whether
+it is trusted; click <b>Trust PI DataLink for this account</b> to record the same trust for
+the service account (only for the PI add-ins an administrator installed). A run whose PI
+DataLink isn't trusted says so in its warnings.</p>
 <p>After applying the account, click <b>👁 Build only</b> on the job to confirm. The worker log
 should show <code>Executing as DOMAIN\\your_pi_user</code> (no trailing <code>$</code>) and
 <code>COM add-in 'PI DataLink': connected=True</code>, with real values instead of

@@ -45,10 +45,17 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
    lives in exactly one place (`core/email/sender.py::resolve_recipients`). Keep it that
    way. Jobs have a lifecycle `stage` ("testing" → "live", `JobConfig.stage`): testing
    jobs email ONLY the Test recipients on every run (manual and scheduled); promotion to
-   live (card "Go live" / `POST /jobs/{name}/stage`) switches runs to production. The
-   launcher resolves `is_test` from the stage at fire time (`Launcher._resolve_is_test`).
-4. **Non-mandatory settings stay optional.** `To` is required; `Cc`/`Bcc` optional. Don't
-   make a new setting mandatory without asking.
+   live (card "Move to production" / `POST /jobs/{name}/stage`) switches runs to production.
+   The launcher resolves `is_test` from the stage at fire time (`Launcher._resolve_is_test`).
+   Users see the stage through `core/config/models.py::STAGE_LABELS` — "live" is shown as
+   **Production** (0.12; "Live" read as "running now" on a paused job). Never show "Live".
+4. **Non-mandatory settings stay optional.** `To` is required (an address or an email group);
+   `Cc`/`Bcc` optional. Don't make a new setting mandatory without asking.
+5. **Every address is emailed once.** Email groups are expanded in exactly one place,
+   `core/email/recipients.py::resolve` (To > Cc > Bcc, case-insensitive). The sender, the
+   editor's unique count and the template preview all follow that rule. Likewise the
+   subject (`[TEST] ` prefix included) comes only from `core/email/render.py::final_subject`,
+   which the sender and the template preview share — don't build a subject anywhere else.
 
 ## Field-proven gotchas (each cost real debugging — don't regress them)
 
@@ -58,6 +65,20 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
   empty-sheet check never caught it. Fix = run the service as a real PI-enabled user
   (in-app: Settings → Service account; or NSSM `ObjectName`). See
   `service/service_account.py`.
+- **A real service account is not enough for PI DataLink: VSTO must TRUST it for that
+  account** (Merian, Oct–Nov 2026). VSTO refused the add-in — "has not been granted trust …
+  not on the inclusion list" — because trust is per account and a service never sees the
+  one-time prompt. Every "successful" run then emailed the workbook's last-saved PI values.
+  `core/vsto_trust.py` (Settings → Service account → Trust PI DataLink) writes the same
+  `HKCU\Software\Microsoft\VSTO\Security\Inclusion\<guid>` entry (`Url`, `PublicKey`) the
+  prompt would — verified against Microsoft's `UserInclusionList` — only for HKLM-registered
+  PI add-ins, and only inside the service process (its HKCU is the service account's).
+- **The service can't restart itself from inside its own process tree.** NSSM kills the
+  tree on stop, so the 0.11 `cmd /c timeout … & nssm restart` helper never restarted it
+  after an account change. Now `service_account.schedule_restart` exits with code 75; the
+  installer maps that to a stop with an error (`nssm set ReportFlow AppExit 75 Exit`) and
+  enables recovery for it (`sc failure` + `sc failureflag 1`), so Windows starts the
+  service again under the new logon. Keep those three installer lines with the code.
 - **Version looked stale after an in-place upgrade.** Each frozen app bundles a
   *version-stamped* `reportflow-<ver>.dist-info`; Inno's `[Files]` only adds/overwrites and
   never deleted the old folder, so `importlib.metadata` could return the older one. Fixed by
@@ -173,7 +194,8 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   of user should manage. **If one click can do the job, don't make it two** — no dropdown
   menus for primary actions. Owner-approved amendment (2026-07-23): *occasional* job-card
   actions (Open report / Edit / Logs / Duplicate / Pause / Delete) live behind the card's ⋯
-  menu; only daily actions (Run, Build only, Go live/Resume) stay as visible buttons. Don't
+  menu; only daily actions (Run, Build only, Move to production/Resume) stay as visible
+  buttons. Don't
   "fix" that back to a button row — 9+ visible buttons per card was the problem.
 
 

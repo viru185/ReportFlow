@@ -10,7 +10,7 @@ stay isolated at runtime:
 
 | Executable | Role |
 |---|---|
-| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs, discover sheets, run, go live, view logs. |
+| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs, discover sheets, run, move to production, view logs. |
 | **Service** (`reportflow-service`) | Background control plane: localhost API + scheduler; launches workers. Runs as a Windows service (via NSSM). |
 | **Excel Worker** (`reportflow-worker`) | Short-lived process that does the Excel automation for one run, then exits. |
 
@@ -82,8 +82,9 @@ Click **+ New Job**. The editor is organized in sections:
 **General**
 - **Job name** — unique; also used in output filenames. You can **rename** a job later — its
   run history and email template follow the new name.
-- **Workbooks** — one tab per input Excel file; **+ Add workbook…** adds another. Every run
-  builds all of them and sends **one** email with every file attached.
+- **Workbooks** — one tab per input Excel file; **+ Add workbook…** adds others (pick several
+  at once; a file already in the job is skipped with a warning). Every run builds all of them
+  and sends **one** email with every file attached.
 - **Input Excel file** — browse to the `.xlsx`/`.xlsm`. The app **discovers the sheet names**
   automatically. (Stored by *name*, so reordering sheets is safe.)
 - **Sheets** — one row per sheet: **Include** (refresh, check and freeze it), **PDF** (also
@@ -117,34 +118,46 @@ recipients, and the template editor (next section).
 **Advanced** — **Time limit** (minutes; the run is stopped and marked *Timed out* after
 this — raise it for big PI reports that need 20+ minutes), **Wait for add-in data** (keep
 waiting up to N seconds while PI DataLink fills cells; moves on as soon as the data stops
-changing), **Concurrency group**, the empty/error-cell checks, **Blank out values**, notes.
+changing), **Concurrency group** (groups other jobs use are suggested as you type), the
+empty/error-cell checks, **Blank out values**, notes.
 Each setting has a one-line explanation right under it.
 
 Only the input file, at least one sheet, and the **To** addresses are required. Everything
 optional can be left blank.
 
-### Job lifecycle: Testing → Live
+### Job lifecycle: Testing → Production
 
 Every job starts in **Testing**: every run — manual **and scheduled** — emails only the
 **Test** recipients (subject prefixed `[TEST]`), so the report is verified internally first.
-When you're happy with it, click **✓ Go live** on the job card (the confirmation names the
-production recipients); from then on runs email the **client**. A live job can be moved back
-to Testing from the job editor's Email tab. The card shows an amber **TESTING** / green
-**LIVE** pill so the state is always visible.
+When you're happy with it, click **✓ Move to production** on the job card (the confirmation
+names the production recipients); from then on runs email the **client**. A job in Production
+can be moved back to Testing from the job editor's Email tab. The card shows an amber
+**Testing** / green **Production** pill so the state is always visible. (The config file still
+stores the promoted stage as `stage = "live"`.)
 
 ### Recipients & email template
 
 Each job has two recipient sets — **production** and **test** — each with **To** (required),
-**Cc** (optional), and **Bcc** (optional).
+**Cc** (optional), and **Bcc** (optional). Each box holds addresses and **email groups** as
+chips: type to search the groups and every address the app already knows (all jobs, group
+members, Settings addresses); Enter, Tab, `,` or `;` adds it, and a pasted list is split.
 
+- **Email groups** (File → Settings → Email groups) — name a list of addresses once and use the
+  name in any job. Renaming a group keeps its jobs pointing at it; a group a job still uses
+  can't be deleted.
+- **Each address is emailed once** — an address in two groups, or in To and a Cc group, goes
+  out once (To before Cc before Bcc). The editor shows the unique count per recipient set.
 - **Testing-stage** runs email the **test** recipients only — they can never reach production.
-- **Live** runs email the **production** recipients. Failures never send an automatic email.
+- **Production** runs email the **production** recipients. Failures never send an automatic
+  email.
 - Report emails attach the **output Excel** plus **all per-sheet PDFs**, and show the run's
   real **duration**.
 
 The email **body** is authored in-app: click **Edit email template…** in the job editor and
-write it in **Simple** mode (plain text) or **HTML** mode, with a live **Preview** against
-sample data. The template is stored per job; leave it untouched to use the built-in default.
+write it in **Simple** mode (plain text) or **HTML** mode, with a live **Preview**. **Preview
+as: Testing | Production** shows the email each stage sends — subject (with `[TEST]` on
+Testing), To/Cc and body — for this job. The template is stored per job; leave it untouched to
+use the built-in default.
 
 - **Placeholders** — a list beside the editor shows every placeholder with today's value; one
   click inserts it. Dates (`{{ today }}`, `{{ yesterday }}`, `{{ now }}`, `{{ weekday }}`,
@@ -162,7 +175,7 @@ sample data. The template is stored per job; leave it untouched to use the built
 Two single-click actions on each job card — the job's stage answers "who gets the email":
 
 - **▶ Run** — builds the report and emails per the stage (testers while Testing, the client
-  when Live).
+  once in Production).
 - **👁 Build only** — builds and verifies the report (checks the data) but emails no one.
 - **Schedule** — the service runs enabled jobs on their configured times automatically; each
   configured time registers its own trigger, honouring the job's stage. Scheduled cards show
@@ -173,7 +186,7 @@ it can't be double-fired. Multiple jobs run in parallel, each in its own disposa
 process. A failed run is never retried automatically — it's recorded and visible in history.
 
 Each card's **coloured left edge** tells the last run's outcome at a glance — green =
-success, red = failed, amber = running, grey = paused or never ran — and the detail line
+success, red = failed, amber = running, grey = never ran (or paused) — and the detail line
 reads `next: tomorrow 06:00 · last: success 2h ago · 4 sheet(s)`.
 
 Everything occasional lives behind the card's **⋯** menu (so daily actions stay one click):
@@ -183,9 +196,9 @@ Everything occasional lives behind the card's **⋯** menu (so daily actions sta
 - **⧉ Duplicate** — a new job with *everything* copied — workbooks, sheet choices, schedules,
   recipients, advanced options and the email template; only the name (new) and the stage
   (Testing) differ.
-- **⏸ Pause** — pause scheduling. A paused job is unmissable: the whole card dims, a grey
-  **⏸ PAUSED** pill appears, the schedule line reads *paused*, and a one-click **▸ Resume**
-  button takes the promote button's slot. Manual runs still work while paused.
+- **⏸ Pause** — pause scheduling. A paused job's whole card is dimmed — muted name, grey
+  stage pill and edge, no extra pill — and a one-click **▸ Resume** button takes the promote
+  button's slot. Manual runs still work while paused.
 - **🗑 Delete** — remove the job (with confirmation).
 
 ### Logs & diagnostics
@@ -245,7 +258,16 @@ and PI access):
 - **In the app (easiest):** **File → Settings → Service account** → **Use current Windows
   user** → enter the password → **Validate & apply**. ReportFlow checks the credentials with
   Windows, reconfigures the service to run as that user, and restarts it — no admin prompt, no
-  reinstall. The dashboard's red banner has a **Set account…** button that jumps straight here.
+  reinstall; the dialog waits until the service is back as that account. The dashboard's red
+  banner has a **Set account…** button that jumps straight here. (Once the service runs as an
+  ordinary user, changing the account again needs an administrator: rerun the installer or the
+  script below.)
+- **Then trust PI DataLink for that account:** Windows only loads PI DataLink for an account
+  that has accepted its one-time trust prompt, which a service account never sees — PI DataLink
+  then stays off and every PI cell keeps its last-saved value (the report still goes out, with
+  stale data). **File → Settings → Service account** shows whether it is trusted; **Trust PI
+  DataLink for this account** records that trust for the service account (only for PI add-ins
+  an administrator installed). A run whose PI DataLink isn't trusted says so in its warnings.
 - **Fresh install:** the installer asks for an optional **service account** and validates the
   credentials before continuing — enter the PI-enabled user there.
 - **Admin PowerShell (alternative):** `scripts\set-service-account.ps1 -User "DOMAIN\your_pi_user"`.
@@ -516,6 +538,10 @@ check_updates_on_startup = false
 [email]
 default_template_path = "email/default.html"   # relative to templates\
 
+  [[email.groups]]                        # Settings → Email groups
+  name = "Plant managers"
+  members = ["pm1@corp.example.com", "pm2@corp.example.com"]
+
 [test]
 recipients = ["dev-team@corp.example.com"]
 developer_bundle_recipients = ["dev-team@corp.example.com"]
@@ -533,7 +559,7 @@ timeout_seconds = 2700                    # the editor shows minutes
 post_refresh_wait_seconds = 120
 concurrency_group = "reports"
 subject = "Daily Sales — {{ today }}"     # placeholders work in the subject
-stage = "live"                            # "testing" (default) emails testers; "live" -> prod
+stage = "live"                            # "testing" (default) emails testers; "live" = Production
 
   [[job.workbooks]]                       # one or more; all go out in one email
   input_excel_path = "C:/Templates/daily_sales.xlsx"
@@ -545,8 +571,9 @@ stage = "live"                            # "testing" (default) emails testers; 
 
   [job.prod]
   to  = ["managers@corp.example.com"]
+  to_groups = ["Plant managers"]          # email groups; To needs an address or a group
   cc  = ["ops@corp.example.com"]          # optional
-  # bcc = [...]                           # optional
+  # bcc = [...] / cc_groups / bcc_groups  # optional
 
   [job.test]
   to  = ["dev-team@corp.example.com"]
@@ -573,7 +600,9 @@ Bound to `127.0.0.1` only.
 | `GET /system/logs?process=&tail=` | Tail the Service/Worker/UI rolling log. |
 | `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD (a PUT with a new name renames the job; history + template follow). |
 | `POST /jobs/{name}/run` · `POST /jobs/{name}/dry-run` | Run per the job's stage / build only. |
-| `POST /jobs/{name}/stage` | Promote to live / demote to testing. |
+| `POST /jobs/{name}/stage` | Promote to production (`live`) / demote to testing. |
+| `PUT /email-groups` | Replace the email groups (`renamed_from` carries jobs; in-use deletes refused). |
+| `GET/POST /system/pi-trust` | Is PI DataLink trusted for the service account / trust it. |
 | `POST /system/purge-logs` | Delete old (or all) run folders, logs, bundles. |
 | `GET/PUT /jobs/{name}/email-template` | Read / write the job's per-job email template. |
 | `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs. |
