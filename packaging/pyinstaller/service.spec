@@ -20,6 +20,7 @@ datas += copy_metadata("reportflow")
 
 hiddenimports += collect_submodules("apscheduler")
 hiddenimports += [
+    "reportflow.author",
     "fastapi",
     "openpyxl",
     "httpx",

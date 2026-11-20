@@ -5,6 +5,7 @@ Registered as a Windows service via NSSM (a plain console process). Binds to loc
 
 from __future__ import annotations
 
+import argparse
 import sys
 
 import uvicorn
@@ -14,7 +15,23 @@ from reportflow.core.logging_setup import configure_logging
 from reportflow.service.api import ServiceState, create_app
 
 
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="reportflow-service",
+        description="ReportFlow service: the local API and scheduler (run by NSSM).",
+    )
+    parser.add_argument("--author", action="store_true", help="who built this")
+    # Unknown arguments are ignored, as before, so nothing passed in can stop the service.
+    return parser.parse_known_args(argv)[0]
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--author" in argv:
+        from reportflow import author
+
+        return author.show()
+    parse(argv)
     configure_logging("service")
     state = ServiceState()
     if state.config.app.debug_logging:

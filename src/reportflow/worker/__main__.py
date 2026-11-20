@@ -21,10 +21,20 @@ from reportflow.core.logging_setup import configure_logging
 from reportflow.worker.runner import run_job
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="reportflow-worker")
     parser.add_argument("--request", required=True, help="Path to the request.json file")
-    args = parser.parse_args(argv)
+    parser.add_argument("--author", action="store_true", help="who built this")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--author" in argv:
+        from reportflow import author
+
+        return author.show()
+    args = parse(argv)
 
     configure_logging("worker")
 

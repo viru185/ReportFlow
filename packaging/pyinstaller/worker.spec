@@ -22,6 +22,7 @@ for pkg in ("xlwings",):
 datas += copy_metadata("reportflow")
 
 hiddenimports += [
+    "reportflow.author",
     "win32com",
     "win32com.client",
     "pythoncom",

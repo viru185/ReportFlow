@@ -1,6 +1,6 @@
 [project]
 name = "reportflow"
-version = "0.11.4"
+version = "0.12.0-beta"
 description = "Windows desktop automation for Excel-based reporting (UI + Service + Excel Worker)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -74,6 +74,10 @@ explicit_package_bases = true
 mypy_path = "src"
 ignore_missing_imports = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["reportflow.author"]
+disable_error_code = ["operator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
