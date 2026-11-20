@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -48,6 +49,8 @@ from reportflow.core.output_names import (
 )
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.fs_util import open_start_dir
+from reportflow.ui.recipient_field import RecipientField, unique_addresses
+from reportflow.ui.suggestions import concurrency_groups, email_groups, known_addresses
 from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 from reportflow.ui.windows.schedule_widget import ScheduleWidget
@@ -124,6 +127,9 @@ class JobEditorDialog(QDialog):
         self._syncing = False  # guards widget signals while the editor fills widgets itself
         self.setWindowTitle("Edit Job" if self._editing else "New Job")
         self.resize(900, 680)
+        # One config snapshot feeds the defaults and every autocomplete list.
+        self._config = self._fetch_config()
+        self._email_groups = email_groups(self._config)
         self._build()
         if job:
             self._load(job)
@@ -352,18 +358,21 @@ class JobEditorDialog(QDialog):
         )
         if not self._editing:
             self.stage.setEnabled(False)  # new jobs always start in Testing
-        self.prod_to = QLineEdit()
-        self.prod_to.setToolTip("Production To — required. Comma-separated addresses.")
-        self.prod_cc = QLineEdit()
-        self.prod_cc.setToolTip("Production Cc — optional.")
-        self.prod_bcc = QLineEdit()
-        self.prod_bcc.setToolTip("Production Bcc — optional (hidden from other recipients).")
-        self.test_to = QLineEdit()
-        self.test_to.setToolTip("Test To — who receives TEST run emails.")
-        self.test_cc = QLineEdit()
-        self.test_cc.setToolTip("Test Cc — optional.")
-        self.test_bcc = QLineEdit()
-        self.test_bcc.setToolTip("Test Bcc — optional.")
+        # Addresses and Settings → Email groups, as chips with autocomplete. An address in
+        # two groups (or in To and a Cc group) is emailed once — see the unique count below.
+        self._known_addresses = known_addresses(self._config)
+        self.prod_to = self._recipient_field(
+            "Production To — required: at least one address or email group."
+        )
+        self.prod_cc = self._recipient_field("Production Cc — optional.")
+        self.prod_bcc = self._recipient_field(
+            "Production Bcc — optional (hidden from other recipients)."
+        )
+        self.test_to = self._recipient_field("Test To — who receives Testing-stage emails.")
+        self.test_cc = self._recipient_field("Test Cc — optional.")
+        self.test_bcc = self._recipient_field("Test Bcc — optional.")
+        self.prod_unique = self._help_label("")
+        self.test_unique = self._help_label("")
         edit_template = QPushButton("Edit email template…")
         edit_template.setToolTip(
             "Author the email body in-app (simple text or HTML) with a live preview."
@@ -381,10 +390,12 @@ class JobEditorDialog(QDialog):
         email_form.addRow("Production: To", self.prod_to)
         email_form.addRow("Production: Cc (optional)", self.prod_cc)
         email_form.addRow("Production: Bcc (optional)", self.prod_bcc)
+        email_form.addRow("", self.prod_unique)
         email_form.addRow(section_title("Test recipients"))
         email_form.addRow("Test: To", self.test_to)
         email_form.addRow("Test: Cc (optional)", self.test_cc)
         email_form.addRow("Test: Bcc (optional)", self.test_bcc)
+        email_form.addRow("", self.test_unique)
         email_form.addRow(section_title("Email content"))
         email_form.addRow("Body", tpl_row)
         # ---- Advanced tab ----
@@ -415,8 +426,13 @@ class JobEditorDialog(QDialog):
         self.group.setToolTip(
             "Jobs sharing the same group name run one-at-a-time instead of in parallel — "
             "useful when several jobs hit the same slow database. Leave empty for normal "
-            "parallel behavior."
+            "parallel behavior. Groups other jobs already use are suggested as you type."
         )
+        # A typo makes a second, separate group — suggest the ones already in use.
+        group_completer = QCompleter(concurrency_groups(self._config), self.group)
+        group_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        group_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.group.setCompleter(group_completer)
         self.post_refresh_wait = QSpinBox()
         self.post_refresh_wait.setRange(0, 3600)
         self.post_refresh_wait.setPrefix("up to ")
@@ -507,13 +523,48 @@ class JobEditorDialog(QDialog):
         label.setWordWrap(True)
         return label
 
+    def _fetch_config(self) -> dict[str, Any]:
+        try:
+            config = self._api.get_config()
+        except ApiError:
+            return {}  # the editor still works; it just has nothing to suggest
+        return config if isinstance(config, dict) else {}
+
     def _default_timeout_minutes(self) -> int | None:
         """The Settings default, so "Default" says what it means (None if unreachable)."""
+        raw = (self._config.get("app") or {}).get("default_timeout_seconds")
         try:
-            seconds = int(self._api.get_config().get("app", {}).get("default_timeout_seconds"))
-        except (ApiError, TypeError, ValueError):
+            seconds = int(raw) if raw is not None else 0
+        except (TypeError, ValueError):
+            return None
+        if seconds <= 0:
             return None
         return max(1, -(-seconds // 60))
+
+    def _recipient_field(self, tip: str) -> RecipientField:
+        box = RecipientField(placeholder="Type a group or an address…")
+        box.setToolTip(
+            f"{tip}\nType to search email groups and known addresses; Enter, Tab, comma or "
+            "semicolon adds it. Click a chip's × to remove it."
+        )
+        box.set_suggestions(self._known_addresses, self._email_groups)
+        box.changed.connect(self._update_unique_counts)
+        return box
+
+    def _update_unique_counts(self) -> None:
+        if not hasattr(self, "test_bcc"):
+            return  # fields are still being created
+        for label, fields in (
+            (self.prod_unique, (self.prod_to, self.prod_cc, self.prod_bcc)),
+            (self.test_unique, (self.test_to, self.test_cc, self.test_bcc)),
+        ):
+            count = len(unique_addresses(list(fields), self._email_groups))
+            label.setText(
+                f"→ {count} unique address{'es' if count != 1 else ''} — each person is "
+                "emailed once, even when they're in several groups."
+                if count
+                else ""
+            )
 
     # -- workbooks -----------------------------------------------------------------
     def _commit_current(self) -> None:
@@ -853,10 +904,21 @@ class JobEditorDialog(QDialog):
         subject_problem = template_error(self.subject.text())
         if subject_problem:
             return None, f"The Subject has a placeholder typo: {subject_problem}"
-        if not _split_csv(self.prod_to.text()):
-            return None, "Prod: To is required."
-        if not _split_csv(self.test_to.text()):
-            return None, "Test: To is required."
+        for label, box in (
+            ("Production: To", self.prod_to),
+            ("Production: Cc", self.prod_cc),
+            ("Production: Bcc", self.prod_bcc),
+            ("Test: To", self.test_to),
+            ("Test: Cc", self.test_cc),
+            ("Test: Bcc", self.test_bcc),
+        ):
+            problem = box.commit_pending()  # typed but not yet added
+            if problem:
+                return None, f"{label}: {problem}"
+        if self.prod_to.is_empty():
+            return None, "Production: To needs at least one address or email group."
+        if self.test_to.is_empty():
+            return None, "Test: To needs at least one address or email group."
         return None
 
     def _on_save(self) -> None:
@@ -909,14 +971,20 @@ class JobEditorDialog(QDialog):
             "subject": self.subject.text().strip() or None,
             "stage": self.stage.currentData(),
             "prod": {
-                "to": _split_csv(self.prod_to.text()),
-                "cc": _split_csv(self.prod_cc.text()),
-                "bcc": _split_csv(self.prod_bcc.text()),
+                "to": self.prod_to.emails(),
+                "cc": self.prod_cc.emails(),
+                "bcc": self.prod_bcc.emails(),
+                "to_groups": self.prod_to.groups(),
+                "cc_groups": self.prod_cc.groups(),
+                "bcc_groups": self.prod_bcc.groups(),
             },
             "test": {
-                "to": _split_csv(self.test_to.text()),
-                "cc": _split_csv(self.test_cc.text()),
-                "bcc": _split_csv(self.test_bcc.text()),
+                "to": self.test_to.emails(),
+                "cc": self.test_cc.emails(),
+                "bcc": self.test_bcc.emails(),
+                "to_groups": self.test_to.groups(),
+                "cc_groups": self.test_cc.groups(),
+                "bcc_groups": self.test_bcc.groups(),
             },
             "notes": self.notes.toPlainText().strip(),
         }
@@ -1000,10 +1068,10 @@ class JobEditorDialog(QDialog):
             if self._editing:
                 self._detect_template_link(job.get("name", ""))
         prod = job.get("prod", {})
-        self.prod_to.setText(_join_csv(prod.get("to")))
-        self.prod_cc.setText(_join_csv(prod.get("cc")))
-        self.prod_bcc.setText(_join_csv(prod.get("bcc")))
+        self.prod_to.set_value(prod.get("to") or [], prod.get("to_groups"))
+        self.prod_cc.set_value(prod.get("cc") or [], prod.get("cc_groups"))
+        self.prod_bcc.set_value(prod.get("bcc") or [], prod.get("bcc_groups"))
         test = job.get("test", {})
-        self.test_to.setText(_join_csv(test.get("to")))
-        self.test_cc.setText(_join_csv(test.get("cc")))
-        self.test_bcc.setText(_join_csv(test.get("bcc")))
+        self.test_to.set_value(test.get("to") or [], test.get("to_groups"))
+        self.test_cc.set_value(test.get("cc") or [], test.get("cc_groups"))
+        self.test_bcc.set_value(test.get("bcc") or [], test.get("bcc_groups"))

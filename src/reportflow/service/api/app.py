@@ -27,12 +27,25 @@ from reportflow.core.email import (
     sample_context,
     send_dev_log_bundle,
 )
+from reportflow.core.email.recipients import resolve
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 from reportflow.core.state import RunStore, RunTrigger
 from reportflow.service.bootstrap import seed_data_files
 from reportflow.service.launcher import Launcher
 from reportflow.service.scheduler import SchedulerService
 from reportflow.service.workbook import WorkbookError, discover_sheets
+
+
+class GroupInUseError(Exception):
+    """Deleting these email groups would leave jobs pointing at nothing."""
+
+    def __init__(self, in_use: dict[str, list[str]]) -> None:
+        self.in_use = in_use
+        detail = "; ".join(f"{name!r} (used by {', '.join(jobs)})" for name, jobs in in_use.items())
+        super().__init__(
+            f"Can't delete email group(s) still used by jobs: {detail}. "
+            "Remove them from those jobs first."
+        )
 
 
 class ServiceState:
@@ -98,6 +111,41 @@ class ServiceState:
         with self._lock:
             data = self.config.model_dump(mode="python", by_alias=True)
             data["job"] = [j.model_dump(mode="python", by_alias=True) for j in jobs]
+            new_config = AppConfig.model_validate(data)
+            save_config(new_config)
+            self.config = new_config
+            self.config_error = None
+            self.scheduler.rebuild(new_config)
+
+    def save_email_groups(self, groups: list[dict[str, Any]]) -> None:
+        """Replace Settings → Email groups. A group with ``renamed_from`` keeps every job
+        that used the old name pointing at it; deleting a group still in use is refused
+        (:class:`GroupInUseError`) rather than silently emptying a job's To."""
+        with self._lock:
+            renames = {
+                str(g["renamed_from"]).strip().casefold(): str(g["name"]).strip()
+                for g in groups
+                if g.get("renamed_from")
+            }
+            kept = {str(g["name"]).strip().casefold() for g in groups}
+            in_use = {
+                old.name: self.config.jobs_using_group(old.name)
+                for old in self.config.email.groups
+                if old.name.casefold() not in kept and old.name.casefold() not in renames
+            }
+            in_use = {name: jobs for name, jobs in in_use.items() if jobs}
+            if in_use:
+                raise GroupInUseError(in_use)
+            data = self.config.model_dump(mode="python", by_alias=True)
+            data["email"]["groups"] = [
+                {"name": g["name"], "members": g.get("members") or []} for g in groups
+            ]
+            for job in data["job"]:
+                for side in ("prod", "test"):
+                    for key in ("to_groups", "cc_groups", "bcc_groups"):
+                        job[side][key] = [
+                            renames.get(name.casefold(), name) for name in job[side][key]
+                        ]
             new_config = AppConfig.model_validate(data)
             save_config(new_config)
             self.config = new_config
@@ -187,6 +235,17 @@ class TemplateCheckRequest(BaseModel):
     path: str
 
 
+class EmailGroupUpdate(BaseModel):
+    name: str
+    members: list[str] = Field(default_factory=list)
+    # The group's previous name when it was renamed: jobs follow it to the new name.
+    renamed_from: str | None = None
+
+
+class EmailGroupsUpdate(BaseModel):
+    groups: list[EmailGroupUpdate]
+
+
 class EmailTemplateUpdate(BaseModel):
     content: str
 
@@ -236,7 +295,8 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             "name": job.name,
             "enabled": job.enabled,
             "stage": job.stage,
-            "prod_recipients": [str(a) for a in job.prod.to],
+            # Who "Move to production" will email: groups expanded, each address once.
+            "prod_recipients": resolve(job.prod, svc().config.email.groups).all_addresses(),
             "schedule_crons": job.schedule_crons,
             "workbook_count": len(job.workbooks),
             "sheet_count": len(job.sheet_names),
@@ -321,6 +381,17 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         for row in results:
             logger.info("PI add-in {!r} ({}): {}", row["name"], row["manifest"], row["result"])
         return {"account": account, "results": results}
+
+    @app.put("/email-groups")
+    def update_email_groups(update: EmailGroupsUpdate) -> dict[str, Any]:
+        logger.info("API: email groups update ({} group(s))", len(update.groups))
+        try:
+            svc().save_email_groups([g.model_dump() for g in update.groups])
+        except GroupInUseError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001 — validation / write error -> 400
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "groups": [g.name for g in svc().config.email.groups]}
 
     @app.get("/config")
     def get_config() -> dict[str, Any]:

@@ -22,15 +22,50 @@ class _Base(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
-class Recipients(_Base):
-    """Email recipient set. ``to`` is required; ``cc``/``bcc`` are optional."""
+def _clean_group_names(names: list[str]) -> list[str]:
+    cleaned: dict[str, str] = {}
+    for name in names:
+        name = name.strip()
+        if name:
+            cleaned.setdefault(name.casefold(), name)
+    return list(cleaned.values())
 
-    to: list[EmailStr] = Field(min_length=1)
+
+class Recipients(_Base):
+    """Email recipient set: addresses and/or email groups per field.
+
+    To needs at least one address or group; Cc/Bcc are optional. Group names refer to
+    Settings → Email groups and are expanded (and de-duplicated) when the email is sent —
+    see ``core.email.recipients.resolve``.
+    """
+
+    to: list[EmailStr] = Field(default_factory=list)
     cc: list[EmailStr] = Field(default_factory=list)
     bcc: list[EmailStr] = Field(default_factory=list)
+    to_groups: list[str] = Field(default_factory=list)
+    cc_groups: list[str] = Field(default_factory=list)
+    bcc_groups: list[str] = Field(default_factory=list)
+
+    @field_validator("to_groups", "cc_groups", "bcc_groups")
+    @classmethod
+    def _group_names(cls, v: list[str]) -> list[str]:
+        return _clean_group_names(v)
+
+    @model_validator(mode="after")
+    def _to_is_required(self) -> Recipients:
+        if not self.to and not self.to_groups:
+            raise ValueError("To needs at least one address or email group")
+        return self
+
+    def group_names(self) -> list[str]:
+        """Every email group this set refers to (To, Cc, Bcc), de-duplicated."""
+        return _clean_group_names([*self.to_groups, *self.cc_groups, *self.bcc_groups])
 
     def all_addresses(self) -> list[str]:
-        """Every envelope recipient (To + CC + BCC), de-duplicated, order preserved."""
+        """Every literal envelope address (To + CC + BCC), de-duplicated, order preserved.
+
+        Groups are not expanded here — use ``core.email.recipients.resolve``.
+        """
         seen: dict[str, None] = {}
         for addr in [*self.to, *self.cc, *self.bcc]:
             seen.setdefault(str(addr), None)
@@ -65,9 +100,44 @@ class UiSettings(_Base):
     check_updates_on_startup: bool = False
 
 
+class EmailGroup(_Base):
+    """A named list of addresses a job can use in To/Cc/Bcc (Settings → Email groups)."""
+
+    name: str
+    members: list[EmailStr] = Field(min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_usable(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("an email group needs a name")
+        if any(c in v for c in ",;@"):
+            # Recipient fields split on , and ; — and an @ would read as an address.
+            raise ValueError(f"email group names can't contain , ; or @: {v!r}")
+        return v
+
+
 class EmailSettings(_Base):
     # Relative to the templates dir, or an absolute path.
     default_template_path: str = "email/default.html"
+    groups: list[EmailGroup] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _unique_group_names(self) -> EmailSettings:
+        seen: set[str] = set()
+        for group in self.groups:
+            key = group.name.casefold()
+            if key in seen:
+                raise ValueError(f"two email groups are named {group.name!r}")
+            seen.add(key)
+        return self
+
+    def group(self, name: str) -> EmailGroup | None:
+        for g in self.groups:
+            if g.name.casefold() == name.strip().casefold():
+                return g
+        return None
 
 
 class TestSettings(_Base):
@@ -273,6 +343,25 @@ class AppConfig(_Base):
                 raise ValueError(f"duplicate job name: {job.name!r}")
             seen.add(key)
         return self
+
+    @model_validator(mode="after")
+    def _known_email_groups(self) -> AppConfig:
+        for job in self.jobs:
+            for name in [*job.prod.group_names(), *job.test.group_names()]:
+                if self.email.group(name) is None:
+                    raise ValueError(
+                        f"job {job.name!r} uses email group {name!r}, which doesn't exist "
+                        "(Settings → Email groups)"
+                    )
+        return self
+
+    def jobs_using_group(self, name: str) -> list[str]:
+        key = name.strip().casefold()
+        return [
+            job.name
+            for job in self.jobs
+            if any(g.casefold() == key for g in [*job.prod.group_names(), *job.test.group_names()])
+        ]
 
     def job(self, name: str) -> JobConfig | None:
         for j in self.jobs:

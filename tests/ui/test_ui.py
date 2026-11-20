@@ -177,6 +177,12 @@ class FakeApi:
         return f"log line from {process}"
 
 
+def _type(field, text):
+    """Type into a RecipientField and add it, as Enter would."""
+    field.edit.setText(text)
+    return field.commit_pending()
+
+
 def _check_all(dialog):
     """Include every sheet of the workbook shown in the editor."""
     from PySide6.QtCore import Qt
@@ -234,9 +240,9 @@ def test_editor_builds_payload_with_new_fields(qtbot):
     dlg.output_dir.setText("C:/reports")
     dlg._discover_sheets()
     _check_all(dlg)
-    dlg.prod_to.setText("boss@corp.example.com, mgr@corp.example.com")
-    dlg.test_to.setText("dev@corp.example.com")
-    dlg.test_cc.setText("qa@corp.example.com")
+    _type(dlg.prod_to, "boss@corp.example.com, mgr@corp.example.com")
+    _type(dlg.test_to, "dev@corp.example.com")
+    _type(dlg.test_cc, "qa@corp.example.com")
     dlg.schedule.load(["0 6 * * *"])
 
     payload = dlg.payload()
@@ -265,7 +271,7 @@ def test_editor_loads_existing_job(qtbot):
     assert not dlg.name.isReadOnly()  # renaming is allowed (history/template follow)
     assert dlg.original_name() == "daily"
     assert dlg.output_dir.text() == "C:/reports"
-    assert dlg.prod_cc.text() == "ops@corp.example.com"
+    assert dlg.prod_cc.emails() == ["ops@corp.example.com"]
     assert dlg._checked_sheet_names() == ["Summary"]
     assert dlg.payload()["notes"] == "hello"
     # schedule round-trips through the widget
@@ -724,8 +730,22 @@ def _every_field_job():
         "require_pi_datalink": True,
         "blank_out_values": ["Tag not found"],
         "subject": "Daily {{ today }}",
-        "prod": {"to": ["boss@corp.example.com"], "cc": ["c@corp.example.com"], "bcc": []},
-        "test": {"to": ["dev@corp.example.com"], "cc": [], "bcc": ["b@corp.example.com"]},
+        "prod": {
+            "to": ["boss@corp.example.com"],
+            "cc": ["c@corp.example.com"],
+            "bcc": [],
+            "to_groups": ["Plant leads"],
+            "cc_groups": [],
+            "bcc_groups": ["Audit"],
+        },
+        "test": {
+            "to": ["dev@corp.example.com"],
+            "cc": [],
+            "bcc": ["b@corp.example.com"],
+            "to_groups": [],
+            "cc_groups": ["QA"],
+            "bcc_groups": [],
+        },
         "stage": "live",
         "notes": "notes",
     }
@@ -1179,8 +1199,8 @@ def test_editor_stage_and_refresh_wait(qtbot):
     dlg.input_excel.setText("C:/t.xlsx")
     dlg._discover_sheets()
     _check_all(dlg)
-    dlg.prod_to.setText("a@x.com")
-    dlg.test_to.setText("b@x.com")
+    _type(dlg.prod_to, "a@x.com")
+    _type(dlg.test_to, "b@x.com")
     dlg.post_refresh_wait.setValue(120)
     assert dlg.payload()["post_refresh_wait_seconds"] == 120
     assert dlg.payload()["stage"] == "testing"
@@ -1208,8 +1228,8 @@ def test_editor_advanced_output_safety_fields(qtbot):
     dlg.input_excel.setText("C:/t.xlsx")
     dlg._discover_sheets()
     _check_all(dlg)
-    dlg.prod_to.setText("a@x.com")
-    dlg.test_to.setText("b@x.com")
+    _type(dlg.prod_to, "a@x.com")
+    _type(dlg.test_to, "b@x.com")
 
     # Defaults: empty-check on, error-strict OFF (deliver), sheets not included -> Remove.
     payload = dlg.payload()
@@ -1691,7 +1711,7 @@ def test_settings_save_never_applies_pending_service_credentials(qtbot):
     dialog._save()
     assert api.saved_settings is not None
     assert not hasattr(api, "applied_account")
-    assert dialog.settings_tabs.count() == 3
+    assert dialog.settings_tabs.count() == 4  # Email, Application, Service account, Email groups
 
 
 def test_dashboard_long_job_names_are_plain_text_and_wrap(qtbot):
@@ -1734,3 +1754,175 @@ def test_settings_trust_pi_datalink_for_the_service_account(qtbot, monkeypatch):
     assert api.pi_trusted
     assert shown and "PI DataLink: trusted" in shown[0]
     assert dlg.pi_trust_status.text().startswith(r"✓ Trusted for CORP\pi_reports")
+
+
+# -- email groups, recipient chips, suggestions ---------------------------------------
+
+
+def _groups_config():
+    return {
+        "email": {
+            "groups": [
+                {"name": "Plant leads", "members": ["a@corp.example.com", "b@corp.example.com"]},
+                {"name": "Energy team", "members": ["b@corp.example.com", "c@corp.example.com"]},
+            ]
+        },
+        "job": [
+            {
+                "name": "daily",
+                "concurrency_group": "pi-server",
+                "prod": {"to": ["boss@corp.example.com"], "to_groups": ["Plant leads"]},
+                "test": {"to": ["dev@corp.example.com"], "cc": ["qa@corp.example.com"]},
+            },
+            {"name": "weekly", "concurrency_group": "PI-Server", "prod": {}, "test": {}},
+        ],
+        "test": {"recipients": ["fallback@corp.example.com"]},
+    }
+
+
+def test_suggestions_know_every_address_group_and_concurrency_group():
+    from reportflow.ui import suggestions
+
+    cfg = _groups_config()
+    assert suggestions.known_addresses(cfg) == [
+        "a@corp.example.com",
+        "b@corp.example.com",
+        "boss@corp.example.com",
+        "c@corp.example.com",
+        "dev@corp.example.com",
+        "fallback@corp.example.com",
+        "qa@corp.example.com",
+    ]
+    assert suggestions.concurrency_groups(cfg) == ["pi-server"]  # case-insensitive unique
+    assert suggestions.jobs_using_group(cfg, "plant LEADS") == ["daily"]
+    assert suggestions.jobs_using_group(cfg, "Energy team") == []
+
+
+def test_recipient_field_chips(qtbot):
+    from PySide6.QtCore import Qt
+
+    from reportflow.ui.recipient_field import RecipientField
+
+    field = RecipientField()
+    qtbot.addWidget(field)
+    field.set_suggestions(["a@corp.example.com"], {"Plant leads": ["a@x.com", "b@x.com"]})
+
+    # A pasted list is split; groups are recognised by name (any case); duplicates ignored.
+    assert _type(field, "x@corp.example.com; plant leads, X@corp.example.com") is None
+    assert field.emails() == ["x@corp.example.com"]
+    assert field.groups() == ["Plant leads"]
+    # The completer's "👥 Name" form adds the group too.
+    field._on_completed("👥 Plant leads")
+    assert field.groups() == ["Plant leads"]
+
+    # Text that is neither a group nor an address stays put, flagged — never dropped.
+    problem = _type(field, "y@corp.example.com, not-an-address")
+    assert problem and "not-an-address" in problem
+    assert field.edit.text() == "not-an-address" and field.property("invalid")
+    assert field.emails() == ["x@corp.example.com", "y@corp.example.com"]
+
+    # Backspace in the empty box removes the last chip.
+    field.edit.clear()
+    qtbot.keyClick(field.edit, Qt.Key.Key_Backspace)
+    assert field.groups() == []
+
+
+def test_editor_uses_groups_and_counts_unique_people(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    api = FakeApi()
+    api.get_config = lambda: {**FakeApi().get_config(), **_groups_config()}
+    dlg = JobEditorDialog(api)
+    qtbot.addWidget(dlg)
+    assert _type(dlg.prod_to, "Plant leads, boss@corp.example.com") is None
+    assert _type(dlg.prod_cc, "Energy team") is None
+    # a, b (both groups), c, boss -> 4 people, each emailed once
+    assert dlg.prod_unique.text().startswith("→ 4 unique addresses")
+    _type(dlg.test_to, "dev@corp.example.com")
+    payload = dlg.payload()
+    assert payload["prod"]["to"] == ["boss@corp.example.com"]
+    assert payload["prod"]["to_groups"] == ["Plant leads"]
+    assert payload["prod"]["cc_groups"] == ["Energy team"]
+    # Concurrency groups already in use are offered while typing.
+    model = dlg.group.completer().model()
+    assert [model.index(i, 0).data() for i in range(model.rowCount())] == ["pi-server"]
+
+
+def test_editor_requires_a_to_and_rejects_unknown_text(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi(), _sample_job_dict())
+    qtbot.addWidget(dlg)
+    assert dlg._validation_error() is None
+    dlg.prod_cc.edit.setText("nobody")  # typed, never added
+    _, message = dlg._validation_error()
+    assert message.startswith("Production: Cc:") and "nobody" in message
+    dlg.prod_cc.edit.clear()
+    dlg.prod_to.set_value([])
+    _, message = dlg._validation_error()
+    assert "Production: To needs at least one address or email group" in message
+
+
+def test_settings_email_groups_tab(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    api = FakeApi()
+    api.get_config = lambda: {**FakeApi().get_config(), **_groups_config()}
+    sent = {}
+    api.put_email_groups = lambda groups: sent.setdefault("groups", groups)
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: warned.append(a[2])))
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    dlg = SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    assert dlg.group_list.count() == 2
+    assert dlg.group_used.text() == "Used by 1 job(s): daily"
+
+    # A group in use can't be deleted — its jobs would lose recipients.
+    dlg._delete_group()
+    assert warned and "daily" in warned[-1] and dlg.group_list.count() == 2
+
+    # Rename the used group, empty the other one out of existence, add a new one.
+    dlg.group_name.setText("Plant managers")
+    dlg._group_name_edited("Plant managers")
+    dlg.group_list.setCurrentRow(1)
+    dlg._delete_group()
+    dlg._new_group()
+    dlg.group_name.setText("Shift leads")
+    dlg._group_name_edited("Shift leads")
+    _type(dlg.group_members, "s1@corp.example.com, s2@corp.example.com")
+    dlg._save()
+    assert sent["groups"] == [
+        {
+            "name": "Plant managers",
+            "members": ["a@corp.example.com", "b@corp.example.com"],
+            "renamed_from": "Plant leads",  # jobs follow the rename
+        },
+        {
+            "name": "Shift leads",
+            "members": ["s1@corp.example.com", "s2@corp.example.com"],
+            "renamed_from": None,
+        },
+    ]
+
+
+def test_settings_email_groups_need_a_name_and_members(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: warned.append(a[2])))
+    api = FakeApi()
+    dlg = SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    dlg._new_group()
+    dlg._save()
+    assert warned[-1] == "Every email group needs a name." and api.saved_settings is None
+    dlg._group_name_edited("Empty")
+    dlg._save()
+    assert "has no addresses" in warned[-1]

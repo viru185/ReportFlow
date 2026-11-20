@@ -80,6 +80,10 @@ class ApiClient:
             "POST", "/system/service-account", json={"user": user, "password": password}
         )
 
+    def put_email_groups(self, groups: list[dict]) -> dict:
+        """Replace Settings → Email groups (``renamed_from`` carries jobs to a new name)."""
+        return self._request("PUT", "/email-groups", json={"groups": groups})
+
     def pi_trust_status(self) -> dict:
         return self._request("GET", "/system/pi-trust")
 

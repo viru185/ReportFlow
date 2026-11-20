@@ -17,6 +17,7 @@ from loguru import logger
 
 from reportflow.core import secrets
 from reportflow.core.config.models import AppConfig, JobConfig, Recipients, SmtpConfig
+from reportflow.core.email.recipients import ResolvedRecipients, resolve
 from reportflow.core.email.render import (
     html_to_text,
     render_email,
@@ -26,14 +27,18 @@ from reportflow.core.email.render import (
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 
 
-def resolve_recipients(job: JobConfig, config: AppConfig, *, is_test: bool) -> Recipients:
-    """THE guard: test runs use test recipients only; production runs use prod recipients."""
+def resolve_recipients(job: JobConfig, config: AppConfig, *, is_test: bool) -> ResolvedRecipients:
+    """THE guard: test runs use test recipients only; production runs use prod recipients.
+
+    Email groups are expanded here, and every address appears once (To > Cc > Bcc).
+    """
     if is_test:
-        if job.test.to:
-            return job.test
+        if job.test.to or job.test.to_groups:
+            return resolve(job.test, config.email.groups)
         # Fall back to the global test recipients if the job has none.
-        return Recipients(to=list(config.test.recipients) or ["test@localhost"])
-    return job.prod
+        fallback = Recipients(to=list(config.test.recipients) or ["test@localhost"])
+        return resolve(fallback, ())
+    return resolve(job.prod, config.email.groups)
 
 
 def _attach_file(msg: EmailMessage, path: Path) -> None:

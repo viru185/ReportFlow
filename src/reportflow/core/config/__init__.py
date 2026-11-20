@@ -4,6 +4,7 @@ from reportflow.core.config.loader import ConfigError, load_config, save_config
 from reportflow.core.config.models import (
     AppConfig,
     AppSettings,
+    EmailGroup,
     EmailSettings,
     JobConfig,
     Recipients,
@@ -18,6 +19,7 @@ from reportflow.core.config.models import (
 __all__ = [
     "AppConfig",
     "AppSettings",
+    "EmailGroup",
     "EmailSettings",
     "JobConfig",
     "Recipients",

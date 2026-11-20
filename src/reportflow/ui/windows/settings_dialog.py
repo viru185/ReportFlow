@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -26,6 +27,8 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.recipient_field import RecipientField
+from reportflow.ui.suggestions import jobs_using_group, known_addresses
 from reportflow.ui.widgets import scroll_page, space_layout
 
 # After an account change the service exits and Windows starts it again under the new
@@ -254,6 +257,8 @@ class SettingsDialog(QDialog):
         account_form.addRow("", apply_row)
         account_form.addRow("PI DataLink", trust_row)
 
+        groups_box = self._build_email_groups()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
@@ -262,7 +267,7 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         self.settings_tabs = QTabWidget()
-        for form in (smtp_form, rcpt_form, app_form, account_form):
+        for form in (smtp_form, rcpt_form, app_form, account_form, self._group_form):
             space_layout(form)
         for spin in (
             self.smtp_port,
@@ -275,6 +280,8 @@ class SettingsDialog(QDialog):
             ("Email", [smtp_box, rcpt_box]),
             ("Application", [app_box]),
             ("Service account", [account_box]),
+            # Last, so "Service account" keeps its index (focus_service_account).
+            ("Email groups", [groups_box]),
         ):
             page = QWidget()
             page_layout = QVBoxLayout(page)
@@ -286,6 +293,177 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.settings_tabs)
         layout.addWidget(buttons)
         space_layout(layout)
+
+    def _build_email_groups(self) -> QGroupBox:
+        """A named list of addresses a job can put in To/Cc/Bcc instead of each address."""
+        box = QGroupBox("Email groups")
+        outer = QVBoxLayout(box)
+        hint = QLabel(
+            "Give a list of addresses a name, then use that name in any job's To, Cc or Bcc. "
+            "Change the group here and every job that uses it follows. Someone who is in two "
+            "groups on the same email still gets it once."
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("muted", True)
+        outer.addWidget(hint)
+
+        row = QHBoxLayout()
+        left = QVBoxLayout()
+        self.group_list = QListWidget()
+        self.group_list.setMinimumWidth(200)
+        self.group_list.currentRowChanged.connect(self._show_group)
+        new_group = QPushButton("+ New group")
+        new_group.clicked.connect(self._new_group)
+        self.delete_group = QPushButton("Delete")
+        self.delete_group.clicked.connect(self._delete_group)
+        group_buttons = QHBoxLayout()
+        group_buttons.addWidget(new_group)
+        group_buttons.addWidget(self.delete_group)
+        left.addWidget(self.group_list)
+        left.addLayout(group_buttons)
+
+        right = QWidget()
+        self._group_form = QFormLayout(right)
+        self.group_name = QLineEdit()
+        self.group_name.setPlaceholderText("e.g. Plant managers")
+        self.group_name.textEdited.connect(self._group_name_edited)
+        self.group_members = RecipientField(
+            allow_groups=False, placeholder="Type or paste addresses…"
+        )
+        self.group_members.setToolTip(
+            "The group's addresses. Type to search addresses the app already knows; Enter, "
+            "Tab, comma or semicolon adds it, and a pasted list is split."
+        )
+        self.group_members.changed.connect(self._group_members_edited)
+        self.group_used = QLabel("")
+        self.group_used.setWordWrap(True)
+        self.group_used.setProperty("muted", True)
+        self._group_form.addRow("Name", self.group_name)
+        self._group_form.addRow("Members", self.group_members)
+        self._group_form.addRow("", self.group_used)
+        row.addLayout(left)
+        row.addWidget(right, 1)
+        outer.addLayout(row)
+        self._groups: list[dict[str, Any]] = []
+        self._groups_changed = False
+        self._show_group(-1)
+        return box
+
+    def _load_email_groups(self, cfg: dict[str, Any]) -> None:
+        self._config = cfg
+        self._groups = [
+            {"name": g["name"], "members": list(g.get("members") or []), "original": g["name"]}
+            for g in (cfg.get("email") or {}).get("groups") or []
+        ]
+        self.group_members.set_suggestions(known_addresses(cfg), {})
+        self._groups_changed = False
+        self._refresh_group_list(0 if self._groups else -1)
+
+    def _refresh_group_list(self, select: int) -> None:
+        self.group_list.blockSignals(True)
+        self.group_list.clear()
+        for g in self._groups:
+            self.group_list.addItem(f"{g['name'] or '(unnamed)'}  ({len(g['members'])})")
+        self.group_list.blockSignals(False)
+        self.group_list.setCurrentRow(select)
+        self._show_group(select)
+
+    def _current_group(self) -> dict[str, Any] | None:
+        row = self.group_list.currentRow()
+        return self._groups[row] if 0 <= row < len(self._groups) else None
+
+    def _show_group(self, row: int) -> None:
+        group = self._groups[row] if 0 <= row < len(self._groups) else None
+        for widget in (self.group_name, self.group_members, self.delete_group):
+            widget.setEnabled(group is not None)
+        self._showing_group = True
+        self.group_name.setText(group["name"] if group else "")
+        self.group_members.set_value(group["members"] if group else [])
+        self._showing_group = False
+        if group is None:
+            self.group_used.setText("")
+            return
+        used = jobs_using_group(self._config, group["original"]) if group["original"] else []
+        self.group_used.setText(
+            f"Used by {len(used)} job(s): {', '.join(used)}" if used else "Not used by any job yet."
+        )
+
+    def _group_name_edited(self, text: str) -> None:
+        group = self._current_group()
+        if group is not None:
+            group["name"] = text.strip()
+            self._groups_changed = True
+            item = self.group_list.currentItem()
+            if item is not None:
+                item.setText(f"{group['name'] or '(unnamed)'}  ({len(group['members'])})")
+
+    def _group_members_edited(self) -> None:
+        group = self._current_group()
+        if group is None or getattr(self, "_showing_group", False):
+            return
+        group["members"] = self.group_members.emails()
+        self._groups_changed = True
+        item = self.group_list.currentItem()
+        if item is not None:
+            item.setText(f"{group['name'] or '(unnamed)'}  ({len(group['members'])})")
+
+    def _new_group(self) -> None:
+        self._groups.append({"name": "", "members": [], "original": None})
+        self._groups_changed = True
+        self._refresh_group_list(len(self._groups) - 1)
+        self.group_name.setFocus()
+
+    def _delete_group(self) -> None:
+        group = self._current_group()
+        if group is None:
+            return
+        used = jobs_using_group(self._config, group["original"]) if group["original"] else []
+        if used:
+            QMessageBox.warning(
+                self,
+                "Email groups",
+                f"{group['original']!r} is used by: {', '.join(used)}.\n\nRemove it from "
+                "those jobs first, so their emails don't lose recipients.",
+            )
+            return
+        confirm = QMessageBox.question(
+            self, "Email groups", f"Delete the email group {group['name'] or '(unnamed)'!r}?"
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        row = self.group_list.currentRow()
+        del self._groups[row]
+        self._groups_changed = True
+        self._refresh_group_list(min(row, len(self._groups) - 1))
+
+    def _email_groups_problem(self) -> str | None:
+        problem = self.group_members.commit_pending() if self._current_group() else None
+        if problem:
+            return f"Email group members: {problem}"
+        names: set[str] = set()
+        for g in self._groups:
+            if not g["name"]:
+                return "Every email group needs a name."
+            if any(c in g["name"] for c in ",;@"):
+                return f"Email group names can't contain , ; or @: {g['name']!r}"
+            if g["name"].casefold() in names:
+                return f"Two email groups are named {g['name']!r}."
+            names.add(g["name"].casefold())
+            if not g["members"]:
+                return f"The email group {g['name']!r} has no addresses."
+        return None
+
+    def _email_groups_payload(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": g["name"],
+                "members": g["members"],
+                "renamed_from": g["original"]
+                if g["original"] and g["original"] != g["name"]
+                else None,
+            }
+            for g in self._groups
+        ]
 
     # -- data --------------------------------------------------------------------
 
@@ -320,6 +498,7 @@ class SettingsDialog(QDialog):
 
         self._app_section_base: dict[str, Any] = app_cfg
         self._ui_section_base: dict[str, Any] = ui_cfg
+        self._load_email_groups(cfg)
         self.password_status.setText(
             "A password is currently stored." if pw_set else "No password stored yet."
         )
@@ -471,6 +650,11 @@ class SettingsDialog(QDialog):
         return outcome["ok"]
 
     def _save(self) -> None:
+        group_problem = self._email_groups_problem()
+        if group_problem:
+            self.settings_tabs.setCurrentIndex(self.settings_tabs.count() - 1)
+            QMessageBox.warning(self, "Email groups", group_problem)
+            return
         sections: dict[str, Any] = {
             "smtp": self._smtp_form_values(),
             "test": {
@@ -491,6 +675,8 @@ class SettingsDialog(QDialog):
         }
         try:
             self._api.update_settings(sections)
+            if self._groups_changed:
+                self._api.put_email_groups(self._email_groups_payload())
             password = self.smtp_password.text()
             if password:
                 self._api.set_smtp_password(password)

@@ -120,6 +120,35 @@ QPushButton[timeChip="true"] {{
     font-weight: 600;
     padding: 8px 12px;
 }}
+QFrame[recipientField="true"] {{
+    background: {FIELD_BG};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+}}
+QFrame[recipientField="true"][invalid="true"] {{
+    border-color: #e06c6c;
+}}
+QFrame[recipientField="true"] QLineEdit {{
+    background: transparent;
+    border: none;
+    padding: 3px 2px;
+}}
+QPushButton[recipientChip="true"] {{
+    background: #232a37;
+    border: 1px solid #3f4a5c;
+    border-radius: 10px;
+    color: {TEXT};
+    padding: 2px 8px;
+    font-weight: 500;
+}}
+QPushButton[recipientChip="true"]:hover {{
+    border-color: #e06c6c;
+}}
+QPushButton[groupChip="true"] {{
+    background: #172c48;
+    border-color: #507eaf;
+    color: #dbeafe;
+}}
 QGroupBox {{
     background: {CARD_BG};
     color: {TEXT};

@@ -525,3 +525,44 @@ def test_pi_trust_endpoints(client, monkeypatch):
     applied = c.post("/system/pi-trust").json()
     assert applied["results"][0]["result"] == "trusted"
     assert c.get("/system/pi-trust").json()["addins"][0]["trusted"] is True
+
+
+def test_email_groups_rename_follows_into_jobs_and_in_use_groups_stay(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    groups = [
+        {"name": "Plant leads", "members": ["a@corp.example.com", "b@corp.example.com"]},
+        {"name": "Spare", "members": ["s@corp.example.com"]},
+    ]
+    assert c.put("/email-groups", json={"groups": groups}).status_code == 200
+    job = dict(_job_payload(tmp_path))
+    job["prod"] = {"to": ["boss@corp.example.com"], "cc_groups": ["Plant leads"]}
+    assert c.post("/jobs", json=job).status_code == 201
+
+    # The promotion confirmation names everyone production will get, groups expanded.
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["prod_recipients"] == [
+        "boss@corp.example.com",
+        "a@corp.example.com",
+        "b@corp.example.com",
+    ]
+
+    # Deleting a group a job still uses is refused, naming the job.
+    resp = c.put("/email-groups", json={"groups": [groups[1]]})
+    assert resp.status_code == 409 and "daily" in resp.json()["detail"]
+
+    # Renaming carries the job along; the unused group can go.
+    renamed = {**groups[0], "name": "Plant managers", "renamed_from": "Plant leads"}
+    assert c.put("/email-groups", json={"groups": [renamed]}).status_code == 200
+    assert c.get("/jobs/daily").json()["job"]["prod"]["cc_groups"] == ["Plant managers"]
+    names = [g["name"] for g in c.get("/config").json()["email"]["groups"]]
+    assert names == ["Plant managers"]
+
+
+def test_job_with_an_unknown_email_group_is_refused(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    job = dict(_job_payload(tmp_path))
+    job["prod"] = {"to_groups": ["Nobody"]}
+    resp = c.post("/jobs", json=job)
+    assert resp.status_code == 400 and "doesn't exist" in resp.json()["detail"]
