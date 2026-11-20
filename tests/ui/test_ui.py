@@ -90,11 +90,19 @@ class FakeApi:
 
     pi_trusted = False
 
+    # PI's usual install: one PI DataLink per Excel, one PIAFBuilder file for both.
+    _PI_ADDINS = (
+        ("PI DataLink", "PI DataLink (64-bit Excel)", "C:/x64/PI.vsto"),
+        ("PI DataLink", "PI DataLink (32-bit Excel)", "C:/x86/PI.vsto"),
+        ("PIAFBuilder", "PIAFBuilder", "C:/x86/PIAFBuilder.vsto"),
+    )
+
     def pi_trust_status(self):
         return {
             "account": r"CORP\pi_reports",
             "addins": [
-                {"name": "PI DataLink", "manifest": "C:/PI.vsto", "trusted": self.pi_trusted}
+                {"name": n, "label": label, "manifest": m, "trusted": self.pi_trusted}
+                for n, label, m in self._PI_ADDINS
             ],
         }
 
@@ -102,7 +110,10 @@ class FakeApi:
         self.pi_trusted = True
         return {
             "account": r"CORP\pi_reports",
-            "results": [{"name": "PI DataLink", "manifest": "C:/PI.vsto", "result": "trusted"}],
+            "results": [
+                {"name": n, "label": label, "manifest": m, "result": "trusted"}
+                for n, label, m in self._PI_ADDINS
+            ],
         }
 
     def list_jobs(self):
@@ -1753,13 +1764,25 @@ def test_settings_trust_pi_datalink_for_the_service_account(qtbot, monkeypatch):
     api = FakeApi()
     dlg = SettingsDialog(api)
     qtbot.addWidget(dlg)
-    # Untrusted is called out in plain words, with the consequence.
-    assert r"Not trusted for CORP\pi_reports: PI DataLink" in dlg.pi_trust_status.text()
+    # Untrusted is called out in plain words, with the consequence; the two PI DataLink
+    # copies are told apart by the Excel that loads them.
+    assert (
+        r"Not trusted for CORP\pi_reports: PI DataLink (64-bit Excel), "
+        "PI DataLink (32-bit Excel), PIAFBuilder"
+    ) in dlg.pi_trust_status.text()
     assert "last-saved values" in dlg.pi_trust_status.text()
 
     dlg._trust_pi_addins()
     assert api.pi_trusted
-    assert shown and "PI DataLink: trusted" in shown[0]
+    assert (
+        shown
+        and (
+            "• PI DataLink (64-bit Excel): trusted\n"
+            "• PI DataLink (32-bit Excel): trusted\n"
+            "• PIAFBuilder: trusted"
+        )
+        in shown[0]
+    )
     assert dlg.pi_trust_status.text().startswith(r"✓ Trusted for CORP\pi_reports")
 
 

@@ -126,6 +126,18 @@ class PiAddin:
     manifest: Path
     public_key: str | None
     urls: list[str] = field(default_factory=list)
+    excel_bits: set[int] = field(default_factory=set)  # which Excel (32/64-bit) loads it
+
+    @property
+    def label(self) -> str:
+        """The name, plus which Excel loads this copy when only one of them does.
+
+        PI installs a separate PI DataLink for 32- and 64-bit Excel, and each file needs
+        its own trust entry — without the suffix the user sees "PI DataLink" twice.
+        """
+        if len(self.excel_bits) == 1:
+            return f"{self.name} ({next(iter(self.excel_bits))}-bit Excel)"
+        return self.name
 
 
 def pi_addins() -> list[PiAddin]:
@@ -141,7 +153,10 @@ def pi_addins() -> list[PiAddin]:
         if key not in found:  # the 32- and 64-bit views often point at the same file
             name = str(row.get("FriendlyName") or row.get("progid"))
             found[key] = PiAddin(name, path, manifest_public_key(path), manifest_urls(path))
-    return list(found.values())
+        if row.get("bits") in (32, 64):
+            found[key].excel_bits.add(int(row["bits"]))
+    # By name, the 64-bit copy first (what a current Office install runs).
+    return sorted(found.values(), key=lambda a: (a.name.casefold(), -max(a.excel_bits or {0})))
 
 
 def _read_inclusion() -> list[dict[str, str]]:
@@ -188,10 +203,15 @@ def _is_trusted(addin: PiAddin, entries: list[dict[str, str]]) -> bool:
 
 
 def trust_status() -> list[dict[str, Any]]:
-    """``[{"name", "manifest", "trusted"}]`` for each admin-installed PI add-in."""
+    """``[{"name", "label", "manifest", "trusted"}]`` for each admin-installed PI add-in."""
     entries = _read_inclusion()
     return [
-        {"name": a.name, "manifest": str(a.manifest), "trusted": _is_trusted(a, entries)}
+        {
+            "name": a.name,
+            "label": a.label,
+            "manifest": str(a.manifest),
+            "trusted": _is_trusted(a, entries),
+        }
         for a in pi_addins()
     ]
 
@@ -204,13 +224,17 @@ def untrusted_pi_addins() -> list[str]:
 def trust_pi_addins() -> list[dict[str, Any]]:
     """Put every admin-installed PI add-in on this account's inclusion list.
 
-    Returns ``[{"name", "manifest", "result"}]`` with result "trusted", "already trusted",
-    or "failed: <reason>".
+    Returns ``[{"name", "label", "manifest", "result"}]`` with result "trusted",
+    "already trusted", or "failed: <reason>".
     """
     entries = _read_inclusion()
     results: list[dict[str, Any]] = []
     for addin in pi_addins():
-        row: dict[str, Any] = {"name": addin.name, "manifest": str(addin.manifest)}
+        row: dict[str, Any] = {
+            "name": addin.name,
+            "label": addin.label,
+            "manifest": str(addin.manifest),
+        }
         if _is_trusted(addin, entries):
             row["result"] = "already trusted"
         elif not addin.public_key:

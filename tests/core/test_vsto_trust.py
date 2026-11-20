@@ -63,6 +63,40 @@ def test_only_admin_installed_pi_addins_with_a_manifest_count(tmp_path, monkeypa
     monkeypatch.setattr(vsto_trust, "pi_registrations", lambda: rows)
     [addin] = vsto_trust.pi_addins()
     assert addin.name == "PI DataLink" and addin.public_key == _KEY
+    assert addin.label == "PI DataLink"  # one file serves both Excels: no suffix
+
+
+def test_separate_32_and_64_bit_copies_are_labelled_by_excel(tmp_path, monkeypatch):
+    # A typical PI install (the owner's laptop, Nov 2026): PI DataLink twice, one file per
+    # Excel, and one PIAFBuilder file that both register.
+    (tmp_path / "x64").mkdir()
+    (tmp_path / "x86").mkdir()
+    dl64 = _manifest(tmp_path / "x64" / "OSIsoft.PIDataLink.UI.vsto")
+    dl32 = _manifest(tmp_path / "x86" / "OSIsoft.PIDataLink.UI.vsto")
+    af = _manifest(tmp_path / "x86" / "PIAFBuilder.vsto")
+    rows = [
+        {"root": "HKLM", "bits": 32, "progid": "PI DataLink", "Manifest": f"file:\\\\{dl32}"},
+        {"root": "HKLM", "bits": 32, "progid": "PIAFBuilder", "Manifest": f"file:///{af}"},
+        {"root": "HKLM", "bits": 64, "progid": "PI DataLink", "Manifest": f"file:\\\\{dl64}"},
+        {"root": "HKLM", "bits": 64, "progid": "PIAFBuilder", "Manifest": f"file:///{af}"},
+    ]
+    monkeypatch.setattr(vsto_trust, "pi_registrations", lambda: rows)
+    _FakeInclusion().install(monkeypatch)
+
+    addins = vsto_trust.pi_addins()
+    assert [(a.label, a.manifest) for a in addins] == [
+        ("PI DataLink (64-bit Excel)", dl64),
+        ("PI DataLink (32-bit Excel)", dl32),
+        ("PIAFBuilder", af),
+    ]
+    assert [r["label"] for r in vsto_trust.trust_status()] == [a.label for a in addins]
+    results = vsto_trust.trust_pi_addins()
+    assert [(r["label"], r["result"]) for r in results] == [
+        ("PI DataLink (64-bit Excel)", "trusted"),
+        ("PI DataLink (32-bit Excel)", "trusted"),
+        ("PIAFBuilder", "trusted"),
+    ]
+    assert {r["name"] for r in results} == {"PI DataLink", "PIAFBuilder"}  # names unchanged
 
 
 class _FakeInclusion:

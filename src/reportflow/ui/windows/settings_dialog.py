@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Iterable
 from typing import Any
 
 from PySide6.QtCore import QEventLoop, QTimer
@@ -40,6 +41,11 @@ _RESTART_POLL_MS = 2000
 def _user_part(account: str) -> str:
     # A local ".\user" comes back as "MACHINE\user": compare the user name only.
     return account.rsplit("\\", 1)[-1].strip().casefold()
+
+
+def _addin_labels(addins: Iterable[dict[str, Any]]) -> list[str]:
+    """Each PI add-in once, in the service's order ("PI DataLink (64-bit Excel)", …)."""
+    return list(dict.fromkeys(str(a.get("label") or a["name"]) for a in addins))
 
 
 def _split_csv(text: str) -> list[str]:
@@ -534,7 +540,7 @@ class SettingsDialog(QDialog):
             self.pi_trust_status.setText("No PI add-ins are installed on this machine.")
             self.pi_trust_status.setStyleSheet("")
             return
-        missing = sorted({a["name"] for a in addins if not a.get("trusted")})
+        missing = _addin_labels(a for a in addins if not a.get("trusted"))
         if missing:
             self.pi_trust_status.setText(
                 f"⚠ Not trusted for {account}: {', '.join(missing)} — PI cells will keep their "
@@ -542,7 +548,7 @@ class SettingsDialog(QDialog):
             )
             self.pi_trust_status.setStyleSheet("color: #e06c6c;")
         else:
-            names = ", ".join(sorted({a["name"] for a in addins}))
+            names = ", ".join(_addin_labels(addins))
             self.pi_trust_status.setText(f"✓ Trusted for {account}: {names}")
             self.pi_trust_status.setStyleSheet("color: #4ade80;")
 
@@ -558,7 +564,7 @@ class SettingsDialog(QDialog):
                 self, "Trust PI DataLink", "No PI add-ins are installed on this machine."
             )
             return
-        lines = "\n".join(f"• {r['name']}: {r['result']}" for r in results)
+        lines = "\n".join(f"• {r.get('label') or r['name']}: {r['result']}" for r in results)
         failed = any(str(r["result"]).startswith("failed") for r in results)
         (QMessageBox.warning if failed else QMessageBox.information)(
             self,

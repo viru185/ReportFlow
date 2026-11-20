@@ -509,15 +509,14 @@ def test_pi_trust_endpoints(client, monkeypatch):
 
     c, _ = client
     state = {"trusted": False}
+    addin = {"name": "PI DataLink", "label": "PI DataLink (64-bit Excel)", "manifest": "C:/PI.vsto"}
     monkeypatch.setattr(
-        vsto_trust,
-        "trust_status",
-        lambda: [{"name": "PI DataLink", "manifest": "C:/PI.vsto", "trusted": state["trusted"]}],
+        vsto_trust, "trust_status", lambda: [{**addin, "trusted": state["trusted"]}]
     )
 
     def trust():
         state["trusted"] = True
-        return [{"name": "PI DataLink", "manifest": "C:/PI.vsto", "result": "trusted"}]
+        return [{**addin, "result": "trusted"}]
 
     monkeypatch.setattr(vsto_trust, "trust_pi_addins", trust)
     status = c.get("/system/pi-trust").json()

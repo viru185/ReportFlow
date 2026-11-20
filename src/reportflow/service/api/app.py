@@ -379,7 +379,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         logger.info("API: trust PI add-ins for {}", account)
         results = vsto_trust.trust_pi_addins()
         for row in results:
-            logger.info("PI add-in {!r} ({}): {}", row["name"], row["manifest"], row["result"])
+            logger.info("PI add-in {!r} ({}): {}", row["label"], row["manifest"], row["result"])
         return {"account": account, "results": results}
 
     @app.put("/email-groups")
