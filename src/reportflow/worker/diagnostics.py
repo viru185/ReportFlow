@@ -15,7 +15,6 @@ import time
 import winreg
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 
 import psutil
 import win32api
@@ -24,6 +23,11 @@ import win32evtlog
 import win32security
 import win32ts
 from loguru import logger
+
+# Shared with the service's PI trust button (core must not import worker).
+from reportflow.core.vsto_trust import is_pi_addin
+from reportflow.core.vsto_trust import manifest_path as _manifest_path
+from reportflow.core.vsto_trust import pi_registrations as _registrations
 
 
 def windows_identity() -> str:
@@ -40,11 +44,6 @@ def windows_identity() -> str:
         return f"{os.environ.get('USERDOMAIN', '?')}\\{os.environ.get('USERNAME', '?')}"
 
 
-def is_pi_addin(name: str) -> bool:
-    key = re.sub(r"[^a-z0-9]", "", name.lower())
-    return any(part in key for part in ("pidatalink", "piafbuilder", "pibuilder"))
-
-
 def redact_diagnostic_text(text: str) -> str:
     """Scrub common secret assignments before diagnostic text reaches disk or logs."""
     keys = r"password|passwd|pwd|secret|token|api[_-]?key|authorization"
@@ -57,21 +56,6 @@ def redact_diagnostic_text(text: str) -> str:
     return re.sub(r"(https?://)[^/\s@]+:[^/\s@]+@", r"\1***REDACTED***@", text)
 
 
-def _manifest_path(manifest: str) -> Path | None:
-    location = manifest.split("|", 1)[0]
-    if location.lower().startswith("file:"):
-        # PI installers also register file:\\D:\... URIs. Treat their leading
-        # slashes as a local drive prefix, not a UNC host named "D:".
-        location = unquote(location[5:]).replace("\\", "/")
-        if location.lower().startswith("//localhost/"):
-            location = location[len("//localhost") :]
-        if re.match(r"^/*[a-zA-Z]:/", location):
-            location = location.lstrip("/")
-    elif "://" in location:
-        return None
-    return Path(location) if location else None
-
-
 def _redact_evidence(value: Any) -> Any:
     # Redact before JSON escaping: quoted secrets inside an event message must not
     # escape the text scrubber because their quotes have become backslash-escaped.
@@ -82,33 +66,6 @@ def _redact_evidence(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_evidence(item) for item in value]
     return value
-
-
-def _registrations() -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for root, label in ((winreg.HKEY_CURRENT_USER, "HKCU"), (winreg.HKEY_LOCAL_MACHINE, "HKLM")):
-        for view, bits in ((winreg.KEY_WOW64_32KEY, 32), (winreg.KEY_WOW64_64KEY, 64)):
-            try:
-                with winreg.OpenKey(
-                    root, r"Software\Microsoft\Office\Excel\Addins", 0, winreg.KEY_READ | view
-                ) as key:
-                    for i in range(winreg.QueryInfoKey(key)[0]):
-                        progid = winreg.EnumKey(key, i)
-                        with winreg.OpenKey(key, progid) as entry:
-                            row: dict[str, Any] = {"root": label, "bits": bits, "progid": progid}
-                            for name in ("FriendlyName", "Description", "Manifest", "LoadBehavior"):
-                                try:
-                                    row[name] = winreg.QueryValueEx(entry, name)[0]
-                                except OSError:
-                                    pass
-                            if is_pi_addin(progid + str(row.get("FriendlyName", ""))):
-                                manifest = _manifest_path(str(row.get("Manifest", "")))
-                                if manifest:
-                                    row["manifest_exists"] = manifest.is_file()
-                                rows.append(row)
-            except OSError:
-                continue
-    return rows
 
 
 def _excel_bits(pid: int) -> int | None:

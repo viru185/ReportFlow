@@ -84,6 +84,23 @@ class FakeApi:
         self.applied_account = (user, password)
         return {"ok": True, "account": user, "restarting": True}
 
+    pi_trusted = False
+
+    def pi_trust_status(self):
+        return {
+            "account": r"CORP\pi_reports",
+            "addins": [
+                {"name": "PI DataLink", "manifest": "C:/PI.vsto", "trusted": self.pi_trusted}
+            ],
+        }
+
+    def trust_pi_addins(self):
+        self.pi_trusted = True
+        return {
+            "account": r"CORP\pi_reports",
+            "results": [{"name": "PI DataLink", "manifest": "C:/PI.vsto", "result": "trusted"}],
+        }
+
     def list_jobs(self):
         self._check()
         return self._jobs
@@ -1651,3 +1668,25 @@ def test_dashboard_long_job_names_are_plain_text_and_wrap(qtbot):
     window.show()
     qtbot.waitUntil(lambda: labels[0].width() > 100)
     assert labels[0].height() >= labels[0].fontMetrics().height()
+
+
+def test_settings_trust_pi_datalink_for_the_service_account(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *a, **k: shown.append(a[2]))
+    )
+    api = FakeApi()
+    dlg = SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    # Untrusted is called out in plain words, with the consequence.
+    assert r"Not trusted for CORP\pi_reports: PI DataLink" in dlg.pi_trust_status.text()
+    assert "last-saved values" in dlg.pi_trust_status.text()
+
+    dlg._trust_pi_addins()
+    assert api.pi_trusted
+    assert shown and "PI DataLink: trusted" in shown[0]
+    assert dlg.pi_trust_status.text().startswith(r"✓ Trusted for CORP\pi_reports")

@@ -34,6 +34,7 @@ from reportflow.core.ipc import (
     write_result,
 )
 from reportflow.core.logging_setup import add_run_log, remove_sink
+from reportflow.core.vsto_trust import is_pi_addin, untrusted_pi_addins
 from reportflow.worker.cleanup import blank_out_values
 from reportflow.worker.diagnostics import VstoDiagnostics, windows_identity
 from reportflow.worker.excel import (
@@ -110,12 +111,41 @@ def _validate_output_paths(request: WorkerRequest) -> None:
             seen.add(key)
 
 
+def _pi_untrusted() -> bool:
+    """True when an admin-installed PI add-in isn't on this account's VSTO inclusion list —
+    the reason PI DataLink never loaded for the Merian service account (Nov 2026)."""
+    try:
+        return bool(untrusted_pi_addins())
+    except OSError as e:  # the check is advisory; never fail a run over it
+        logger.debug("Could not read the VSTO inclusion list: {}", e)
+        return False
+
+
+def _addin_warning(name: str) -> str:
+    if is_pi_addin(name) and _pi_untrusted():
+        return (
+            f"add-in {name!r} did not connect: Windows has not trusted it for "
+            f"{windows_identity()}, so PI cells keep their last-saved values — open Settings → "
+            "Service account → Trust PI DataLink"
+        )
+    return (
+        f"add-in {name!r} did not connect — automatic data refresh may be unavailable; "
+        "see pi_diagnostics in Export logs"
+    )
+
+
 def _build_workbook(
     run: ExcelRun, request: WorkerRequest, task: WorkbookTask
 ) -> tuple[Path, list[Path], list[Path], list[str]]:
     """Build local Excel, chosen PDFs, and an exact-sheet Excel email copy."""
     names = task.sheet_names
     if request.require_pi_datalink and not run.pi_datalink_connected:
+        if _pi_untrusted():
+            raise ExcelJobError(
+                f"PI DataLink is required but Windows has not trusted it for "
+                f"{windows_identity()}, so it cannot load. Open Settings → Service account → "
+                "Trust PI DataLink, then run again."
+            )
         raise ExcelJobError(
             f"PI DataLink is required but did not connect under {windows_identity()}. "
             "Cached or pasted values do not prove a refresh. See this run's pi_diagnostics "
@@ -193,11 +223,7 @@ def _execute_once(
     multi = len(request.workbooks) > 1
     try:
         with run:
-            outcome.warnings.extend(
-                f"add-in {name!r} did not connect — automatic data refresh may be unavailable; "
-                "see pi_diagnostics in Export logs"
-                for name in run.failed_addins
-            )
+            outcome.warnings.extend(_addin_warning(name) for name in run.failed_addins)
             for task in request.workbooks:
                 label = task.input_excel_path.name
                 try:

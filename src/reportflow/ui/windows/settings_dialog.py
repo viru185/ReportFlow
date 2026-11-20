@@ -218,11 +218,28 @@ class SettingsDialog(QDialog):
         )
         account_hint.setWordWrap(True)
         account_hint.setProperty("muted", True)
+        # Windows only loads PI DataLink for an account that trusts it. A desktop user grants
+        # that by accepting a one-time prompt; a service account never sees the prompt, so
+        # PI cells silently keep their last-saved values (Merian, Nov 2026).
+        self.pi_trust_status = QLabel("")
+        self.pi_trust_status.setWordWrap(True)
+        trust_pi = QPushButton("Trust PI DataLink for this account")
+        trust_pi.setToolTip(
+            "Windows only loads PI DataLink for an account that has accepted its one-time "
+            "trust prompt. The service account never sees that prompt, so this records the "
+            "same trust for it — only for the PI add-ins an administrator installed."
+        )
+        trust_pi.clicked.connect(self._trust_pi_addins)
+        trust_row = QHBoxLayout()
+        trust_row.addWidget(self.pi_trust_status, 1)
+        trust_row.addWidget(trust_pi)
+
         account_form.addRow(account_hint)
         account_form.addRow("Runs as", self.service_account)
         account_form.addRow("User", user_row)
         account_form.addRow("Password", self.account_password)
         account_form.addRow("", apply_row)
+        account_form.addRow("PI DataLink", trust_row)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -308,6 +325,53 @@ class SettingsDialog(QDialog):
         else:
             self.service_account.setText(account)
             self.service_account.setStyleSheet("")
+        self._show_pi_trust()
+
+    def _show_pi_trust(self) -> None:
+        try:
+            status = self._api.pi_trust_status()
+        except ApiError:
+            self.pi_trust_status.setText("Unknown — the service is not reachable.")
+            return
+        addins = status.get("addins") or []
+        account = status.get("account") or "the service account"
+        if not addins:
+            self.pi_trust_status.setText("No PI add-ins are installed on this machine.")
+            self.pi_trust_status.setStyleSheet("")
+            return
+        missing = sorted({a["name"] for a in addins if not a.get("trusted")})
+        if missing:
+            self.pi_trust_status.setText(
+                f"⚠ Not trusted for {account}: {', '.join(missing)} — PI cells will keep their "
+                "last-saved values."
+            )
+            self.pi_trust_status.setStyleSheet("color: #e06c6c;")
+        else:
+            names = ", ".join(sorted({a["name"] for a in addins}))
+            self.pi_trust_status.setText(f"✓ Trusted for {account}: {names}")
+            self.pi_trust_status.setStyleSheet("color: #4ade80;")
+
+    def _trust_pi_addins(self) -> None:
+        try:
+            resp = self._api.trust_pi_addins()
+        except ApiError as e:
+            QMessageBox.warning(self, "Trust PI DataLink", str(e))
+            return
+        results = resp.get("results") or []
+        if not results:
+            QMessageBox.information(
+                self, "Trust PI DataLink", "No PI add-ins are installed on this machine."
+            )
+            return
+        lines = "\n".join(f"• {r['name']}: {r['result']}" for r in results)
+        failed = any(str(r["result"]).startswith("failed") for r in results)
+        (QMessageBox.warning if failed else QMessageBox.information)(
+            self,
+            "Trust PI DataLink",
+            f"For {resp.get('account', 'the service account')}:\n{lines}\n\n"
+            "Run a Build only to confirm PI DataLink connects.",
+        )
+        self._show_pi_trust()
 
     def _fill_current_user(self) -> None:
         domain = os.environ.get("USERDOMAIN", "")

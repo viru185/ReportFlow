@@ -502,3 +502,26 @@ def test_template_check_and_linked_flag(client):
 
     c.put("/jobs/daily/email-template", json={"content": "<p>own</p>"})  # back to its own copy
     assert c.get("/jobs/daily/email-template").json()["linked"] is False
+
+
+def test_pi_trust_endpoints(client, monkeypatch):
+    from reportflow.core import vsto_trust
+
+    c, _ = client
+    state = {"trusted": False}
+    monkeypatch.setattr(
+        vsto_trust,
+        "trust_status",
+        lambda: [{"name": "PI DataLink", "manifest": "C:/PI.vsto", "trusted": state["trusted"]}],
+    )
+
+    def trust():
+        state["trusted"] = True
+        return [{"name": "PI DataLink", "manifest": "C:/PI.vsto", "result": "trusted"}]
+
+    monkeypatch.setattr(vsto_trust, "trust_pi_addins", trust)
+    status = c.get("/system/pi-trust").json()
+    assert status["account"] and status["addins"][0]["trusted"] is False
+    applied = c.post("/system/pi-trust").json()
+    assert applied["results"][0]["result"] == "trusted"
+    assert c.get("/system/pi-trust").json()["addins"][0]["trusted"] is True

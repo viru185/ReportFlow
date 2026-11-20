@@ -293,6 +293,27 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True, "account": account, "restarting": True}
 
+    # PI DataLink trust lives in the CURRENT account's HKCU, so these must run in the service
+    # process — which runs as the service account the workers (and their Excel) use.
+    @app.get("/system/pi-trust")
+    def get_pi_trust() -> dict[str, Any]:
+        from reportflow.core import vsto_trust
+        from reportflow.service.service_account import current_account
+
+        return {"account": current_account()["account"], "addins": vsto_trust.trust_status()}
+
+    @app.post("/system/pi-trust")
+    def apply_pi_trust() -> dict[str, Any]:
+        from reportflow.core import vsto_trust
+        from reportflow.service.service_account import current_account
+
+        account = current_account()["account"]
+        logger.info("API: trust PI add-ins for {}", account)
+        results = vsto_trust.trust_pi_addins()
+        for row in results:
+            logger.info("PI add-in {!r} ({}): {}", row["name"], row["manifest"], row["result"])
+        return {"account": account, "results": results}
+
     @app.get("/config")
     def get_config() -> dict[str, Any]:
         return redact_config(svc().config)

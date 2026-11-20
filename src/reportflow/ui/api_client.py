@@ -80,6 +80,12 @@ class ApiClient:
             "POST", "/system/service-account", json={"user": user, "password": password}
         )
 
+    def pi_trust_status(self) -> dict:
+        return self._request("GET", "/system/pi-trust")
+
+    def trust_pi_addins(self) -> dict:
+        return self._request("POST", "/system/pi-trust")
+
     # -- jobs --
     def list_jobs(self) -> list[dict]:
         return self._request("GET", "/jobs")
