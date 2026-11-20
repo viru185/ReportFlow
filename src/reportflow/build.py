@@ -1,11 +1,11 @@
-"""Build ReportFlow: the three executables (PyInstaller) and the installer (Inno Setup).
+"""``reportflow-build``: the three executables (PyInstaller) and the installer (Inno Setup).
 
-Usage, from the repo root (after ``uv sync --all-extras``):
-    uv run packaging/build_all.py                  # worker + service + ui (what CI runs)
-    uv run packaging/build_all.py worker           # one executable
-    uv run packaging/build_all.py worker service   # several
-    uv run packaging/build_all.py installer        # the installer, from the exes in dist/
-    uv run packaging/build_all.py all              # all three exes, then the installer
+Usage, from a source checkout (after ``uv sync --all-extras``):
+    uv run reportflow-build                    # worker + service + ui (what CI runs)
+    uv run reportflow-build worker             # one executable
+    uv run reportflow-build worker service     # several
+    uv run reportflow-build installer          # the installer, from the exes in dist/
+    uv run reportflow-build all                # all three exes, then the installer
 
 Targets combine freely: ``ui installer`` rebuilds the UI, then the installer. The version
 comes from pyproject.toml, and the installer step refuses executables built from another
@@ -17,6 +17,9 @@ Output:
     dist/service/reportflow-service.exe
     dist/ui/reportflow-ui.exe
     packaging/innosetup/Output/ReportFlow-Setup-<version>.exe
+
+A developer tool, not part of the app: no frozen exe imports it. It works from the source
+tree that ``uv sync`` installs in editable mode.
 """
 
 from __future__ import annotations
@@ -32,9 +35,7 @@ import tomllib
 import winreg
 from pathlib import Path
 
-from packaging.version import InvalidVersion, Version
-
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SPEC_DIR = ROOT / "packaging" / "pyinstaller"
 ISS = ROOT / "packaging" / "innosetup" / "reportflow.iss"
 NSSM = ROOT / "packaging" / "nssm" / "nssm.exe"
@@ -56,8 +57,31 @@ class BuildError(Exception):
 
 
 def project_version() -> str:
-    with (ROOT / "pyproject.toml").open("rb") as f:
+    pyproject = ROOT / "pyproject.toml"
+    if not pyproject.is_file() or not SPEC_DIR.is_dir():
+        raise BuildError(
+            f"no ReportFlow source checkout at {ROOT}. Run reportflow-build from the repo, "
+            "where `uv sync --all-extras` installs it."
+        )
+    with pyproject.open("rb") as f:
         return str(tomllib.load(f)["project"]["version"])
+
+
+def same_version(a: str, b: str) -> bool:
+    """``0.12.0-beta`` and ``0.12.0b0`` (the dist-info spelling) are the same version."""
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        return Version(a) == Version(b)
+    except InvalidVersion:
+        return False
+
+
+def numeric_version(version: str) -> str:
+    """Windows file versions are numeric only: ``0.12.0-beta`` -> ``0.12.0`` (as CI does)."""
+    from packaging.version import Version
+
+    return Version(version).base_version
 
 
 def build_exe(target: str) -> None:
@@ -91,13 +115,6 @@ def built_version(target: str) -> str | None:
     return infos[-1].name.removeprefix("reportflow-").removesuffix(".dist-info")
 
 
-def _same_version(a: str, b: str) -> bool:
-    try:
-        return Version(a) == Version(b)
-    except InvalidVersion:
-        return False
-
-
 def check_exes(version: str) -> None:
     """Refuse to package executables that are missing or from another version."""
     problems: list[tuple[str, str]] = []
@@ -105,7 +122,7 @@ def check_exes(version: str) -> None:
         got = built_version(target)
         if got is None:
             problems.append((target, f"dist\\{target}\\reportflow-{target}.exe is missing"))
-        elif not _same_version(got, version):
+        elif not same_version(got, version):
             problems.append((target, f"dist\\{target} was built from {got}, not {version}"))
     if problems:
         details = "\n  ".join(text for _, text in problems)
@@ -113,7 +130,7 @@ def check_exes(version: str) -> None:
         targets = "all" if len(stale) == len(EXES) else " ".join([*stale, "installer"])
         raise BuildError(
             f"the installer needs all three executables built from {version}:\n  {details}\n"
-            f"Rebuild them first: uv run packaging/build_all.py {targets}"
+            f"Rebuild them first: uv run reportflow-build {targets}"
         )
 
 
@@ -160,13 +177,13 @@ def find_iscc(explicit: str | None) -> Path:
 
 def preflight(order: list[str], iscc_arg: str | None) -> Path | None:
     """Fail before a long PyInstaller run, not after it."""
-    if any(t in EXES for t in order) and importlib.util.find_spec("PyInstaller") is None:
+    if importlib.util.find_spec("PyInstaller") is None:
         raise BuildError("PyInstaller isn't installed. Run: uv sync --all-extras")
     if "installer" not in order:
         return None
     if not NSSM.is_file():
         raise BuildError(
-            f"missing {NSSM.relative_to(ROOT)}: put the 64-bit nssm.exe there "
+            f"missing {NSSM}: put the 64-bit nssm.exe there "
             "(https://nssm.cc/download, or `choco install nssm`)"
         )
     return find_iscc(iscc_arg)
@@ -174,13 +191,11 @@ def preflight(order: list[str], iscc_arg: str | None) -> Path | None:
 
 def build_installer(version: str, iscc: Path) -> Path:
     check_exes(version)
-    # Windows file versions are numeric only: 0.12.0-beta -> 0.12.0 (as CI does).
-    numeric = Version(version).base_version
     cmd = [
         str(iscc),
         "/Q",
         f"/DMyAppVersion={version}",
-        f"/DMyAppNumericVersion={numeric}",
+        f"/DMyAppNumericVersion={numeric_version(version)}",
         str(ISS),
     ]
     if subprocess.run(cmd, cwd=ROOT).returncode != 0:
@@ -198,7 +213,7 @@ def _elapsed(start: float) -> str:
 
 def parse(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="uv run packaging/build_all.py",
+        prog="reportflow-build",
         description="Build the ReportFlow executables and/or the installer.",
         epilog="With no target: worker, service and ui (no installer). "
         "'all' = the three executables, then the installer.",
@@ -216,16 +231,21 @@ def parse(argv: list[str]) -> argparse.Namespace:
     return args
 
 
-def main(argv: list[str]) -> int:
-    args = parse(argv)
-    chosen = set(args.targets) or set(EXES)
+def plan(targets: list[str]) -> list[str]:
+    """The steps to run, in build order (exes before the installer)."""
+    chosen = set(targets) or set(EXES)
     if "all" in chosen:
         chosen = set(TARGETS)
-    order = [t for t in TARGETS if t in chosen]
-    version = project_version()
+    return [t for t in TARGETS if t in chosen]
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse(list(sys.argv[1:] if argv is None else argv))
+    order = plan(args.targets)
     started = time.monotonic()
     built: list[str] = []
     try:
+        version = project_version()
         iscc = preflight(order, args.iscc)
         for target in order:
             step = time.monotonic()
@@ -250,4 +270,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

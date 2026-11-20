@@ -426,7 +426,7 @@ uv run python scripts/dev_run_worker.py --template "D:\path\to\MyReport.xlsx" --
 ### Build & test the executables locally
 
 ```powershell
-uv run packaging/build_all.py                   # dist\worker, dist\service, dist\ui
+uv run reportflow-build                         # dist\worker, dist\service, dist\ui
 dist\ui\reportflow-ui.exe --selftest             # exit 0 => UI bundle OK
 
 # Run the FROZEN service + UI against the isolated data dir:
@@ -464,15 +464,15 @@ uv run mypy
 
 ### Build the executables
 
-One script builds any of the three executables and the installer (run `uv sync --all-extras`
-once first):
+`reportflow-build` builds any of the three executables and the installer, like
+`reportflow-service` / `-worker` / `-ui` run them (run `uv sync --all-extras` once first):
 
 ```powershell
-uv run packaging/build_all.py                    # all three executables
-uv run packaging/build_all.py worker             # just one
-uv run packaging/build_all.py worker service     # several
-uv run packaging/build_all.py installer          # the installer, from the exes in dist\
-uv run packaging/build_all.py all                # all three executables, then the installer
+uv run reportflow-build                    # all three executables
+uv run reportflow-build worker             # just one
+uv run reportflow-build worker service     # several
+uv run reportflow-build installer          # the installer, from the exes in dist\
+uv run reportflow-build all                # all three executables, then the installer
 ```
 
 Targets combine (`ui installer` rebuilds the UI, then the installer). The version always comes
@@ -489,12 +489,12 @@ Requires [Inno Setup 7 or 6](https://jrsoftware.org/isdl.php) and
 `packaging/nssm/nssm.exe` (download the 64-bit binary from [nssm.cc](https://nssm.cc/download)).
 
 ```powershell
-uv run packaging/build_all.py all          # exes + installer
-uv run packaging/build_all.py installer    # installer only, from the exes already in dist\
+uv run reportflow-build all          # exes + installer
+uv run reportflow-build installer    # installer only, from the exes already in dist\
 # -> packaging\innosetup\Output\ReportFlow-Setup-<version>.exe
 ```
 
-The script finds `ISCC.exe` on `PATH`, in the registry (per-user installs included) or in the
+It finds `ISCC.exe` on `PATH`, in the registry (per-user installs included) or in the
 usual folders; `--iscc <path>` overrides it. It passes the version from `pyproject.toml`, plus
 the numeric part a beta needs for the Windows file version (`0.12.0-beta` → `0.12.0`), and it
 refuses to package executables in `dist\` that were built from another version.
@@ -514,7 +514,8 @@ src/reportflow/
   worker/          xlwings automation (the only xlwings importer)
   service/         FastAPI app, launcher, scheduler, bootstrap, workbook discovery
   ui/              PySide6 app: api_client + windows
-packaging/         PyInstaller specs, build_all.py, Inno Setup, NSSM
+  build.py         reportflow-build: the exes + installer (dev tool, never frozen)
+packaging/         PyInstaller specs, Inno Setup, NSSM
 scripts/           sample workbook generator + dev worker runner
 tests/             core / worker / service / ui suites
 ```

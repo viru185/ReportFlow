@@ -47,6 +47,7 @@ dev = [
 [project.scripts]
 reportflow-worker = "reportflow.worker.__main__:main"
 reportflow-service = "reportflow.service.__main__:main"
+reportflow-build = "reportflow.build:main"
 
 [project.gui-scripts]
 reportflow-ui = "reportflow.ui.__main__:main"

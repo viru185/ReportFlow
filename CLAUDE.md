@@ -138,7 +138,7 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
 uv sync --all-extras         # deps (plain `uv sync` removes ruff/mypy/pytest/PyInstaller)
 uv run reportflow-service    # run service locally
 uv run reportflow-ui         # run the UI
-uv run packaging/build_all.py [worker|service|ui|installer|all ...]   # local build
+uv run reportflow-build [worker|service|ui|installer|all ...]   # local build
 ```
 
 **The gate — all four must pass before committing:**
@@ -163,7 +163,7 @@ New features ship as a **beta first** (owner's workflow since 0.11):
    for the final release. `release.yml` fails if the tag disagrees
    (`scripts/check_release_tag.py`).
 2. Gate green + `uv run pytest -m excel`.
-3. Validate the installer builds: `uv run packaging/build_all.py all` (exes + installer;
+3. Validate the installer builds: `uv run reportflow-build all` (exes + installer;
    finds Inno Setup 7/6 itself, passes the version and the numeric file version a beta
    needs, and refuses `dist\` exes from another version). CI still calls ISCC directly
    (`release.yml`, the runner's preinstalled Inno Setup 6).
