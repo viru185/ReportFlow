@@ -8,6 +8,7 @@ is built visually; the email body is authored in-app via EmailTemplateDialog.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -72,6 +73,11 @@ _UNSELECTED_MODES = [
 
 def _split_csv(text: str) -> list[str]:
     return [p.strip() for p in text.replace(";", ",").split(",") if p.strip()]
+
+
+def _same_file_key(path: str) -> str:
+    """One spelling per file: C:/Reports/a.xlsx and c:\\reports\\A.xlsx are the same file."""
+    return os.path.normcase(os.path.normpath(os.path.abspath(path.strip())))
 
 
 def _join_csv(items: list[str] | None) -> str:
@@ -645,11 +651,41 @@ class JobEditorDialog(QDialog):
 
     def _pick_additional_workbook(self) -> None:
         start = open_start_dir(self.input_excel.text().strip())
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Add an Excel file to this job", start, "Excel (*.xlsx *.xlsm)"
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Add Excel files to this job", start, "Excel (*.xlsx *.xlsm)"
         )
-        if path:
+        self.add_workbooks(paths)
+
+    def add_workbooks(self, paths: list[str]) -> None:
+        """Add several workbooks at once; files already in the job are skipped, with one
+        warning naming them (adding the same file twice would build it twice)."""
+        self._commit_current()
+        skipped: list[str] = []
+        for path in paths:
+            if self._workbook_index(path) is not None:
+                skipped.append(Path(path).name)
+                continue
+            if len(self._workbooks) == 1 and not self._workbooks[0].path:
+                # A new job's first tab is still empty: fill it rather than leave it blank.
+                self.input_excel.setText(path)
+                self._discover_sheets()
+                continue
             self._add_workbook(path)
+        if skipped:
+            QMessageBox.warning(
+                self,
+                "Already in this job",
+                "These files are already in this job, so they weren't added again:\n"
+                + "\n".join(f"• {name}" for name in skipped),
+            )
+
+    def _workbook_index(self, path: str, *, ignore: int | None = None) -> int | None:
+        """The tab already holding ``path`` (same file, however it's spelled), or None."""
+        key = _same_file_key(path)
+        for i, wb in enumerate(self._workbooks):
+            if i != ignore and wb.path and _same_file_key(wb.path) == key:
+                return i
+        return None
 
     def _remove_workbook(self, index: int) -> None:
         if len(self._workbooks) <= 1:
@@ -796,6 +832,15 @@ class JobEditorDialog(QDialog):
             self, "Select Excel file", start, "Excel (*.xlsx *.xlsm)"
         )
         if path:
+            other = self._workbook_index(path, ignore=self._current_wb)
+            if other is not None:
+                QMessageBox.warning(
+                    self,
+                    "Already in this job",
+                    f"{Path(path).name} is already in this job (tab {other + 1}). Choose a "
+                    "different file, or use that tab.",
+                )
+                return
             self.input_excel.setText(path)
             self._discover_sheets()
             self._update_output_example()
@@ -909,9 +954,9 @@ class JobEditorDialog(QDialog):
         for i, wb in enumerate(self._workbooks):
             if not wb.path:
                 return i, "Select the input Excel file."
-            if wb.path.casefold() in seen:
+            if _same_file_key(wb.path) in seen:
                 return i, f"{wb.label} is added twice."
-            seen.add(wb.path.casefold())
+            seen.add(_same_file_key(wb.path))
             included = [row for row in wb.rows if row.include]
             if not included:
                 return i, f"Include at least one sheet of {wb.label}."

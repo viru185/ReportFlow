@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from reportflow.ui.api_client import ApiError
@@ -1993,3 +1995,48 @@ def test_editor_hands_the_template_preview_this_job(qtbot, monkeypatch):
         "to": ["boss@corp.example.com"],
         "cc": ["ops@corp.example.com", "a@corp.example.com", "b@corp.example.com"],
     }
+
+
+def test_add_several_workbooks_at_once_and_skip_duplicates(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: warned.append(a[2])))
+    picked = ["C:/data/Sales.xlsx", "C:/data/Stock.xlsx", "C:/data/Energy.xlsx"]
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileNames", staticmethod(lambda *a, **k: (picked, "Excel"))
+    )
+    dlg = JobEditorDialog(FakeApi(sheets=["Summary"]))
+    qtbot.addWidget(dlg)
+
+    dlg._pick_additional_workbook()  # one dialog, three files
+    # The new job's empty first tab is filled, not left blank.
+    assert [wb.path for wb in dlg._workbooks] == picked
+    assert dlg.workbook_tabs.count() == 3 and not warned
+
+    # Picking files that are already in the job (any spelling) adds nothing and says so.
+    picked = ["c:\\DATA\\sales.xlsx", "C:/data/New.xlsx"]
+    dlg._pick_additional_workbook()
+    assert [Path(wb.path).name for wb in dlg._workbooks][-1] == "New.xlsx"
+    assert len(dlg._workbooks) == 4
+    assert warned and "sales.xlsx" in warned[-1]
+
+
+def test_browse_refuses_a_workbook_another_tab_has(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: warned.append(a[2])))
+    dlg = JobEditorDialog(FakeApi(), _sample_job_dict())  # tab 1: C:/t.xlsx
+    qtbot.addWidget(dlg)
+    dlg._add_workbook("C:/data/Other.xlsx")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("C:\\T.xlsx", "Excel"))
+    )
+    dlg._pick_input_excel()
+    assert dlg.input_excel.text() == "C:/data/Other.xlsx"  # unchanged
+    assert warned and "tab 1" in warned[-1]
