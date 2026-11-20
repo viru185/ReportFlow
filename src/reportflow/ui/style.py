@@ -17,6 +17,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QSizePolicy
 
+from reportflow.core.config.models import stage_label
+
 
 def _asset_url(name: str) -> str:
     """QSS url() for the white checkmark used by checked indicators ('' if missing)."""
@@ -465,6 +467,9 @@ QFrame[card="true"][edge="running"] {{
 QFrame[card="true"][edge="muted"] {{
     border-left: 3px solid #3a3f4d;
 }}
+QFrame[card="true"][paused="true"] {{
+    background: {BG};
+}}
 QToolButton {{
     background: {FIELD_BG};
     color: {TEXT};
@@ -564,19 +569,24 @@ def status_badge(status: str | None, suffix: str = "") -> QLabel:
     return label
 
 
-def stage_badge(stage: str) -> QLabel:
-    """Lifecycle pill: amber TESTING (emails testers) / green LIVE (emails the client)."""
+def stage_badge(stage: str, *, muted: bool = False) -> QLabel:
+    """Lifecycle pill: amber Testing (emails testers) / green Production (emails the client).
+
+    ``muted`` greys it out on a paused job's card, so the whole card reads as asleep.
+    """
     live = stage == "live"
     fg, bg = ("#4ade80", "#14331f") if live else ("#fbbf24", "#3a2c10")
-    label = QLabel("Live" if live else "Testing")
+    if muted:
+        fg, bg = TEXT_MUTED, "#2b2f3a"
+    label = QLabel(stage_label(stage))
     label.setObjectName("jobStage")
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    label.setFixedWidth(76)
+    label.setFixedWidth(96)
     label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     label.setToolTip(
         "Runs email the Production recipients."
         if live
-        else "Runs email only the Test recipients until you click Go live."
+        else "Runs email only the Test recipients until you click Move to production."
     )
     label.setStyleSheet(
         f"color: {fg}; background: {bg}; border-radius: 8px; padding: 2px 10px; font-weight: 600;"

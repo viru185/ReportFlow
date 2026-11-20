@@ -163,7 +163,9 @@ def test_job_card_run_status_and_stage_alignment(qtbot, themed_app, stage, enabl
         job.update(last_status=status, last_run_at=datetime.now().isoformat())
         window.refresh()
         card = window.jobs_layout.itemAt(0).widget()
-        assert card.property("edge") == edge
+        # A paused card dims to a grey edge — unless a manual run is in progress on it.
+        assert card.property("edge") == (edge if enabled or status == "running" else "muted")
+        assert bool(card.property("paused")) == (not enabled)
         assert card.graphicsEffect() is None
         labels = card.findChildren(QLabel)
         assert not any("PAUSED" in label.text() for label in labels)

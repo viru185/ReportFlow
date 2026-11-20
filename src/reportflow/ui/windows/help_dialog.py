@@ -177,17 +177,18 @@ remove it. <b>🗑 Delete</b> removes a whole schedule. Two schedules may not fi
 moment (e.g. Daily 06:00 and Sunday 06:00) — that would run the job twice, so the editor
 refuses it and says why.</p>
 
-<h2 id="email">Email, recipients &amp; the Testing → Live lifecycle</h2>
+<h2 id="email">Email, recipients &amp; the Testing → Production lifecycle</h2>
 <p>Each job has two recipient sets: <b>Production</b> and <b>Test</b>. <i>To</i> is
 required; <i>Cc</i>/<i>Bcc</i> are optional (comma-separated addresses). <b>Who gets
 emailed is decided by the job's stage:</b></p>
 <ul>
-<li><b>TESTING</b> (every new job starts here, amber pill on the card) — <b>every</b> run,
+<li><b>Testing</b> (every new job starts here, amber pill on the card) — <b>every</b> run,
     manual or scheduled, emails only the <i>Test</i> recipients, subject prefixed
     <code>[TEST]</code>. Verify the report internally as long as you need.</li>
-<li><b>LIVE</b> (green pill) — runs email the <i>Production</i> recipients. Promote with the
-    card's <b>✓ Go live</b> button; the confirmation shows exactly who will receive future
-    reports. A live job can be moved back to Testing in the job editor's Email tab.</li>
+<li><b>Production</b> (green pill) — runs email the <i>Production</i> recipients. Promote
+    with the card's <b>✓ Move to production</b> button; the confirmation shows exactly who will
+    receive future reports. A job in Production can be moved back to Testing in the job
+    editor's Email tab.</li>
 <li>Failures never send email; check the logs instead.</li>
 <li>Emails attach the output Excel and all per-sheet PDFs, and show the run's duration.</li>
 <li>Every run's history entry shows an <b>email:</b> line — sent to how many recipients,
@@ -212,7 +213,8 @@ the default template and the run shows a warning.</p>
 <p>Each job card has two run buttons; the job's stage answers "who gets the email":</p>
 <ul>
 <li><b>▶ Run</b> — builds the report and emails it per the stage: the Test recipients while
-    the job is in <b>Testing</b>, the Production recipients once it is <b>Live</b>.</li>
+    the job is in <b>Testing</b>, the Production recipients once it is in
+    <b>Production</b>.</li>
 <li><b>👁 Build only</b> — builds and verifies the report (checks that PI DataLink / your data
     source produced real values) but <b>sends no email at all</b>.</li>
 </ul>

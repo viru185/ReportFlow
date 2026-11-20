@@ -25,7 +25,7 @@ from pathlib import Path
 from loguru import logger
 
 from reportflow.core import paths
-from reportflow.core.config.models import AppConfig, JobConfig
+from reportflow.core.config.models import AppConfig, JobConfig, stage_label
 from reportflow.core.email import send_report
 from reportflow.core.email.render import date_context, render_subject
 from reportflow.core.ipc import (
@@ -444,7 +444,7 @@ class Launcher:
         context = {
             "job_name": job.name,
             "status": str(record.status),
-            "stage": "Testing" if job.stage == "testing" else "Live",
+            "stage": stage_label(job.stage),
             "run_id": record.run_id,
             "started_at": record.started_at,
             "finished_at": record.finished_at,

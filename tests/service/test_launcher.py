@@ -470,3 +470,19 @@ def test_missing_linked_template_is_a_warning_not_a_silent_fallback(tmp_path, mo
 
     assert rec.status is RunStatus.SUCCESS
     assert any("email template not found" in w for w in rec.warnings)
+
+
+def test_stage_placeholder_says_production_for_a_promoted_job(tmp_path):
+    """The stored value stays "live"; what people read is "Production" (0.12)."""
+    from reportflow.core.state import RunRecord
+
+    job = _job(tmp_path, stage="live")
+    record = RunRecord(
+        run_id="r1",
+        job_name="daily",
+        trigger=RunTrigger.MANUAL,
+        status=RunStatus.SUCCESS,
+        started_at="2026-11-20T06:00:00",
+    )
+    assert Launcher._email_context(job, record)["stage"] == "Production"
+    assert Launcher._email_context(_job(tmp_path), record)["stage"] == "Testing"

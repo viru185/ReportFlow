@@ -147,6 +147,16 @@ class TestSettings(_Base):
     developer_bundle_recipients: list[EmailStr] = Field(default_factory=list)
 
 
+# What users see for JobConfig.stage. The stored values stay "testing"/"live", so configs,
+# imports and the API are unchanged. "Live" read as "running right now" — misleading on a
+# paused job — so the promoted stage is shown as "Production" (owner's call, 0.12).
+STAGE_LABELS = {"testing": "Testing", "live": "Production"}
+
+
+def stage_label(stage: str) -> str:
+    return STAGE_LABELS.get(stage, stage.title())
+
+
 UnselectedSheets = Literal["remove", "hide", "keep"]
 
 

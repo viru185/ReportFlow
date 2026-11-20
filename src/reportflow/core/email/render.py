@@ -42,7 +42,7 @@ PLACEHOLDERS: list[tuple[str, str, str, str]] = [
     ),
     ("Run", "Job name", "{{ job_name }}", "the job's name"),
     ("Run", "Status", "{{ status }}", "the run's outcome"),
-    ("Run", "Stage", "{{ stage }}", "Testing or Live"),
+    ("Run", "Stage", "{{ stage }}", "Testing or Production"),
     ("Run", "Started", "{{ started_at }}", "when the run started"),
     ("Run", "Finished", "{{ finished_at }}", "when the run finished"),
     ("Run", "Duration (s)", "{{ duration_seconds }}", "how long the run took, in seconds"),

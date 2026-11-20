@@ -350,11 +350,11 @@ class JobEditorDialog(QDialog):
         # job exposes it so a live job can be moved back to Testing.
         self.stage = QComboBox()
         self.stage.addItem("Testing — every run emails the Test recipients", "testing")
-        self.stage.addItem("Live — runs email the Production recipients", "live")
+        self.stage.addItem("Production — runs email the Production recipients", "live")
         self.stage.setToolTip(
             "Testing: every run (manual or scheduled) emails only the Test recipients, so "
-            "you can verify the report internally. Live: runs email the Production "
-            "recipients. Promote from the job card's 'Go live' button."
+            "you can verify the report internally. Production: runs email the Production "
+            "recipients. Promote from the job card's 'Move to production' button."
         )
         if not self._editing:
             self.stage.setEnabled(False)  # new jobs always start in Testing

@@ -468,7 +468,7 @@ def test_main_window_testing_card_buttons_and_pill(qtbot):
     # Daily single-click actions + the promote button; nothing else visible on the card.
     assert any("Run" in t for t in labels)
     assert any("Build only" in t for t in labels)
-    assert any("Go live" in t for t in labels)
+    assert any("Move to production" in t for t in labels)
     assert len(labels) == 3  # everything occasional lives behind ⋯
     assert any(w.text() == "Testing" for w in win.findChildren(QLabel))
     # The last-run status lives on the card edge + detail line, not in a pill.
@@ -553,11 +553,12 @@ def test_main_window_live_card_hides_go_live(qtbot):
     win = MainWindow(FakeApi(jobs=[live]))
     qtbot.addWidget(win)
     labels = [b.text() for b in win.findChildren(QPushButton)]
-    assert not any("Go live" in t for t in labels)
-    assert any(w.text() == "Live" for w in win.findChildren(QLabel))
+    assert not any("Move to production" in t for t in labels)
+    assert any(w.text() == "Production" for w in win.findChildren(QLabel))
 
 
-def test_main_window_paused_card_keeps_result_visible_and_has_resume(qtbot):
+def test_main_window_paused_card_is_dimmed_with_no_extra_status(qtbot):
+    """Owner (0.12): a paused job needs a visual cue — dimmed/muted — not another pill."""
     from PySide6.QtWidgets import QLabel, QPushButton
 
     from reportflow.ui.windows.main_window import MainWindow
@@ -568,16 +569,20 @@ def test_main_window_paused_card_keeps_result_visible_and_has_resume(qtbot):
 
     frames = _card_frames(win)
     assert frames and frames[0].graphicsEffect() is None
-    assert frames[0].property("edge") == "success"
+    assert frames[0].property("paused") is True and frames[0].property("edge") == "muted"
+    name = next(w for w in frames[0].findChildren(QLabel) if w.text() == "daily")
+    assert name.property("muted") is True
+    stage = frames[0].findChild(QLabel, "jobStage")
+    assert stage.text() == "Testing" and "#9aa1b0" in stage.styleSheet()  # greyed, not amber
     labels = [w.text() for w in win.findChildren(QLabel)]
     assert not any("PAUSED" in t for t in labels)
-    assert any("last: success" in t for t in labels)
+    assert any("last: success" in t for t in labels)  # the last result is still readable
     buttons = [b.text() for b in win.jobs_container.findChildren(QPushButton)]
     assert any("Resume" in t for t in buttons)
-    # Pause disappears from the menu; Go live stays reachable there (Resume took its slot).
+    # Pause disappears from the menu; promotion stays reachable there (Resume took its slot).
     texts = [a.text() for a in _card_menu(win).actions() if a.text()]
     assert "⏸ Pause" not in texts
-    assert "✓ Go live" in texts
+    assert "✓ Move to production" in texts
 
 
 def test_main_window_enabled_card_not_dimmed_and_has_pause(qtbot):
@@ -1190,7 +1195,7 @@ def test_editor_stage_and_refresh_wait(qtbot):
     dlg = JobEditorDialog(FakeApi())
     qtbot.addWidget(dlg)
 
-    # New jobs are locked to Testing — promotion happens from the card's Go live.
+    # New jobs are locked to Testing — promotion happens from the card's Move to production.
     assert dlg.stage.currentData() == "testing"
     assert not dlg.stage.isEnabled()
 

@@ -338,9 +338,15 @@ class MainWindow(QMainWindow):
         running = (job.get("last_status") or "") == "running"
 
         # Scheduling and run status are independent: paused jobs can still run manually.
+        # A paused card is dimmed as a whole — muted text, stage pill and grey edge — with no
+        # extra status pill (owner's call, 0.12); a manual run on it still shows amber.
+        paused = not enabled
         card = _JobCard()
         card.setProperty("card", True)
-        card.setProperty("edge", status_edge(job.get("last_status")))
+        card.setProperty("paused", paused)
+        card.setProperty(
+            "edge", "muted" if paused and not running else status_edge(job.get("last_status"))
+        )
         card.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         card.setAccessibleName(f"Job {job.get('name', '')}")
         card.setToolTip("Double-click to edit. Right-click for job options.")
@@ -359,6 +365,9 @@ class MainWindow(QMainWindow):
         name_font = name.font()
         name_font.setBold(True)
         name.setFont(name_font)
+        if paused:
+            name.setProperty("muted", True)
+            name.setToolTip("Paused — scheduled runs are off; ▸ Resume turns them back on.")
         # Ignored size policy permits wrapping, but it needs a stretch allocation:
         # a trailing spacer previously took all the width and made the name disappear.
         name_row.addWidget(name, 1)
@@ -397,7 +406,9 @@ class MainWindow(QMainWindow):
             # Elapsed time rides the dashboard's existing refresh timer.
             badge = status_badge("running", f"· {_elapsed_text(job.get('last_run_at'))}")
             lay.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        lay.addWidget(stage_badge(job.get("stage", "testing")), 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(
+            stage_badge(job.get("stage", "testing"), muted=paused), 0, Qt.AlignmentFlag.AlignVCenter
+        )
 
         def _btn(
             label: str, tip: str, slot, *, accent: bool = False, active: bool = True
@@ -420,7 +431,7 @@ class MainWindow(QMainWindow):
         run_tip = (
             "Builds the report and emails the TEST recipients (job is in Testing)."
             if testing
-            else "Builds the report and emails the Production recipients (job is Live)."
+            else "Builds the report and emails the Production recipients (job is in Production)."
         )
         lay.addWidget(
             _btn(
@@ -451,7 +462,7 @@ class MainWindow(QMainWindow):
         elif testing:
             lay.addWidget(
                 _btn(
-                    "✓ Go live",
+                    "✓ Move to production",
                     "Promote this job: future runs (incl. scheduled) email the Production "
                     "recipients instead of the Test recipients.",
                     lambda *_: self._go_live(job),
@@ -473,7 +484,7 @@ class MainWindow(QMainWindow):
         if testing and not enabled:
             # Promote is normally a visible button; on a paused card Resume takes that
             # slot, so keep Go live reachable here.
-            menu.addAction("✓ Go live", lambda *_, j=job: self._go_live(j))
+            menu.addAction("✓ Move to production", lambda *_, j=job: self._go_live(j))
         if enabled:
             menu.addAction("⏸ Pause", lambda *_: self._set_enabled(job_name, False))
         menu.addSeparator()
@@ -527,7 +538,7 @@ class MainWindow(QMainWindow):
         if create:
             self.statusBar().showMessage(
                 f"Job {payload.get('name')!r} created in Testing — click ▶ Run to build it "
-                "and email the test recipients; Go live when you're happy with it."
+                "and email the test recipients; Move to production when you're happy with it."
             )
 
     def _delete_job(self, name: str) -> None:
@@ -560,8 +571,8 @@ class MainWindow(QMainWindow):
         recipients = ", ".join(job.get("prod_recipients") or []) or "the Production recipients"
         confirm = QMessageBox.question(
             self,
-            "Go live",
-            f"Go live with {name!r}?\n\n"
+            "Move to production",
+            f"Move {name!r} to production?\n\n"
             f"Future runs — including scheduled ones — will email:\n{recipients}\n\n"
             "You can move it back to Testing from the job editor's Email tab.",
         )
@@ -570,10 +581,12 @@ class MainWindow(QMainWindow):
         try:
             self._api.set_job_stage(name, "live")
         except ApiError as e:
-            QMessageBox.warning(self, "Go live failed", str(e))
+            QMessageBox.warning(self, "Move to production failed", str(e))
             return
         logger.info("Job {!r} promoted to live", name)
-        self.statusBar().showMessage(f"{name} is now LIVE — future runs email production.")
+        self.statusBar().showMessage(
+            f"{name} is now in Production — future runs email the Production recipients."
+        )
         self.refresh()
 
     def _set_enabled(self, name: str, enabled: bool) -> None:
