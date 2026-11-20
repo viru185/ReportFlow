@@ -85,6 +85,13 @@ Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppStderr ""{
 Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateFiles 1"; Flags: runhidden
 Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 10485760"; Flags: runhidden
 Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} Start SERVICE_AUTO_START"; Flags: runhidden
+; A changed logon account only applies when Windows starts the service again, and the service
+; can't restart itself from inside its own process tree. After an in-app account change it
+; exits with code 75: NSSM turns that into a stop with an error, and service recovery (enabled
+; for stops with an error) starts the service again — under the new account.
+Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppExit 75 Exit"; Flags: runhidden
+Filename: "{sys}\sc.exe"; Parameters: "failure {#MyServiceName} reset= 86400 actions= restart/5000/restart/5000/restart/5000"; Flags: runhidden
+Filename: "{sys}\sc.exe"; Parameters: "failureflag {#MyServiceName} 1"; Flags: runhidden
 ; When the admin supplied a service account, run the service (and its Excel workers) as that
 ; user so VSTO/Windows-auth add-ins like PI DataLink load. NSSM also grants the logon right.
 Filename: "{app}\nssm\nssm.exe"; Parameters: "{code:NssmObjectNameArgs}"; Flags: runhidden; Check: HasServiceAccount

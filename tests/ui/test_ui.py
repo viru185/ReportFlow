@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from reportflow.ui.api_client import ApiError
 
 
@@ -1456,9 +1458,51 @@ def test_settings_service_account_prefill_and_apply(qtbot, monkeypatch):
     assert dlg.account_user.text() == "CORP\\pi_user"
 
     dlg.account_password.setText("pw")
+    monkeypatch.setattr("reportflow.ui.windows.settings_dialog._RESTART_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr("reportflow.ui.windows.settings_dialog._RESTART_POLL_MS", 20)
     dlg._apply_service_account()
     assert api.applied_account == ("CORP\\pi_user", "pw")
     assert dlg.account_password.text() == ""  # cleared after apply
+
+
+@pytest.mark.parametrize("comes_back", [True, False])
+def test_settings_service_account_waits_for_the_restart(qtbot, monkeypatch, comes_back):
+    """The service restarts to switch accounts: say when it's back as the new account, or
+    that it isn't (field 0.11.4: it silently never restarted)."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows import settings_dialog as sd
+
+    monkeypatch.setattr(sd, "_RESTART_WAIT_SECONDS", 0.5)
+    monkeypatch.setattr(sd, "_RESTART_POLL_MS", 20)
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    said = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a: said.append(a[2])))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: said.append(a[2])))
+
+    api = FakeApi()
+    dlg = sd.SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    polls = []
+
+    def status():
+        polls.append(1)
+        if len(polls) == 1:
+            raise ApiError("service not reachable")  # down while Windows restarts it
+        account = "NMC\\SVC_PI" if comes_back else "NMC\\old_account"
+        return {"service_account": account, "service_account_is_system": False}
+
+    monkeypatch.setattr(api, "system_status", status)
+    dlg.account_user.setText(".\\svc_pi")  # comes back as NMC\SVC_PI: user part matches
+    dlg.account_password.setText("pw")
+    dlg._apply_service_account()
+
+    if comes_back:
+        assert "now running as" in said[-1]
+    else:
+        assert "hasn't come back" in said[-1] and "Restart the 'ReportFlow' service" in said[-1]
 
 
 def test_settings_service_account_needs_both_fields(qtbot, monkeypatch):

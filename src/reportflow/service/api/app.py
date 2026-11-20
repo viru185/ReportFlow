@@ -286,6 +286,14 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         )
 
         logger.info("API: service-account change requested")  # never log the credentials
+        busy = sorted(svc().launcher.inflight_job_names())
+        if busy:
+            # Switching accounts restarts the service, which would cut these runs off.
+            raise HTTPException(
+                status_code=409,
+                detail=f"Wait for the running job(s) to finish first: {', '.join(busy)}. "
+                "Changing the account restarts the service.",
+            )
         try:
             validate_credentials(update.user, update.password)
             account = apply_service_account(update.user, update.password)

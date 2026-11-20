@@ -80,7 +80,7 @@ def test_apply_builds_nssm_objectname_and_restarts(monkeypatch, tmp_path):
         return _Result()
 
     monkeypatch.setattr(sa.subprocess, "run", _run)
-    monkeypatch.setattr(sa, "_schedule_restart", lambda n, s: calls.setdefault("restart", True))
+    monkeypatch.setattr(sa, "schedule_restart", lambda: calls.setdefault("restart", True))
 
     account = sa.apply_service_account("corp\\pi_user", "secret")
     assert account == "corp\\pi_user"
@@ -103,6 +103,44 @@ def test_apply_raises_on_nssm_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(sa.subprocess, "run", lambda *a, **k: _Result())
     with pytest.raises(sa.ServiceAccountError):
         sa.apply_service_account("corp\\pi_user", "secret")
+
+
+def test_apply_explains_missing_admin_rights(monkeypatch, tmp_path):
+    """Field 17 Nov: once the service ran as an ordinary user, nssm said only
+    "Can't open service!" — say who lacks the right and how to do it instead."""
+    nssm = tmp_path / "nssm.exe"
+    nssm.write_bytes(b"x")
+    monkeypatch.setattr(sa, "nssm_path", lambda: nssm)
+    monkeypatch.setattr(sa, "current_account", lambda: {"account": "NMC\\19081892"})
+
+    class _Result:
+        returncode = 1
+        stdout = "Can't open service!"
+        stderr = ""
+
+    monkeypatch.setattr(sa.subprocess, "run", lambda *a, **k: _Result())
+    with pytest.raises(sa.ServiceAccountError, match=r"running as NMC\\19081892, which isn't"):
+        sa.apply_service_account("corp\\pi_user", "secret")
+
+
+def test_restart_exits_with_the_code_windows_recovery_restarts(monkeypatch):
+    """The service can't restart itself from inside its own process tree (NSSM kills the
+    tree on stop), so it exits with RESTART_EXIT_CODE and service recovery starts it again."""
+    exits = []
+    monkeypatch.setattr(sa.os, "_exit", exits.append)
+    timer = sa.schedule_restart(delay=0.01)
+    timer.join(2)
+    assert exits == [sa.RESTART_EXIT_CODE] == [75]
+
+
+def test_installer_maps_the_restart_code_to_a_service_restart():
+    """The exit code only restarts the service if the installer wires it up."""
+    iss = (
+        Path(__file__).resolve().parents[2] / "packaging" / "innosetup" / "reportflow.iss"
+    ).read_text(encoding="utf-8")
+    assert f"AppExit {sa.RESTART_EXIT_CODE} Exit" in iss
+    assert "failure {#MyServiceName} reset= 86400 actions= restart/" in iss
+    assert "failureflag {#MyServiceName} 1" in iss
 
 
 # -- endpoints ------------------------------------------------------------------
@@ -147,6 +185,20 @@ def test_set_service_account_applies_when_valid(client, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True and body["account"] == "CORP\\pi_user"
+
+
+def test_set_service_account_waits_for_running_jobs(client, monkeypatch):
+    applied = []
+    monkeypatch.setattr(sa, "validate_credentials", lambda u, p: None)
+    monkeypatch.setattr(sa, "apply_service_account", lambda u, p: applied.append(u) or u)
+    launcher = client.app.state.svc.launcher
+    launcher._inflight["r1"] = "Daily Energy Report"
+    try:
+        resp = client.post("/system/service-account", json={"user": "CORP\\u", "password": "p"})
+    finally:
+        launcher._inflight.pop("r1")
+    assert resp.status_code == 409 and "Daily Energy Report" in resp.json()["detail"]
+    assert applied == []  # nothing was changed
 
 
 def test_set_service_account_never_logs_password(client, monkeypatch):

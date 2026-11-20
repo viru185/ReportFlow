@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
+from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -15,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -24,6 +27,16 @@ from PySide6.QtWidgets import (
 
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.widgets import scroll_page, space_layout
+
+# After an account change the service exits and Windows starts it again under the new
+# logon; wait this long for it to answer as that account before telling the user.
+_RESTART_WAIT_SECONDS = 60.0
+_RESTART_POLL_MS = 2000
+
+
+def _user_part(account: str) -> str:
+    # A local ".\user" comes back as "MACHINE\user": compare the user name only.
+    return account.rsplit("\\", 1)[-1].strip().casefold()
 
 
 def _split_csv(text: str) -> list[str]:
@@ -311,6 +324,10 @@ class SettingsDialog(QDialog):
             "A password is currently stored." if pw_set else "No password stored yet."
         )
 
+        self._show_service_account()
+        self._show_pi_trust()
+
+    def _show_service_account(self) -> None:
         try:
             status = self._api.system_status()
         except ApiError:
@@ -325,7 +342,6 @@ class SettingsDialog(QDialog):
         else:
             self.service_account.setText(account)
             self.service_account.setStyleSheet("")
-        self._show_pi_trust()
 
     def _show_pi_trust(self) -> None:
         try:
@@ -401,12 +417,58 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Service account", str(e))
             return
         self.account_password.clear()
-        QMessageBox.information(
-            self,
-            "Service account",
-            f"Applied — the service is restarting as {resp.get('account', user)}.\n\n"
-            "Give it a few seconds, then run a Build only to confirm PI DataLink connects.",
+        account = str(resp.get("account") or user)
+        if self._wait_for_account(account):
+            self._show_service_account()
+            self._show_pi_trust()
+            QMessageBox.information(
+                self,
+                "Service account",
+                f"The service is now running as {account}.\n\n"
+                "Run a Build only to confirm PI DataLink connects.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Service account",
+                f"The account was changed to {account}, but the service hasn't come back "
+                "as that account yet.\n\nRestart the 'ReportFlow' service (Windows Services) "
+                "to finish switching.",
+            )
+
+    def _wait_for_account(self, account: str) -> bool:
+        """Poll the service until it answers as ``account`` — True — or the wait runs out."""
+        progress = QProgressDialog(
+            f"Restarting the ReportFlow service as {account}…", "", 0, 0, self
         )
+        progress.setWindowTitle("Service account")
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.show()
+        deadline = time.monotonic() + _RESTART_WAIT_SECONDS
+        want = _user_part(account)
+        loop = QEventLoop(self)
+        outcome = {"ok": False}
+
+        def poll() -> None:
+            try:
+                running = str(self._api.system_status().get("service_account") or "")
+            except ApiError:
+                running = ""  # down while Windows restarts it — keep waiting
+            if running and _user_part(running) == want:
+                outcome["ok"] = True
+                loop.quit()
+            elif time.monotonic() >= deadline:
+                loop.quit()
+
+        # The first poll comes a full interval later: the service only exits after ~1.5 s.
+        timer = QTimer(self)
+        timer.timeout.connect(poll)
+        timer.start(_RESTART_POLL_MS)
+        loop.exec()
+        timer.stop()
+        progress.close()
+        return outcome["ok"]
 
     def _save(self) -> None:
         sections: dict[str, Any] = {

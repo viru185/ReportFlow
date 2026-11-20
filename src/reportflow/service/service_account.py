@@ -3,8 +3,17 @@
 PI DataLink and other VSTO / Windows-integrated add-ins cannot load under LocalSystem
 (the service shows as ``COMPUTERNAME$``), so the operator must run the service as a real
 user that has the add-in installed and data access. The service is already privileged
-(LocalSystem), so it can reconfigure its own NSSM ``ObjectName`` and restart itself — no
-UAC prompt, no reinstall.
+(LocalSystem), so it can reconfigure its own NSSM ``ObjectName`` — no UAC prompt, no
+reinstall.
+
+A new logon account only takes effect when Windows starts the service again. The service
+cannot restart itself from inside its own process tree: NSSM kills that tree on stop (and
+the old ``cmd … timeout`` helper also died without a console), so the 0.11 restart never
+happened in the field. Instead the service exits with :data:`RESTART_EXIT_CODE`; the
+installer maps that code to "stop the service" (``nssm set ReportFlow AppExit 75 Exit``)
+and enables service recovery for stops with an error (``sc failure`` + ``sc failureflag``),
+so Windows starts the service again — now under the new account. No rights are needed at
+runtime, which also covers a service already running as an ordinary user.
 
 Nothing here ever logs the password.
 """
@@ -13,6 +22,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 from loguru import logger
@@ -26,9 +36,10 @@ _LOGON32_PROVIDER_DEFAULT = 0
 
 _SERVICE_NAME = "ReportFlow"
 
-_DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
-    subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-)
+# Mapped by the installer to "stop the service so Windows recovery starts it again".
+RESTART_EXIT_CODE = 75
+# Long enough for the API's reply to reach the app before the process goes away.
+_RESTART_DELAY_SECONDS = 1.5
 
 
 class ServiceAccountError(Exception):
@@ -110,23 +121,33 @@ def apply_service_account(user: str, password: str, *, service_name: str = _SERV
     if result.returncode != 0:
         # stderr may name the failing right/account but not the password.
         detail = (result.stderr or result.stdout or "").strip()
+        if "can't open service" in detail.lower() or "access is denied" in detail.lower():
+            # Changing a service's account needs administrator rights. A service that already
+            # runs as an ordinary user doesn't have them (field: "Can't open service!").
+            raise ServiceAccountError(
+                f"ReportFlow is running as {current_account()['account']}, which isn't "
+                "allowed to change the service's account. Do it as an administrator: run the "
+                "ReportFlow installer again (it asks for the service account) or "
+                "scripts\\set-service-account.ps1."
+            )
         raise ServiceAccountError(f"nssm could not set the service account: {detail}")
 
-    logger.info("Service account set to {!r}; scheduling service restart", account)
-    _schedule_restart(nssm, service_name)
+    logger.info("Service account set to {!r}; restarting the service", account)
+    schedule_restart()
     return account
 
 
-def _schedule_restart(nssm: Path, service_name: str) -> None:
-    """Restart the service via a detached shell so this (soon-to-be-killed) process's HTTP
-    response flushes first. The 2s delay lets the API answer before NSSM stops us."""
-    comspec = os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")
-    command = f'timeout /t 2 /nobreak >nul & "{nssm}" restart {service_name}'
-    subprocess.Popen(  # noqa: S603 — fixed, trusted arguments
-        [comspec, "/c", command],
-        creationflags=_DETACHED | getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        close_fds=True,
-    )
+def schedule_restart(delay: float = _RESTART_DELAY_SECONDS) -> threading.Timer:
+    """Exit with :data:`RESTART_EXIT_CODE` after ``delay`` seconds (see module docstring)."""
+    timer = threading.Timer(delay, _exit_for_restart)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def _exit_for_restart() -> None:
+    logger.info("Exiting with code {} so Windows restarts the service", RESTART_EXIT_CODE)
+    os._exit(RESTART_EXIT_CODE)  # noqa: SLF001 — immediate, on purpose: no lingering threads
 
 
 def current_account() -> dict[str, object]:
