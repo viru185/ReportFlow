@@ -20,3 +20,13 @@ def _isolated_ui(tmp_path, monkeypatch):
         QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "qsettings")
     )
     monkeypatch.setattr(feedback, "confirm_discard", lambda *_a, **_k: True)
+    yield
+    # A popover left open would make later windows behave as if a menu were open (the
+    # dashboard defers its card rebuild while any popup shows).
+    from PySide6.QtWidgets import QApplication
+
+    for _ in range(10):
+        popup = QApplication.activePopupWidget()
+        if popup is None:
+            break
+        popup.close()

@@ -62,22 +62,28 @@ class Popover(QFrame):
         self._anchor: QWidget | None = None
         self._return_focus: QWidget | None = None
 
-    def open_at(self, anchor: QWidget, *, focus: QWidget | None = None) -> None:
-        """Show under ``anchor`` (above it when there's no room), inside the screen."""
+    def open_at(
+        self, anchor: QWidget, *, focus: QWidget | None = None, align: str = "left"
+    ) -> None:
+        """Show under ``anchor`` (above it when there's no room), inside the screen.
+        ``align="right"`` lines its right edge up with the anchor's (for buttons on the right
+        of a form, so the popover opens towards the form instead of off its edge)."""
         self._anchor = anchor
-        self._return_focus = anchor
+        if self._return_focus is None:
+            self._return_focus = anchor
         self.adjustSize()
-        self.move(self._position(anchor))
+        self.move(self._position(anchor, align))
         self.show()
         self.raise_()
         self.activateWindow()
         if focus is not None:
             focus.setFocus(Qt.FocusReason.PopupFocusReason)
 
-    def _position(self, anchor: QWidget) -> QPoint:
-        size = self.sizeHint().expandedTo(self.minimumSize())
-        below = anchor.mapToGlobal(QPoint(0, anchor.height() + 6))
-        above = anchor.mapToGlobal(QPoint(0, -size.height() - 6))
+    def _position(self, anchor: QWidget, align: str = "left") -> QPoint:
+        size = self.size().expandedTo(self.minimumSize())
+        x0 = anchor.width() - size.width() if align == "right" else 0
+        below = anchor.mapToGlobal(QPoint(x0, anchor.height() + 6))
+        above = anchor.mapToGlobal(QPoint(x0, -size.height() - 6))
         screen = QGuiApplication.screenAt(below) or anchor.screen()
         area: QRect = screen.availableGeometry() if screen else QRect(0, 0, 10_000, 10_000)
         point = below if below.y() + size.height() <= area.bottom() else above

@@ -584,3 +584,34 @@ def test_job_with_an_unknown_email_group_is_refused(client):
     job["prod"] = {"to_groups": ["Nobody"]}
     resp = c.post("/jobs", json=job)
     assert resp.status_code == 400 and "doesn't exist" in resp.json()["detail"]
+
+
+def test_send_test_email_validates_and_reports_plainly(client, monkeypatch):
+    c, _ = client
+    assert (
+        c.post("/email/send-test", json={"to": "not-an-address", "template": "x"}).status_code
+        == 422
+    )
+    sent = []
+    monkeypatch.setattr(
+        "reportflow.core.email.sender.send_template_test",
+        lambda config, **kw: sent.append(kw),
+    )
+    resp = c.post(
+        "/email/send-test",
+        json={
+            "to": "me@corp.example.com",
+            "template": "<p>x</p>",
+            "job_name": "daily",
+            "stage": "live",
+        },
+    )
+    assert resp.status_code == 200 and sent[0]["is_test"] is False
+    assert sent[0]["to"] == "me@corp.example.com"
+
+    def refuse(config, **kw):
+        raise ValueError("The email server isn't set up yet — File → Settings → Email.")
+
+    monkeypatch.setattr("reportflow.core.email.sender.send_template_test", refuse)
+    resp = c.post("/email/send-test", json={"to": "me@corp.example.com", "template": "x"})
+    assert resp.status_code == 400 and "isn't set up" in resp.json()["detail"]

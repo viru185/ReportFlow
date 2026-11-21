@@ -1294,6 +1294,10 @@ class JobEditorDialog(FormDialog):
             example += "\n⚠ A second run on the same day overwrites the first — add {time}."
         self.output_example.setText(example)
 
+    def _test_email_sender(self) -> Callable[[dict], object] | None:
+        make = getattr(self._api, "test_email_sender", None)
+        return make() if callable(make) else None
+
     def _edit_template(self) -> None:
         existing = self._template_html or ""
         link = self._template_link
@@ -1313,6 +1317,8 @@ class JobEditorDialog(FormDialog):
             linked_path=link,
             check_path=self._api.check_email_template,
             preview_job=self._preview_job(),
+            send_test=self._test_email_sender(),
+            addresses=self._known_addresses,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return

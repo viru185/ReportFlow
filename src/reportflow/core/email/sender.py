@@ -8,21 +8,26 @@ BCC is passed only in the SMTP envelope, never as a header.
 from __future__ import annotations
 
 import mimetypes
+import re
 import smtplib
 from email.message import EmailMessage
+from html import escape
 from pathlib import Path
 from typing import Any
 
+from jinja2 import TemplateError
 from loguru import logger
 
 from reportflow.core import secrets
 from reportflow.core.config.models import AppConfig, JobConfig, SmtpConfig
 from reportflow.core.email.recipients import ResolvedRecipients, resolve
 from reportflow.core.email.render import (
+    explain_template_error,
     final_subject,
     html_to_text,
     render_email,
     resolve_template,
+    sample_context,
 )
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 
@@ -141,6 +146,56 @@ def send_message(smtp: SmtpConfig, message: EmailMessage, envelope_to: list[str]
             server.quit()
         except Exception:  # noqa: BLE001
             server.close()
+
+
+_TEST_NOTE = (
+    '<p style="font-family:Segoe UI,Arial,sans-serif;font-size:12px;color:#555;background:#f3f4f6;'
+    'border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;margin:0 0 12px 0;">'
+    "This is a test of the email template for <b>{job}</b>, sent from ReportFlow with sample "
+    "values. The report files are not attached.</p>"
+)
+
+
+def send_template_test(
+    config: AppConfig,
+    *,
+    to: str,
+    template: str,
+    job_name: str,
+    subject: str | None = None,
+    is_test: bool = True,
+    sheet_names: list[str] | None = None,
+    workbooks: list[str] | None = None,
+) -> None:
+    """Email one sample of a job's message to ``to``: the template and subject as they are
+    in the editor, filled with the same sample values as its preview, ``[TEST]`` in the
+    subject and a note on top. Raises ValueError for anything the user can fix (no email
+    server set up, a broken template); other errors come from the mail server."""
+    if not config.smtp.host:
+        raise ValueError("The email server isn't set up yet — File → Settings → Email.")
+    context = sample_context(
+        is_test=is_test,
+        job_name=job_name,
+        subject=subject,
+        sheet_names=sheet_names,
+        workbooks=workbooks,
+    )
+    try:
+        html = render_email(template, context)
+    except TemplateError as e:
+        raise ValueError(f"The template has an error: {explain_template_error(str(e))}") from e
+    note = _TEST_NOTE.format(job=escape(job_name or "this job"))
+    body = re.search(r"<body[^>]*>", html, flags=re.IGNORECASE)
+    html = html[: body.end()] + note + html[body.end() :] if body else note + html
+    title = final_subject(subject, job_name or "Job", context, is_test=False)
+    msg = EmailMessage()
+    msg["From"] = config.smtp.from_address or config.smtp.username or "reportflow@localhost"
+    msg["To"] = to
+    msg["Subject"] = f"[TEST] {title}"
+    msg.set_content(html_to_text(html))
+    msg.add_alternative(html, subtype="html")
+    send_message(config.smtp, msg, [to])
+    logger.info("Sent a template test email for {!r} to {}", job_name, to)
 
 
 def send_report(

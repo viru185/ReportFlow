@@ -1,10 +1,12 @@
-"""The "Insert placeholder" picker — one small window per field that takes placeholders.
+"""The "Insert placeholder" picker — a popover under the field's button.
 
 Every field that understands placeholders (the email subject, the email body, the output
-file name) gets an "Insert placeholder" button. It opens a picker listing exactly the
+file name) gets an "Insert placeholder" button. It opens a popover listing exactly the
 placeholders that field supports — searchable, grouped, each with what it does and an example
 of what it becomes. Double-click a row, press Enter or click Insert to put it at the cursor;
-the picker stays open, so placeholders can be added one by one.
+the popover stays open, so placeholders can be added one by one, and closes on Esc or a click
+anywhere else (no title bar, no Done button — 0.14). Its list is rebuilt on every open, so
+examples such as {job} show the job's current name.
 
 The lists come from the single sources of truth: ``core.email.render.PLACEHOLDERS`` for email
 and ``core.output_names.OUTPUT_NAME_TOKENS`` for file names — the Help guide uses them too.
@@ -16,10 +18,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QKeyEvent, QResizeEvent, QShowEvent
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QKeyEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -34,7 +35,7 @@ from PySide6.QtWidgets import (
 from reportflow.core.email.render import PLACEHOLDERS, render_subject, sample_context
 from reportflow.core.output_names import OUTPUT_NAME_TOKENS, expand_output_name
 from reportflow.ui.feedback import InlineNotice
-from reportflow.ui.kit import Button, ListWidget
+from reportflow.ui.kit import Button, ListWidget, Popover
 
 Target = QLineEdit | QPlainTextEdit | QTextEdit
 # A field, or a function returning the field to use now (e.g. the current editor tab).
@@ -146,8 +147,10 @@ class _Row(QFrame):
         row.addWidget(self.insert_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
 
-class PlaceholderPicker(QDialog):
-    """A tool window that inserts placeholders into ``target`` at its cursor."""
+class PlaceholderPicker(Popover):
+    """A popover that inserts placeholders into ``target`` at its cursor."""
+
+    WIDTH, HEIGHT = 460, 470
 
     def __init__(
         self,
@@ -158,19 +161,19 @@ class PlaceholderPicker(QDialog):
         parent: QWidget | None = None,
         read_only_message: str = "This field can't be edited right now.",
     ) -> None:
-        super().__init__(parent or _resolve(target).window())
+        super().__init__(parent or _resolve(target).window(), name="placeholderPicker")
         self._read_only_message = read_only_message
-        self.setObjectName("placeholderPicker")
-        self.setWindowFlag(Qt.WindowType.Tool, True)
-        self.setWindowTitle(f"Insert placeholder — {field_name}")
-        self.setModal(False)
+        self.setAccessibleName(f"Insert placeholder — {field_name}")
         self._target = target
         self._field_name = field_name
-        self.resize(460, 520)
+        self.setFixedSize(self.WIDTH, self.HEIGHT)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout = self.body
+        layout.setContentsMargins(12, 12, 12, 10)
         layout.setSpacing(8)
+        title = QLabel(f"Insert into {field_name.lower()}")
+        title.setProperty("popoverTitle", True)
+        layout.addWidget(title)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search placeholders…")
         self.search.setClearButtonEnabled(True)
@@ -188,18 +191,21 @@ class PlaceholderPicker(QDialog):
         layout.addWidget(self.list, 1)
 
         self.notice = InlineNotice()
-        footer = QHBoxLayout()
-        footer.addWidget(self.notice, 1)
-        done = Button("Done")
-        done.clicked.connect(self.close)
-        footer.addWidget(done)
-        layout.addLayout(footer)
+        layout.addWidget(self.notice)
 
         self._rows: list[tuple[QListWidgetItem, _Row]] = []
         self._headers: dict[str, QListWidgetItem] = {}
         self._fill(items)
 
     # -- content --
+
+    def set_items(self, items: list[Placeholder]) -> None:
+        """Rebuild the list (on every open, so examples follow the field's job)."""
+        self.list.clear()
+        self._rows = []
+        self._headers = {}
+        self._fill(items)
+        self._filter(self.search.text())
 
     def _fill(self, items: list[Placeholder]) -> None:
         for group in dict.fromkeys(i.group for i in items):
@@ -315,19 +321,6 @@ class PlaceholderPicker(QDialog):
             return
         super().keyPressEvent(event)
 
-    def place_near(self, anchor: QWidget) -> None:
-        """Open beside the button that opened it, kept on the screen."""
-        point = anchor.mapToGlobal(QPoint(anchor.width() + 8, 0))
-        screen = QGuiApplication.screenAt(point) or QGuiApplication.primaryScreen()
-        if screen is not None:
-            area = screen.availableGeometry()
-            x = min(point.x(), area.right() - self.width())
-            y = min(max(point.y() - 40, area.top()), area.bottom() - self.height())
-            if x < area.left():
-                x = area.left()
-            point = QPoint(x, y)
-        self.move(point)
-
 
 class PlaceholderButton(Button):
     """ "{ } Insert placeholder" next to a field; opens (or re-shows) its picker."""
@@ -363,9 +356,11 @@ class PlaceholderButton(Button):
                 parent=self.window(),
                 read_only_message=self._read_only_message,
             )
-            self.picker.place_near(self)
-        self.picker.show()
-        self.picker.raise_()
-        self.picker.activateWindow()
-        QTimer.singleShot(0, self.picker.search.setFocus)
+        else:
+            self.picker.set_items(self._items())  # examples follow the job as it is now
+        self.picker.search.clear()
+        self.picker.notice.clear_notice()
+        # Closing puts the keyboard back in the field, ready to keep typing.
+        self.picker.set_return_focus(_resolve(self._target))
+        self.picker.open_at(self, focus=self.picker.search, align="right")
         return self.picker

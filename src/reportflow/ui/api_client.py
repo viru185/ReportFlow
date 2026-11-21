@@ -155,6 +155,23 @@ class ApiClient:
         payload = {"job_name": job_name} if job_name else {}
         return self._request("POST", "/email/preview", json=payload)["html"]
 
+    def send_test_email(self, payload: dict) -> dict:
+        """Email one sample of a job's message (``POST /email/send-test``)."""
+        return self._request("POST", "/email/send-test", json=payload)
+
+    def test_email_sender(self) -> Callable[[dict], dict]:
+        """``send_test_email`` safe to call on a worker thread: its own short-lived client."""
+        base_url = self.base_url
+
+        def send(payload: dict) -> dict:
+            client = ApiClient(base_url, timeout=60.0)
+            try:
+                return client.send_test_email(payload)
+            finally:
+                client.close()
+
+        return send
+
     def get_email_template(self, job_name: str) -> dict:
         return self._request("GET", f"/jobs/{job_name}/email-template")
 

@@ -45,10 +45,12 @@ from reportflow.core.email.render import (
     render_email,
     sample_context,
 )
+from reportflow.ui.assets import asset_icon
 from reportflow.ui.feedback import FormDialog, toast
 from reportflow.ui.fs_util import open_start_dir
 from reportflow.ui.kit import Button, SegmentButton, segmented, set_variant
 from reportflow.ui.placeholder_picker import PlaceholderButton, email_placeholders
+from reportflow.ui.send_test import SendTestPopover
 from reportflow.ui.widgets import section_title
 
 _PREVIEW_DELAY_MS = 300  # re-render this long after the last keystroke
@@ -120,14 +122,20 @@ class EmailTemplateDialog(FormDialog):
         linked_path: str | None = None,
         check_path: Callable[[str], object] | None = None,
         preview_job: dict[str, Any] | None = None,
+        send_test: Callable[[dict], object] | None = None,
+        addresses: list[str] | None = None,
     ) -> None:
         """``linked_path``: the job is linked to this file (opens in linked mode).
         ``check_path(path)`` raises with a reason when the SERVICE can't use the file —
         linking is only allowed once it passes. ``preview_job`` is what the job editor has
         on screen (name, subject, stage, sheets, workbooks, recipients per stage), so the
-        preview shows this job's email rather than a sample one."""
+        preview shows this job's email rather than a sample one. ``send_test(payload)``
+        emails one sample (Send test…, hidden when None); ``addresses`` are suggested."""
         super().__init__(parent, settings_key="template_editor")
         self._preview_job = preview_job or {}
+        self._send_test = send_test
+        self._addresses = list(addresses or [])
+        self.send_test_popover: SendTestPopover | None = None
         self.setWindowTitle(f"Email template — {job_name}" if job_name else "Email template")
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setMinimumSize(900, 600)
@@ -258,6 +266,16 @@ class EmailTemplateDialog(FormDialog):
         segments.addWidget(self.preview_production)
         segmented([self.preview_testing, self.preview_production])
         preview_head.addLayout(segments)
+        self.send_test_button = Button(
+            "Send test…",
+            icon=asset_icon("mail.svg"),
+            tooltip="Email this template, as it is now, to one address — with sample values "
+            "and [TEST] in the subject.",
+        )
+        self.send_test_button.clicked.connect(self.open_send_test)
+        self.send_test_button.setVisible(self._send_test is not None)
+        preview_head.addSpacing(8)
+        preview_head.addWidget(self.send_test_button)
         preview_col.addLayout(preview_head)
         self.preview_error = QLabel("")
         self.preview_error.setObjectName("previewError")
@@ -322,6 +340,31 @@ class EmailTemplateDialog(FormDialog):
     def _simple_is_empty(self) -> bool:
         on_simple = self.tabs.currentWidget() is self.simple_edit
         return on_simple and not self.simple_edit.toPlainText().strip()
+
+    def test_email_payload(self) -> dict[str, Any]:
+        """The email as the editor has it now, for Send test…"""
+        job = self._preview_job
+        return {
+            "template": self.result_html(),
+            "job_name": str(job.get("name") or ""),
+            "subject": job.get("subject") or None,
+            "stage": "testing" if self.preview_is_test() else "live",
+            "sheet_names": list(job.get("sheets") or []),
+            "workbooks": list(job.get("workbooks") or []),
+        }
+
+    def open_send_test(self) -> SendTestPopover | None:
+        if self._send_test is None:
+            return None
+        if self.send_test_popover is None:
+            self.send_test_popover = SendTestPopover(
+                self,
+                send=self._send_test,
+                payload=self.test_email_payload,
+                addresses=self._addresses,
+            )
+        self.send_test_popover.open_for(self.send_test_button)
+        return self.send_test_popover
 
     def _current_editor(self) -> QPlainTextEdit:
         return self.simple_edit if self.tabs.currentWidget() is self.simple_edit else self.html_edit

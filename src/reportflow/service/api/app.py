@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from reportflow import __version__
 from reportflow.core import paths, secrets
@@ -189,6 +189,18 @@ class SheetsRequest(BaseModel):
 
 class EmailPreviewRequest(BaseModel):
     job_name: str | None = None
+
+
+class SendTestEmailRequest(BaseModel):
+    """One sample of a job's email, from the template editor (nothing needs to be saved)."""
+
+    to: EmailStr
+    template: str
+    job_name: str = ""
+    subject: str | None = None
+    stage: Literal["testing", "live"] = "testing"
+    sheet_names: list[str] = Field(default_factory=list)
+    workbooks: list[str] = Field(default_factory=list)
 
 
 class SettingsUpdate(BaseModel):
@@ -667,6 +679,27 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         job = svc().config.job(req.job_name) if req.job_name else None
         html = render_email(resolve_template(job, svc().config), sample_context(job))
         return {"html": html}
+
+    @app.post("/email/send-test")
+    def email_send_test(req: SendTestEmailRequest) -> dict[str, Any]:
+        from reportflow.core.email.sender import send_template_test
+
+        try:
+            send_template_test(
+                svc().config,
+                to=str(req.to),
+                template=req.template,
+                job_name=req.job_name,
+                subject=req.subject,
+                is_test=req.stage == "testing",
+                sheet_names=req.sheet_names,
+                workbooks=req.workbooks,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001 — the mail server's reason, for the user
+            raise HTTPException(status_code=502, detail=f"The email server refused it: {e}") from e
+        return {"ok": True, "to": str(req.to)}
 
     def _bundle_metadata(note: str) -> dict[str, Any]:
         metadata: dict[str, Any] = {

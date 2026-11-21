@@ -244,3 +244,37 @@ def test_placeholder_mistakes_are_explained_in_plain_words():
     stray = explain_template_error(template_error("Daily — {{ today }") or "")
     assert "stray }" in stray
     assert explain_template_error("something else entirely") == "something else entirely"
+
+
+# -- Send test… from the template editor --------------------------------------------------
+
+
+def test_a_template_test_goes_to_one_address_with_test_in_the_subject(smtp_server):
+    from reportflow.core.email.sender import send_template_test
+
+    handler, port = smtp_server
+    send_template_test(
+        _config(port),
+        to="me@corp.example.com",
+        template="<html><body><p>Hello {{ job_name }} — {{ today }}</p></body></html>",
+        job_name="daily",
+        subject="Daily report — {{ today }}",
+        is_test=False,  # previewing Production still says [TEST]: it IS a test
+    )
+    rcpts, content = handler.envelopes[0]
+    assert rcpts == ["me@corp.example.com"]
+    msg = email.message_from_bytes(content, policy=email.policy.default)
+    assert msg["Subject"].startswith("[TEST] Daily report — ")
+    html = msg.get_body(("html",)).get_content()
+    assert "Hello daily" in html and "This is a test of the email template" in html
+    assert not list(msg.iter_attachments())
+
+
+def test_a_template_test_explains_what_the_user_can_fix():
+    from reportflow.core.email.sender import send_template_test
+
+    no_server = AppConfig(smtp=SmtpConfig(host="", port=25), test=TestSettings())
+    with pytest.raises(ValueError, match="email server isn't set up"):
+        send_template_test(no_server, to="me@x.com", template="<p>x</p>", job_name="daily")
+    with pytest.raises(ValueError, match="template has an error"):
+        send_template_test(_config(25), to="me@x.com", template="{{ broken", job_name="d")

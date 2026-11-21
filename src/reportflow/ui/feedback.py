@@ -479,6 +479,16 @@ def _settings() -> QSettings:
     return QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "ReportFlow", "ui")
 
 
+def remember(key: str, value: object) -> None:
+    """Keep a small per-user preference (e.g. the last test-email address)."""
+    _settings().setValue(key, value)
+
+
+def recall(key: str) -> object:
+    """A preference kept with :func:`remember` (None when never set)."""
+    return _settings().value(key)
+
+
 def restore_geometry(widget: QWidget, key: str) -> bool:
     data = _settings().value(f"geometry/{key}")
     if isinstance(data, QByteArray) and not data.isEmpty():

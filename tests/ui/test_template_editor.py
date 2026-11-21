@@ -87,3 +87,59 @@ def test_cancel_asks_only_after_an_edit(qtbot, monkeypatch):
     dlg.html_edit.setPlainText("<p>changed</p>")
     dlg.reject()
     assert asked == [1] and dlg.isVisible()
+
+
+# -- Send test… ---------------------------------------------------------------------------
+
+
+def _sending(qtbot, send):
+    dlg = EmailTemplateDialog(
+        "<html><body><p>{{ job_name }}</p></body></html>",
+        "Daily Energy",
+        preview_job=JOB,
+        send_test=send,
+        addresses=["me@corp.example.com", "boss@corp.example.com"],
+    )
+    qtbot.addWidget(dlg)
+    dlg.show()
+    popover = dlg.open_send_test()
+    assert popover is not None
+    return dlg, popover
+
+
+def test_send_test_is_hidden_without_a_service(qtbot):
+    dlg = _dialog(qtbot)
+    assert dlg.send_test_button.isHidden() and dlg.open_send_test() is None
+
+
+def test_send_test_emails_the_editor_as_it_is_now_and_remembers_the_address(qtbot):
+    from reportflow.ui.feedback import recall, toasts
+
+    sent: list[dict] = []
+    dlg, popover = _sending(qtbot, lambda payload: sent.append(payload) or {"ok": True})
+    dlg.html_edit.setPlainText("<html><body><p>Unsaved change</p></body></html>")
+    popover.address.setText("me@corp.example.com")
+    popover.send()
+    qtbot.waitUntil(lambda: bool(sent) and not popover.isVisible(), timeout=3000)
+    payload = sent[0]
+    assert payload["to"] == "me@corp.example.com" and payload["stage"] == "testing"
+    assert "Unsaved change" in payload["template"]  # no need to save first
+    assert payload["subject"] == JOB["subject"] and payload["workbooks"] == ["Energy.xlsx"]
+    assert recall("template/test_address") == "me@corp.example.com"
+    assert any("Test email sent to me@corp.example.com" in t for t in toasts(dlg))
+
+
+def test_send_test_says_what_went_wrong_in_place(qtbot):
+    from reportflow.ui.api_client import ApiError
+
+    def refuse(payload):
+        raise ApiError("The email server isn't set up yet — File → Settings → Email.", 400)
+
+    _dlg, popover = _sending(qtbot, refuse)
+    popover.address.setText("not an address")
+    popover.send()
+    assert "Type the email address" in popover.error.text()
+    popover.address.setText("me@corp.example.com")
+    popover.send()
+    qtbot.waitUntil(lambda: "isn't set up" in popover.error.text(), timeout=3000)
+    assert popover.isVisible() and popover.send_button.isEnabled()

@@ -118,3 +118,37 @@ def test_editor_fields_have_their_own_pickers(qtbot):
     assert job.example == "daily"  # this job's name
     for _, token, _ in OUTPUT_NAME_TOKENS:
         assert token in dlg.output_name.toolTip()
+
+
+def test_the_picker_is_a_popover_without_title_bar_or_done_button(qtbot):
+    from PySide6.QtWidgets import QPushButton
+
+    from reportflow.ui.kit import Popover
+
+    field = QLineEdit()
+    qtbot.addWidget(field)
+    picker = PlaceholderPicker(
+        field, email_placeholders(subject=True, now=NOW), field_name="Subject"
+    )
+    qtbot.addWidget(picker)
+    assert isinstance(picker, Popover)
+    assert picker.windowFlags() & Qt.WindowType.Popup  # closes on a click outside
+    assert not [b for b in picker.findChildren(QPushButton) if b.text() in ("Done", "Close")]
+    picker.show()
+    qtbot.keyClick(picker.search, Qt.Key.Key_Escape)
+    assert not picker.isVisible()
+
+
+def test_each_open_shows_the_current_job_name_in_examples(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi(), _sample_job_dict())
+    qtbot.addWidget(dlg)
+    dlg.show()
+    picker = dlg.output_placeholders.open_picker()
+    assert next(p for p in picker.items() if p.token == "{job}").example == "daily"
+    picker.close()
+    dlg.name.setText("Monthly energy")
+    picker = dlg.output_placeholders.open_picker()
+    assert next(p for p in picker.items() if p.token == "{job}").example == "Monthly energy"
+    picker.close()
