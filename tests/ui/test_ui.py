@@ -367,34 +367,29 @@ def test_schedule_widget_advanced_fallback(qtbot):
 
 
 def test_schedule_widget_combines_rules_and_deletes_in_one_click(qtbot):
-    from PySide6.QtCore import QTime
-    from PySide6.QtWidgets import QPushButton
-
     from reportflow.ui.schedule_compile import ScheduleRule
     from reportflow.ui.windows.schedule_widget import ScheduleWidget
 
     w = ScheduleWidget()
     qtbot.addWidget(w)
     daily = w.add_rule(ScheduleRule(kind="daily"))
-    daily.time_edit.setTime(QTime(6, 0))
-    daily._add_time()
-    daily.time_edit.setTime(QTime(18, 0))
-    daily._add_time()
+    assert daily.add_time("06:00") and daily.add_time("18:00")
+    assert not daily.add_time("06:00")  # already there
     sunday = w.add_rule(ScheduleRule(kind="weekly"))
     sunday.weekday_checks["SUN"].setChecked(True)
-    sunday.time_edit.setTime(QTime(10, 0))
-    sunday._add_time()
+    sunday.add_time("10:00")
     assert w.to_crons() == ["0 6 * * *", "0 18 * * *", "0 10 * * SUN"]
     assert w.summary.text() == "Daily at 06:00, 18:00; Weekly Sun at 10:00"
 
-    # Each time chip deletes itself — no "select, then Remove selected".
-    chip = next(b for b in daily.findChildren(QPushButton) if b.text().startswith("18:00"))
-    chip.click()
+    # Each time pill deletes itself with its own × — the pill body does nothing.
+    daily.pill("18:00").remove_button.click()
     assert daily.times() == ["06:00"]
 
-    # A whole rule goes with its own Delete.
-    delete = next(b for b in sunday.findChildren(QPushButton) if "Delete" in b.text())
-    delete.click()
+    # A whole rule goes with its own Remove.
+    from PySide6.QtWidgets import QPushButton
+
+    remove = next(b for b in sunday.findChildren(QPushButton) if b.text() == "Remove")
+    remove.click()
     assert w.to_crons() == ["0 6 * * *"]
 
     # An overlap is explained right under the rules, and blocks saving.
@@ -402,9 +397,6 @@ def test_schedule_widget_combines_rules_and_deletes_in_one_click(qtbot):
     assert "already in the daily schedule" in w.summary.text()
     clash.remove_requested.emit(clash)
     assert w.summary.text() == "Daily at 06:00"
-
-
-# -- main window ------------------------------------------------------------------
 
 
 def test_main_window_dashboard_cards(qtbot):

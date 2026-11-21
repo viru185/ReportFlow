@@ -2,18 +2,20 @@
 
 from typing import Any
 
-from PySide6.QtCore import QEvent, QRect, Qt
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLayout,
+    QLayoutItem,
     QScrollArea,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionButton,
     QWidget,
+    QWidgetItem,
 )
 
 
@@ -100,3 +102,78 @@ def scroll_page(content: QWidget) -> QScrollArea:
     scroll.setFrameShape(QScrollArea.Shape.NoFrame)
     scroll.setWidget(content)
     return scroll
+
+
+class FlowLayout(QLayout):
+    """Lays widgets out left to right and wraps to the next line (the Qt flow example)."""
+
+    def __init__(self, parent: QWidget | None = None, spacing: int = 4) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self.setSpacing(spacing)
+
+    def addItem(self, item: QLayoutItem) -> None:  # noqa: N802 — Qt override
+        self._items.append(item)
+
+    def insertWidget(self, index: int, widget: QWidget) -> None:  # noqa: N802
+        self.addChildWidget(widget)
+        self._items.insert(index, QWidgetItem(widget))
+        self.invalidate()
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:  # noqa: N802
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:  # noqa: N802
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientation:  # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._arrange(QRect(0, 0, width, 0), apply=False)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._arrange(rect, apply=True)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:  # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def _arrange(self, rect: QRect, *, apply: bool) -> int:
+        margins = self.contentsMargins()
+        area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x, y, line_height = area.x(), area.y(), 0
+        spacing = self.spacing()
+        rows: list[list[tuple[QLayoutItem, QSize, int]]] = [[]]
+        for item in self._items:
+            hint = item.sizeHint()
+            if x + hint.width() > area.right() + 1 and line_height > 0:
+                x, y = area.x(), y + line_height + spacing
+                line_height = 0
+                rows.append([])
+            rows[-1].append((item, hint, x))
+            x += hint.width() + spacing
+            line_height = max(line_height, hint.height())
+        if apply:
+            # Centre each item on its row, so chips and the text box share one baseline.
+            top = area.y()
+            for row in rows:
+                height = max((hint.height() for _, hint, _ in row), default=0)
+                for item, hint, left in row:
+                    offset = (height - hint.height()) // 2
+                    item.setGeometry(QRect(QPoint(left, top + offset), hint))
+                top += height + spacing
+        return y + line_height - rect.y() + margins.bottom()

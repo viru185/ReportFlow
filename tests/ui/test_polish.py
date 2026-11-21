@@ -62,8 +62,9 @@ def test_editor_pages_scroll_with_actions_outside_content(qtbot):
 
 
 def test_schedule_pending_time_requires_add_and_duplicates_are_disabled(qtbot):
+    """A time on screen is always a time that runs: "+ Add time" opens a picker that adds
+    it and closes; a time already in the schedule can't be added twice."""
     from PySide6.QtCore import QTime
-    from PySide6.QtWidgets import QPushButton
 
     from reportflow.ui.schedule_compile import ScheduleRule
     from reportflow.ui.windows.schedule_widget import ScheduleWidget
@@ -71,17 +72,18 @@ def test_schedule_pending_time_requires_add_and_duplicates_are_disabled(qtbot):
     schedule = ScheduleWidget()
     qtbot.addWidget(schedule)
     row = schedule.add_rule(ScheduleRule(kind="daily", times=["06:00"]))
-    assert not row.add_time_button.isEnabled()
-    row.time_edit.setTime(QTime(18, 30))
-    assert schedule.to_crons() == ["0 6 * * *"]
-    assert row.add_time_button.isEnabled()
-    row.add_time_button.click()
+    picker = row.open_time_picker()
+    assert picker.time_edit.time() == QTime(7, 0)  # first guess: the next free hour
+    picker.time_edit.setTime(QTime(6, 0))
+    assert not picker.add_button.isEnabled()
+    assert picker.error.text() == "06:00 is already in this schedule."
+    picker.time_edit.setTime(QTime(18, 30))
+    assert schedule.to_crons() == ["0 6 * * *"]  # nothing added until Add
+    picker.submit()
     assert schedule.to_crons() == ["0 6 * * *", "30 18 * * *"]
-    assert not row.add_time_button.isEnabled()
-    chip = next(b for b in row.findChildren(QPushButton) if b.text().startswith("18:30"))
-    chip.click()
+    assert not picker.isVisible()
+    row.pill("18:30").remove_button.click()
     assert schedule.to_crons() == ["0 6 * * *"]
-    assert row.add_time_button.isEnabled()
 
 
 def test_monthly_validation_remains_visible_and_recoverable(qtbot):
@@ -99,8 +101,6 @@ def test_monthly_validation_remains_visible_and_recoverable(qtbot):
 
 
 def test_schedule_overview_precedes_rules_and_tracks_added_times(qtbot):
-    from PySide6.QtCore import QPoint, QTime
-
     from reportflow.ui.windows.schedule_widget import ScheduleWidget
 
     schedule = ScheduleWidget()
@@ -110,13 +110,10 @@ def test_schedule_overview_precedes_rules_and_tracks_added_times(qtbot):
     first, second = schedule.rows()
     assert schedule.summary.y() < first.y() < second.y()
     assert "06:00" in schedule.summary.text() and "10:00" in schedule.summary.text()
-    first.time_edit.setTime(QTime(18, 30))
-    assert "18:30" not in schedule.summary.text()
-    first.add_time_button.click()
+    assert first.add_time("18:30")
     assert "18:30" in schedule.summary.text()
-    assert first.times_row.mapTo(first, QPoint()).y() < first.picker_row.y()
     first.kind.setCurrentIndex(first.kind.findData("cron"))
-    assert first.times_row.isHidden() and first.picker_row.isHidden()
+    assert first.times_row.isHidden() and not first.cron_edit.isHidden()
 
 
 @pytest.mark.parametrize("size", [(640, 480), (960, 760)])

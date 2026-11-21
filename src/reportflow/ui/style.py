@@ -112,17 +112,69 @@ QLabel#scheduleOverview {{
     background: #172c48;
     border: 1px solid #355d8c;
     border-radius: 6px;
-    padding: 12px;
-    font-size: 15px;
+    padding: 8px 12px;
+    font-size: 14px;
     font-weight: 600;
 }}
-QPushButton[timeChip="true"] {{
+QLabel#scheduleOverview[state="warning"] {{
+    background: #3a2c10;
+    border-color: #6b4f12;
+    color: #fbbf24;
+}}
+QFrame[timePill="true"] {{
     background: #172c48;
-    border-color: #507eaf;
+    border: 1px solid #507eaf;
+    border-radius: 13px;
+}}
+QFrame[timePill="true"][flash="true"] {{
+    background: #1d4170;
+    border-color: {ACCENT_HOVER};
+}}
+QLabel#timePillText {{
     color: #dbeafe;
-    font-size: 16px;
     font-weight: 600;
-    padding: 8px 12px;
+}}
+QToolButton#timePillRemove {{
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    color: #9cc3f5;
+    font-size: 14px;
+    padding: 0;
+}}
+QToolButton#timePillRemove:hover {{
+    background: #3b2326;
+    color: #f87171;
+}}
+QPushButton#addTime {{
+    background: transparent;
+    border: 1px dashed {BORDER_HOVER};
+    border-radius: 13px;
+    color: {ACCENT_HOVER};
+    padding: 2px 12px;
+    min-height: 20px;
+}}
+QPushButton#addTime:hover {{
+    border-color: {ACCENT};
+    background: rgba(59, 130, 246, 0.08);
+}}
+QPushButton#removeSchedule {{
+    background: transparent;
+    border-color: transparent;
+    color: {TEXT_MUTED};
+    padding: 4px 10px;
+}}
+QPushButton#removeSchedule:hover {{
+    color: #f87171;
+    border-color: #7f1d1d;
+}}
+QFrame#timePopover {{
+    background: {CARD_BG};
+    border: 1px solid {BORDER_HOVER};
+    border-radius: 8px;
+}}
+QLabel#timePopoverTitle {{
+    font-weight: 600;
 }}
 QFrame[recipientField="true"] {{
     background: {FIELD_BG};
@@ -608,6 +660,15 @@ QFrame#workbookBanner QLabel {{
 QPushButton[segment="true"][segmentPos="first"] {{
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+}}
+QPushButton[segment="true"][segmentPos="mid"] {{
+    border-radius: 0;
+    border-left: none;
+}}
+/* Two selected neighbours keep a thin divider, so "Tue" and "Wed" stay two days. */
+QPushButton[segment="true"][segmentPos="mid"]:checked,
+QPushButton[segment="true"][segmentPos="last"]:checked {{
+    border-left: 1px solid rgba(255, 255, 255, 0.28);
 }}
 QPushButton[segment="true"][segmentPos="last"] {{
     border-top-left-radius: 0;

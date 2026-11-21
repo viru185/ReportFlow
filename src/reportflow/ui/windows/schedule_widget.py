@@ -1,31 +1,32 @@
 """Visual schedule builder: a list of rules — Daily / Weekly / Monthly / Custom (cron).
 
-A job can combine rules, e.g. "daily at 06:00" plus "every Sunday at 10:00". Each rule has
-its own run-times (several per day are fine); every time is a chip with its own ✕, and each
-rule its own Delete. No rules = manual only. Compiles to a list of cron expressions via the
-pure ``schedule_compile`` helpers.
+A job can combine rules, e.g. "daily at 06:00" plus "every Sunday at 10:00". Each rule is a
+compact card: its kind, a row of run times (each a small pill with its own ×), and for weekly
+rules a Mon…Sun toggle. "+ Add time" opens a small picker that adds the time and closes, so a
+time on screen is always a time that will run (the old always-visible picker left people
+unsure whether the time in the box was added). No rules = manual only. Compiles to cron
+expressions via the pure ``schedule_compile`` helpers.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from PySide6.QtCore import Qt, QTime, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTime, Signal
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QTimeEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from reportflow.ui.feedback import flash
 from reportflow.ui.schedule_compile import (
     WEEKDAYS,
     ScheduleRule,
@@ -33,7 +34,7 @@ from reportflow.ui.schedule_compile import (
     describe,
     parse_crons,
 )
-from reportflow.ui.widgets import section_title
+from reportflow.ui.widgets import FlowLayout
 
 _KINDS = [
     ("Daily", "daily"),
@@ -41,6 +42,7 @@ _KINDS = [
     ("Monthly", "monthly"),
     ("Custom (cron)", "cron"),
 ]
+_LABEL_WIDTH = 64  # "Runs at" / "On" line up
 
 
 def _parse_month_days(text: str) -> list[int]:
@@ -55,8 +57,115 @@ def _parse_month_days(text: str) -> list[int]:
     return days
 
 
+def _row_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setProperty("muted", True)
+    label.setFixedWidth(_LABEL_WIDTH)
+    label.setMinimumHeight(26)  # centred on the first line of pills / toggles
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    return label
+
+
+class _TimePill(QFrame):
+    """One run time; only its × removes it."""
+
+    remove_requested = Signal(str)
+
+    def __init__(self, time: str) -> None:
+        super().__init__()
+        self.time = time
+        self.setProperty("timePill", True)
+        self.setFixedHeight(26)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 0, 3, 0)
+        row.setSpacing(2)
+        label = QLabel(time)
+        label.setObjectName("timePillText")
+        row.addWidget(label)
+        remove = QToolButton()
+        remove.setObjectName("timePillRemove")
+        remove.setText("×")
+        remove.setFixedSize(20, 20)
+        remove.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        remove.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove.setToolTip(f"Remove {time}")
+        remove.setAccessibleName(f"Remove run time {time}")
+        remove.clicked.connect(lambda: self.remove_requested.emit(self.time))
+        row.addWidget(remove)
+        self.remove_button = remove
+
+
+class _TimePopover(QFrame):
+    """The small picker "+ Add time" opens: choose a time, Add (or Enter), and it closes."""
+
+    def __init__(self, row: _RuleRow) -> None:
+        super().__init__(row, Qt.WindowType.Popup)
+        self.setObjectName("timePopover")
+        self._row = row
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        title = QLabel("Add a run time")
+        title.setObjectName("timePopoverTitle")
+        layout.addWidget(title)
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        self.time_edit = QTimeEdit()
+        self.time_edit.setDisplayFormat("HH:mm")
+        self.time_edit.setFixedWidth(110)
+        self.time_edit.timeChanged.connect(self._check)
+        self.time_edit.installEventFilter(self)
+        self.add_button = QPushButton("Add")
+        self.add_button.setProperty("accent", True)
+        self.add_button.setAutoDefault(False)
+        self.add_button.clicked.connect(self.submit)
+        line.addWidget(self.time_edit)
+        line.addWidget(self.add_button)
+        layout.addLayout(line)
+        self.error = QLabel("")
+        self.error.setObjectName("fieldError")
+        self.error.hide()
+        layout.addWidget(self.error)
+
+    def open_at(self, anchor: QWidget, time: QTime) -> None:
+        self.time_edit.setTime(time)
+        self._check()
+        self.adjustSize()
+        self.move(anchor.mapToGlobal(QPoint(0, anchor.height() + 4)))
+        self.show()
+        self.time_edit.setFocus()
+        self.time_edit.selectAll()
+
+    def _text(self) -> str:
+        return self.time_edit.time().toString("HH:mm")
+
+    def _check(self) -> None:
+        duplicate = self._text() in self._row.times()
+        self.add_button.setEnabled(not duplicate)
+        self.error.setText(f"{self._text()} is already in this schedule." if duplicate else "")
+        self.error.setVisible(duplicate)
+        self.adjustSize()
+
+    def submit(self) -> None:
+        if self._row.add_time(self._text()):
+            self.hide()
+        else:
+            self._check()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if (
+            watched is self.time_edit
+            and isinstance(event, QKeyEvent)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            self.submit()
+            return True
+        return super().eventFilter(watched, event)
+
+
 class _RuleRow(QFrame):
-    """One schedule rule. Emits ``changed`` on any edit; ``remove_requested`` on Delete."""
+    """One schedule rule. Emits ``changed`` on any edit; ``remove_requested`` on Remove."""
 
     changed = Signal()
     remove_requested = Signal(object)
@@ -64,10 +173,12 @@ class _RuleRow(QFrame):
     def __init__(self, rule: ScheduleRule, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setProperty("card", True)  # the app QSS styles card frames
-        self._times: list[str] = list(rule.times)
+        self._times: list[str] = sorted(rule.times)
+        self._pills: dict[str, _TimePill] = {}
+        self.popover: _TimePopover | None = None
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(12)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(10)
 
         top = QHBoxLayout()
         top.setSpacing(8)
@@ -75,81 +186,78 @@ class _RuleRow(QFrame):
         for label, key in _KINDS:
             self.kind.addItem(label, key)
         self.kind.setCurrentIndex(max(self.kind.findData(rule.kind), 0))
+        self.kind.setFixedWidth(170)
         self.kind.currentIndexChanged.connect(self._on_kind_changed)
-        delete = QPushButton("Delete schedule")
-        delete.setToolTip("Delete this schedule")
+        delete = QPushButton("Remove")
+        delete.setObjectName("removeSchedule")
+        delete.setToolTip("Remove this schedule")
+        delete.setAutoDefault(False)
         delete.clicked.connect(lambda *_: self.remove_requested.emit(self))
         top.addWidget(self.kind)
         top.addStretch()
         top.addWidget(delete)
         lay.addLayout(top)
 
+        # Weekly: one row of day toggles (three letters, so T/S are never ambiguous).
         self.weekday_row = QWidget()
         wd_lay = QHBoxLayout(self.weekday_row)
         wd_lay.setContentsMargins(0, 0, 0, 0)
-        wd_lay.setSpacing(12)
-        self.weekday_checks: dict[str, QCheckBox] = {}
-        for day in WEEKDAYS:
-            cb = QCheckBox(day.capitalize())
-            cb.setChecked(day in rule.weekdays)
-            cb.toggled.connect(self.changed)
-            self.weekday_checks[day] = cb
-            wd_lay.addWidget(cb)
+        wd_lay.setSpacing(0)
+        wd_lay.addWidget(_row_label("On"))
+        self.weekday_checks: dict[str, QPushButton] = {}
+        for i, day in enumerate(WEEKDAYS):
+            toggle = QPushButton(day.capitalize())
+            toggle.setCheckable(True)
+            toggle.setChecked(day in rule.weekdays)
+            toggle.setAutoDefault(False)
+            toggle.setProperty("segment", True)
+            toggle.setProperty(
+                "segmentPos", "first" if i == 0 else "last" if i == len(WEEKDAYS) - 1 else "mid"
+            )
+            toggle.setFixedWidth(52)
+            toggle.toggled.connect(lambda *_: self.changed.emit())
+            self.weekday_checks[day] = toggle
+            wd_lay.addWidget(toggle)
         wd_lay.addStretch()
         lay.addWidget(self.weekday_row)
 
         self.month_days = QLineEdit(", ".join(str(d) for d in rule.month_days))
-        self.month_days.setPlaceholderText("Days of the month, e.g. 1, 15")
+        self.month_days.setPlaceholderText("e.g. 1, 15")
         self.month_days.setToolTip(
             "Comma-separated days, e.g. 1, 15. Days absent from a month are skipped."
         )
+        self.month_days.setMaximumWidth(260)
         self.month_days.textChanged.connect(self.changed)
         self.month_row = QWidget()
         month_lay = QHBoxLayout(self.month_row)
         month_lay.setContentsMargins(0, 0, 0, 0)
         month_lay.setSpacing(8)
-        month_lay.addWidget(QLabel("Days of the month:"))
+        month_lay.addWidget(_row_label("On days"))
         month_lay.addWidget(self.month_days)
+        month_lay.addStretch()
         lay.addWidget(self.month_row)
 
+        # Run times: pills, then "+ Add time" at the end of the same row.
         self.times_row = QWidget()
-        times_lay = QVBoxLayout(self.times_row)
+        times_lay = QHBoxLayout(self.times_row)
         times_lay.setContentsMargins(0, 0, 0, 0)
-        times_lay.setSpacing(12)
-        times_lay.addWidget(section_title("Added run times"))
-        # Chips live in their own layout so they can be rebuilt without touching the picker.
-        self._chips = QGridLayout()
-        self._chips.setSpacing(8)
-        self._chips.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self._chips.setColumnStretch(4, 1)
-        times_lay.addLayout(self._chips)
-        self.time_edit = QTimeEdit(QTime(6, 0))
-        self.time_edit.setDisplayFormat("HH:mm")
-        self.time_edit.setToolTip("Pick a run time, then click Add. Add several to run more often.")
-        self.add_time_button = QPushButton("Add time")
-        add_time = self.add_time_button
-        add_time.setAutoDefault(False)
-        add_time.setToolTip("Add this run time")
-        add_time.clicked.connect(self._add_time)
-        picker = QHBoxLayout()
-        picker.setSpacing(8)
-        picker.addWidget(QLabel("New time"))
-        picker.addWidget(self.time_edit)
-        picker.addWidget(add_time)
-        picker.addStretch()
-        self.picker_row = QWidget()
-        picker_layout = QVBoxLayout(self.picker_row)
-        picker_layout.setContentsMargins(0, 0, 0, 0)
-        picker_layout.setSpacing(8)
-        picker_layout.addLayout(picker)
-        self.time_hint = QLabel()
-        self.time_hint.setProperty("muted", True)
-        self.time_hint.setWordWrap(True)
-        picker_layout.addWidget(self.time_hint)
-        self.time_edit.timeChanged.connect(self._update_time_picker)
-        # Give saved times the first reading position, above the editing controls.
-        lay.insertWidget(1, self.times_row)
-        lay.addWidget(self.picker_row)
+        times_lay.setSpacing(0)
+        runs_at = _row_label("Runs at")
+        times_lay.addWidget(runs_at, 0, Qt.AlignmentFlag.AlignTop)
+        self._pill_box = QWidget()
+        self._flow = FlowLayout(self._pill_box, spacing=6)
+        self._flow.setContentsMargins(0, 0, 0, 0)
+        self.no_times = QLabel("No run times yet")
+        self.no_times.setProperty("muted", True)
+        self.add_time_button = QPushButton("+ Add time")
+        self.add_time_button.setObjectName("addTime")
+        self.add_time_button.setAutoDefault(False)
+        self.add_time_button.setToolTip("Add a time this schedule runs at")
+        self.add_time_button.clicked.connect(self.open_time_picker)
+        self._flow.addWidget(self.no_times)
+        self._flow.addWidget(self.add_time_button)
+        times_lay.addWidget(self._pill_box, 1)
+        lay.addWidget(self.times_row)
 
         self.cron_edit = QPlainTextEdit("\n".join(rule.crons))
         self.cron_edit.setPlaceholderText("0 6 * * MON-FRI\n30 18 1,15 * *")
@@ -160,67 +268,81 @@ class _RuleRow(QFrame):
         self.cron_edit.textChanged.connect(self.changed)
         lay.addWidget(self.cron_edit)
 
-        self._render_chips()
+        for t in self._times:
+            self._add_pill(t)
+        self._sync_empty()
         self._on_kind_changed()
+
+    # -- kinds --
 
     def _on_kind_changed(self) -> None:
         kind = self.kind.currentData()
         self.weekday_row.setVisible(kind == "weekly")
         self.month_row.setVisible(kind == "monthly")
         self.times_row.setVisible(kind != "cron")
-        self.picker_row.setVisible(kind != "cron")
         self.cron_edit.setVisible(kind == "cron")
         self.changed.emit()
 
-    def _render_chips(self) -> None:
-        while self._chips.count():
-            item = self._chips.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
-        if not self._times:
-            none = QLabel("No run times selected. Choose a time below and click Add time.")
-            none.setProperty("muted", True)
-            self._chips.addWidget(none, 0, 0)
-        for i, t in enumerate(self._times):
-            chip = QPushButton(f"{t}  ×")
-            chip.setAutoDefault(False)
-            chip.setAccessibleName(f"Remove run time {t}")
-            chip.setToolTip(f"Remove {t}")
-            chip.setProperty("timeChip", True)
-            chip.setMinimumWidth(100)
-            chip.clicked.connect(self._remover(t))
-            self._chips.addWidget(chip, i // 4, i % 4)
-        self._update_time_picker()
-
-    def _update_time_picker(self) -> None:
-        duplicate = self.time_edit.time().toString("HH:mm") in self._times
-        self.add_time_button.setEnabled(not duplicate)
-        self.time_hint.setText(
-            "This time is already selected. Choose a different time to add another run."
-            if duplicate
-            else "The time above is included only after you click Add time."
-        )
-
-    def _remover(self, t: str) -> Callable[..., None]:
-        def remove(*_: object) -> None:
-            if t in self._times:
-                self._times.remove(t)
-            self._render_chips()
-            self.changed.emit()
-
-        return remove
-
-    def _add_time(self) -> None:
-        t = self.time_edit.time().toString("HH:mm")
-        if t not in self._times:
-            self._times.append(t)
-            self._times.sort()
-            self._render_chips()
-        self.changed.emit()
+    # -- run times --
 
     def times(self) -> list[str]:
         return list(self._times)
+
+    def _next_free_time(self) -> QTime:
+        """A sensible first guess: an hour after the last time, never one already added."""
+        if not self._times:
+            return QTime(6, 0)
+        hour, minute = (int(x) for x in self._times[-1].split(":"))
+        for step in range(1, 25):
+            candidate = QTime((hour + step) % 24, minute)
+            if candidate.toString("HH:mm") not in self._times:
+                return candidate
+        return QTime(6, 0)
+
+    def open_time_picker(self) -> _TimePopover:
+        if self.popover is None:
+            self.popover = _TimePopover(self)
+        self.popover.open_at(self.add_time_button, self._next_free_time())
+        return self.popover
+
+    def add_time(self, t: str) -> bool:
+        """Add run time ``t`` ("HH:MM"); False when the schedule already has it."""
+        if t in self._times:
+            return False
+        self._times.append(t)
+        self._times.sort()
+        pill = self._add_pill(t)
+        self._sync_empty()
+        flash(pill)  # show where it landed
+        self.changed.emit()
+        return True
+
+    def remove_time(self, t: str) -> None:
+        if t not in self._times:
+            return
+        self._times.remove(t)
+        pill = self._pills.pop(t)
+        self._flow.removeWidget(pill)
+        pill.hide()
+        pill.deleteLater()
+        self._sync_empty()
+        self.changed.emit()
+
+    def pill(self, t: str) -> _TimePill | None:
+        return self._pills.get(t)
+
+    def _add_pill(self, t: str) -> _TimePill:
+        pill = _TimePill(t)
+        pill.remove_requested.connect(self.remove_time)
+        self._pills[t] = pill
+        # Kept in time order, before the "No run times" label and the Add button.
+        self._flow.insertWidget(self._times.index(t), pill)
+        self._pill_box.updateGeometry()
+        return pill
+
+    def _sync_empty(self) -> None:
+        self.no_times.setVisible(not self._times)
+        self._flow.invalidate()
 
     def to_rule(self) -> ScheduleRule:
         kind = self.kind.currentData()
@@ -230,7 +352,7 @@ class _RuleRow(QFrame):
         return ScheduleRule(
             kind=kind,
             times=self.times(),
-            weekdays=[d for d, cb in self.weekday_checks.items() if cb.isChecked()],
+            weekdays=[d for d, toggle in self.weekday_checks.items() if toggle.isChecked()],
             month_days=_parse_month_days(self.month_days.text()) if kind == "monthly" else [],
         )
 
@@ -246,9 +368,8 @@ class ScheduleWidget(QWidget):
     def _build(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
 
-        layout.addWidget(section_title("Schedule overview"))
         self.summary = QLabel("")
         self.summary.setObjectName("scheduleOverview")
         self.summary.setTextFormat(Qt.TextFormat.PlainText)
@@ -272,7 +393,7 @@ class ScheduleWidget(QWidget):
         layout.addWidget(zone_hint)
 
         self._rules_lay = QVBoxLayout()
-        self._rules_lay.setSpacing(16)
+        self._rules_lay.setSpacing(10)
         layout.addLayout(self._rules_lay)
 
         add = QPushButton("+ Add schedule")
@@ -309,10 +430,15 @@ class ScheduleWidget(QWidget):
             crons = self.to_crons()
         except ValueError as e:
             self.summary.setText(f"Check schedule: {e}")
-            self.summary.setStyleSheet("color: #fbbf24;")
+            self._set_summary_state("warning")
             return
-        self.summary.setStyleSheet("")
+        self._set_summary_state("")
         self.summary.setText(describe(crons) if crons else "Manual only — no scheduled runs")
+
+    def _set_summary_state(self, state: str) -> None:
+        self.summary.setProperty("state", state)
+        self.summary.style().unpolish(self.summary)
+        self.summary.style().polish(self.summary)
 
     # -- public API ----------------------------------------------------------------
 
