@@ -1,6 +1,20 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
+## [0.15.0] - 2026-11-21
+
+### Chores
+- 0.15.0-beta
+- Prepare 0.15.0
+
+### Documentation
+- The 0.15 ordering round in the project guide
+- Ordering and in-place editing in the README
+
+### Features
+- Recipients keep their order; arrange, move and edit chips
+- Drag to reorder workbooks, schedules and job cards
+
 ## [0.14.1] - 2026-11-21
 
 ### Bug Fixes
