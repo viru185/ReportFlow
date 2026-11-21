@@ -231,3 +231,35 @@ def test_settings_snapshot_never_holds_the_password(qtbot):
     dlg.smtp_password.setText("s3cret-value")
     assert dlg.is_dirty()
     assert "s3cret-value" not in dlg.dirty_key()
+
+
+def test_a_field_error_can_link_to_its_help_section(qtbot, monkeypatch):
+    opened: list[str] = []
+    monkeypatch.setattr(feedback, "show_help", lambda parent, anchor: opened.append(anchor))
+    dlg = QDialog()
+    qtbot.addWidget(dlg)
+    form = QFormLayout(dlg)
+    subject = QLineEdit()
+    form.addRow("Subject", subject)
+    feedback.set_field_error(subject, "This placeholder isn't finished: {{ today }", "placeholders")
+    label = subject._rf_error_label
+    assert "Learn more" in label.text() and 'href="placeholders"' in label.text()
+    assert feedback.field_error(subject) == "This placeholder isn't finished: {{ today }"
+    label.linkActivated.emit("placeholders")
+    assert opened == ["placeholders"]
+
+
+def test_learn_more_opens_the_guide_without_blocking_the_editor(qtbot):
+    from reportflow.ui.windows.help_dialog import HelpDialog
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = _shown(qtbot, JobEditorDialog(FakeApi(), _sample_job_dict()))
+    dlg.subject.setText("Daily {{ today }")
+    dlg._on_save()
+    label = dlg.subject._rf_error_label
+    assert 'href="placeholders"' in label.text()
+    label.linkActivated.emit("placeholders")
+    guides = [w for w in dlg.findChildren(HelpDialog) if w.isVisible()]
+    assert guides and not guides[0].isModal()
+    qtbot.waitUntil(lambda: guides[0].current_section() == "placeholders", timeout=2000)
+    guides[0].close()

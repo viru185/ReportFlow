@@ -58,6 +58,7 @@ from reportflow.ui.feedback import (
     clear_field_error,
     mark_tab_errors,
     set_field_error,
+    show_help,
     toast,
 )
 from reportflow.ui.fs_util import open_start_dir
@@ -147,6 +148,7 @@ class _Problem:
     message: str
     widget: QWidget | None = None
     workbook: int | None = None
+    help: str | None = None  # the Help section its "Learn more" link opens
 
 
 _TAB_GENERAL, _TAB_OUTPUT, _TAB_SCHEDULE, _TAB_EMAIL, _TAB_ADVANCED = range(5)
@@ -1360,7 +1362,7 @@ class JobEditorDialog(FormDialog):
         the recipient boxes first (Save does; the live re-check while fixing must not)."""
         problems: list[_Problem] = []
         if not self.name.text().strip():
-            problems.append(_Problem(_TAB_GENERAL, "Give the job a name.", self.name))
+            problems.append(_Problem(_TAB_GENERAL, "Give the job a name.", self.name, help="jobs"))
         if not self._workbooks:
             problems.append(
                 _Problem(
@@ -1393,7 +1395,7 @@ class JobEditorDialog(FormDialog):
                 )
             seen.add(_same_file_key(wb.path))
             if message:
-                problems.append(_Problem(_TAB_GENERAL, message, workbook=i))
+                problems.append(_Problem(_TAB_GENERAL, message, workbook=i, help="attachments"))
         subject_problem = template_error(self.subject.text())
         if subject_problem:
             plain = explain_template_error(subject_problem)
@@ -1402,20 +1404,22 @@ class JobEditorDialog(FormDialog):
                 if plain != subject_problem
                 else f"This placeholder isn't finished: {subject_problem}"
             )
-            problems.append(_Problem(_TAB_EMAIL, message, self.subject))
+            problems.append(_Problem(_TAB_EMAIL, message, self.subject, help="placeholders"))
         for box in self._recipient_boxes():
             typed = box.commit_pending() if commit else None  # typed but not yet added
             if typed:
-                problems.append(_Problem(_TAB_EMAIL, typed, box))
+                problems.append(_Problem(_TAB_EMAIL, typed, box, help="email"))
         for box in (self.prod_to, self.test_to):
             if box.is_empty() and not any(p.widget is box for p in problems):
                 problems.append(
-                    _Problem(_TAB_EMAIL, "Add at least one address or email group.", box)
+                    _Problem(
+                        _TAB_EMAIL, "Add at least one address or email group.", box, help="email"
+                    )
                 )
         try:
             self.schedule.to_crons()
         except ValueError as e:
-            problems.append(_Problem(_TAB_SCHEDULE, str(e)))
+            problems.append(_Problem(_TAB_SCHEDULE, str(e), help="schedule"))
         return problems
 
     def _validation_error(self) -> tuple[int | None, str] | None:
@@ -1438,11 +1442,17 @@ class JobEditorDialog(FormDialog):
         self._clear_problems()
         for problem in problems:
             if problem.widget is not None:
-                set_field_error(problem.widget, problem.message)
+                set_field_error(problem.widget, problem.message, problem.help)
                 self._problem_widgets.append(problem.widget)
         workbook = next((p for p in problems if p.tab == _TAB_GENERAL and p.widget is None), None)
         if workbook is not None:
-            self.wb_notice.show_notice(workbook.message, "error", timeout_ms=0)
+            anchor = workbook.help or "jobs"
+            self.wb_notice.show_notice(
+                workbook.message,
+                "error",
+                timeout_ms=0,
+                action=("Learn more", lambda: show_help(self, anchor)),
+            )
         mark_tab_errors(self.tabs, {p.tab for p in problems})
         self._showing_problems = bool(problems)
         if focus and problems:

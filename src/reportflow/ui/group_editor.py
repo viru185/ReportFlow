@@ -138,18 +138,18 @@ class EmailGroupDialog(FormDialog):
     def save_form(self) -> None:
         problem = self.members.commit_pending()
         if problem:
-            set_field_error(self.members, problem)
+            set_field_error(self.members, problem, "groups")
             return
         name = self.name.text().strip()
         others = [group for group, _members in self._groups if group != self._original]
         problem = group_name_problem(name, others)
         if problem:
-            set_field_error(self.name, problem)
+            set_field_error(self.name, problem, "groups")
             self.name.setFocus()
             return
         members = self.members.emails()
         if not members:
-            set_field_error(self.members, "Add at least one address.")
+            set_field_error(self.members, "Add at least one address.", "groups")
             return
         payload: list[dict[str, Any]] = []
         for group, group_members in self._groups:

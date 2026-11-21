@@ -625,9 +625,11 @@ class SettingsDialog(FormDialog):
         clear_field_error(self.account_password)
         if not user or not password:
             if not user:
-                set_field_error(self.account_user, "Enter the account, as DOMAIN\\user.")
+                set_field_error(
+                    self.account_user, "Enter the account, as DOMAIN\\user.", "settings"
+                )
             if not password:
-                set_field_error(self.account_password, "Enter the account's password.")
+                set_field_error(self.account_password, "Enter the account's password.", "settings")
             (self.account_user if not user else self.account_password).setFocus()
             return
         confirm = QMessageBox.question(
@@ -712,7 +714,7 @@ class SettingsDialog(FormDialog):
             self.settings_tabs.setCurrentIndex(tab)
             if row >= 0 and row != self.group_list.currentRow():
                 self.group_list.setCurrentRow(row)
-            set_field_error(widget, message)
+            set_field_error(widget, message, "groups")
             mark_tab_errors(self.settings_tabs, {tab})
             widget.setFocus()
             return

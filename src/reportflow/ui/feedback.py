@@ -373,6 +373,8 @@ def _error_label(widget: QWidget) -> QLabel | None:
     label = QLabel()
     label.setObjectName("fieldError")
     label.setWordWrap(True)
+    label.setTextFormat(Qt.TextFormat.RichText)
+    label.linkActivated.connect(lambda anchor, w=widget: show_help(w, anchor))
     label.hide()
     if isinstance(container, QFormLayout):
         position = (
@@ -404,13 +406,28 @@ def _error_label(widget: QWidget) -> QLabel | None:
     return label
 
 
-def set_field_error(widget: QWidget, message: str) -> None:
-    """Outline ``widget`` in red and show ``message`` right under it."""
+def show_help(parent: QWidget, anchor: str | None) -> None:
+    """Open the user guide at ``anchor`` over ``parent``'s window — modeless, so the guide
+    can stay open while the field is fixed (a "Learn more" link under a field error)."""
+    from reportflow.ui.windows.help_dialog import HelpDialog
+
+    guide = HelpDialog(parent.window(), anchor=anchor)
+    guide.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+    guide.show()
+
+
+def set_field_error(widget: QWidget, message: str, help_anchor: str | None = None) -> None:
+    """Outline ``widget`` in red and show ``message`` right under it — with a "Learn more"
+    link to that Help section when ``help_anchor`` is given."""
     widget.setProperty("invalid", True)
     repolish(widget)
     label = _error_label(widget)
     if label is not None:
-        label.setText(message)
+        body = html.escape(message)
+        if help_anchor:
+            body += f'&nbsp; <a href="{html.escape(help_anchor)}">Learn more</a>'
+        label.setText(body)
+        label.setProperty("message", message)
         label.show()
     else:
         widget.setToolTip(message)
@@ -423,13 +440,14 @@ def clear_field_error(widget: QWidget) -> None:
     if isinstance(label, QLabel):
         label.hide()
         label.setText("")
+        label.setProperty("message", "")
 
 
 def field_error(widget: QWidget) -> str:
     """The error currently shown under ``widget`` ('' when none) — for tests."""
     label = getattr(widget, "_rf_error_label", None)
     if isinstance(label, QLabel) and not label.isHidden():
-        return label.text()
+        return str(label.property("message") or "")
     return ""
 
 
