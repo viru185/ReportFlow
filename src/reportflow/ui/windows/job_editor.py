@@ -1,23 +1,28 @@
 """Job editor dialog — compact tabs (General / Output / Schedule / Email / Advanced).
 
 Each tab is focused and scrolls on smaller screens. Non-mandatory settings are optional.
-A job has one or more workbooks (one tab each on the General tab), and each included sheet
-has its own PDF / Hidden choice. Outputs are a folder + optional filename stem; the schedule
+A job has one or more workbooks (a list on the General tab, the selected one's sheets beside
+it; sheet names are read in the background), and each included sheet has its own PDF /
+Hidden choice. Outputs are a folder + optional filename stem; the schedule
 is built visually; the email body is authored in-app via EmailTemplateDialog.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QCompleter,
@@ -25,6 +30,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -34,7 +40,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
-    QTabBar,
+    QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -51,7 +58,7 @@ from reportflow.core.output_names import (
     overwrites_same_day,
 )
 from reportflow.ui.api_client import ApiClient, ApiError
-from reportflow.ui.feedback import FormDialog, InlineNotice
+from reportflow.ui.feedback import FormDialog, InlineNotice, toast
 from reportflow.ui.fs_util import open_start_dir
 from reportflow.ui.placeholder_picker import (
     PlaceholderButton,
@@ -59,10 +66,19 @@ from reportflow.ui.placeholder_picker import (
     output_name_placeholders,
 )
 from reportflow.ui.recipient_field import RecipientField, RecipientSet, header_recipients
+from reportflow.ui.sheet_loader import PoolExecutor, SheetLoader, SheetOutcome
 from reportflow.ui.suggestions import concurrency_groups, email_groups, known_addresses
 from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 from reportflow.ui.windows.schedule_widget import ScheduleWidget
+from reportflow.ui.windows.workbook_panel import (
+    DropOverlay,
+    EmptyDropZone,
+    FileDropFilter,
+    RowView,
+    WorkbookList,
+    is_excel_path,
+)
 
 # Sheet table columns.
 _COL_NAME, _COL_INCLUDE, _COL_EXCEL, _COL_PDF, _COL_HIDDEN = range(5)
@@ -73,6 +89,42 @@ _UNSELECTED_MODES = [
     ("Keep them, hidden", "hide"),
     ("Keep them, visible", "keep"),
 ]
+
+
+_UIDS = itertools.count(1)
+_REREAD_SECONDS = 5.0  # selecting a workbook or returning to the window re-reads at most this often
+_STACK_BELOW = 720  # px: narrower than this, the workbook list sits above the sheets
+
+
+def merge_sheets(rows: list[_SheetRow], names: list[str], *, tick_all: bool) -> list[_SheetRow]:
+    """The workbook's sheets (in its order) with the job's choices kept.
+
+    New sheets come in unticked — or all ticked for a workbook just added (``tick_all``)
+    that has nothing ticked yet. An included sheet the workbook no longer has stays, marked
+    ``missing`` where it was, instead of silently disappearing from the job.
+    """
+    known = {row.name: row for row in rows}
+    include_new = tick_all and not any(row.include for row in rows)
+    present = set(names)
+    merged = [
+        replace(known[name], missing=False) if name in known else _SheetRow(name, include_new)
+        for name in names
+    ]
+    for i, row in enumerate(rows):
+        if row.name in present or not row.include:
+            continue
+        position = 0
+        for before in reversed(rows[:i]):
+            at = next((k for k, r in enumerate(merged) if r.name == before.name), None)
+            if at is not None:
+                position = at + 1
+                break
+        merged.insert(position, replace(row, missing=True))
+    return merged
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
 
 
 def _split_csv(text: str) -> list[str]:
@@ -95,6 +147,7 @@ class _SheetRow:
     excel: bool = True
     pdf: bool = True
     hidden: bool = False
+    missing: bool = False  # included, but the workbook no longer has it
 
 
 @dataclass
@@ -105,6 +158,13 @@ class _WorkbookState:
     rows: list[_SheetRow] = field(default_factory=list)
     unselected: str = "remove"
     pdf_mode: str = "separate"
+    uid: int = field(default_factory=lambda: next(_UIDS))
+    fresh: bool = False  # added in this editor: its first read ticks every sheet
+    read: str = "unread"  # last answer: unread / ok / missing / unreadable / offline
+    reading: bool = False
+    error: str = ""
+    total: int | None = None  # sheets in the file, once read
+    last_read: float = 0.0
 
     @property
     def label(self) -> str:
@@ -134,16 +194,21 @@ class JobEditorDialog(FormDialog):
         self._existing_template_path: str | None = None
         # A template file of the user's that the job stays linked to (re-read every run).
         self._template_link: str | None = None
-        self._workbooks: list[_WorkbookState] = [_WorkbookState()]
+        self._workbooks: list[_WorkbookState] = []
         self._loaded_timeout_seconds: int | None = None
         self._original_name: str | None = None  # EDIT mode: the name the job is stored under
-        self._current_wb = 0
+        self._current_wb: int | None = None
         self._syncing = False  # guards widget signals while the editor fills widgets itself
         self.setWindowTitle("Edit Job" if self._editing else "New Job")
         self.resize(900, 680)
         # One config snapshot feeds the defaults and every autocomplete list.
         self._config = self._fetch_config()
         self._email_groups = email_groups(self._config)
+        self._loader = self._make_loader()
+        self._reactivated = QTimer(self)
+        self._reactivated.setSingleShot(True)
+        self._reactivated.setInterval(250)
+        self._reactivated.timeout.connect(self._on_reactivated)
         self._build()
         if job:
             self._load(job)
@@ -153,6 +218,9 @@ class JobEditorDialog(FormDialog):
                 prefill.get("name", ""), prefill_template, prefill_template_link
             )
         self._update_output_example()
+        # The sheet lists are read now, in the background — always current, never a button.
+        for wb in self._workbooks:
+            self._request_read(wb, force=True)
         self.finish_form(self._save_button_widget)
 
     def _apply_duplicate_mode(
@@ -199,44 +267,46 @@ class JobEditorDialog(FormDialog):
         name_row = QHBoxLayout()
         name_row.addWidget(self.name)
         name_row.addWidget(self.enabled)
-        # One tab per input workbook; × removes one. A run builds them all and sends ONE email.
-        self.workbook_tabs = QTabBar()
-        self.workbook_tabs.setExpanding(False)
-        self.workbook_tabs.setElideMode(Qt.TextElideMode.ElideMiddle)
-        self.workbook_tabs.setUsesScrollButtons(True)
-        self.workbook_tabs.setDocumentMode(True)
-        self.workbook_tabs.addTab(self._workbooks[0].label)
-        self.workbook_tabs.currentChanged.connect(self._on_workbook_switched)
-        self.workbook_tabs.tabCloseRequested.connect(self._remove_workbook)
-        add_wb = QPushButton("+ Add workbook…")
-        add_wb.setToolTip(
-            "Add another Excel file to this job. Every workbook is built on each run and all "
-            "the files go out in one email."
+        self.name.setAcceptDrops(False)  # a dropped file goes to the workbook list instead
+        # The job's workbooks: a list on the left, the selected one's sheets on the right.
+        self.wb_list = WorkbookList()
+        self.wb_list.setMinimumWidth(200)
+        self.wb_list.current_changed.connect(self._on_workbook_selected)
+        self.wb_list.add_requested.connect(self._pick_workbooks)
+        self.wb_list.replace_requested.connect(self._replace_workbook)
+        self.wb_list.remove_requested.connect(self._remove_workbook)
+        self.wb_title = QLabel()
+        self.wb_title.setObjectName("workbookTitle")
+        self.wb_title.setWordWrap(True)
+        self.wb_path = QLabel()
+        self.wb_path.setObjectName("workbookPath")
+        self.wb_path.setProperty("muted", True)
+        self.wb_path.setWordWrap(True)
+        self.wb_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Why the sheets can't be shown fresh right now (file missing, unreadable, ...).
+        self.wb_banner = QFrame()
+        self.wb_banner.setObjectName("workbookBanner")
+        banner_row = QHBoxLayout(self.wb_banner)
+        banner_row.setContentsMargins(12, 8, 8, 8)
+        banner_row.setSpacing(8)
+        self.wb_banner_text = QLabel()
+        self.wb_banner_text.setWordWrap(True)
+        banner_row.addWidget(self.wb_banner_text, 1)
+        self.wb_banner_replace = QPushButton("Replace…")
+        self.wb_banner_replace.clicked.connect(
+            lambda: self._replace_workbook(self._current_wb if self._current_wb is not None else -1)
         )
-        add_wb.clicked.connect(self._pick_additional_workbook)
-        wbs_row = QHBoxLayout()
-        wbs_row.addWidget(self.workbook_tabs, 1)
-        wbs_row.addWidget(add_wb)
-        self.input_excel = QLineEdit()
-        self.input_excel.setToolTip("The Excel workbook to open, refresh, and export.")
-        self.input_excel.textChanged.connect(self._on_input_path_edited)
-        browse_wb = QPushButton("Browse…")
-        browse_wb.clicked.connect(self._pick_input_excel)
-        discover = QPushButton("Discover sheets")
-        discover.setToolTip("Read the sheet names from the selected workbook.")
-        discover.clicked.connect(self._discover_sheets)
-        wb_row = QHBoxLayout()
-        wb_row.addWidget(self.input_excel)
-        wb_row.addWidget(browse_wb)
-        wb_row.addWidget(discover)
+        self.wb_banner_retry = QPushButton("Try again")
+        self.wb_banner_retry.clicked.connect(self._retry_current)
+        banner_row.addWidget(self.wb_banner_replace)
+        banner_row.addWidget(self.wb_banner_retry)
+        self.wb_banner.hide()
         self.sheets = QTableWidget(0, 5)
         self.sheets.setHorizontalHeaderLabels(
             ["Sheet", "Include", "Excel attachment", "PDF", "Hidden"]
         )
         self.sheets.verticalHeader().setVisible(False)
         self.sheets.verticalHeader().setDefaultSectionSize(34)
-        self.sheets.setMinimumHeight(150)
-        self.sheets.setMaximumHeight(320)
         self.sheets.setTabKeyNavigation(True)
         self.sheets.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.sheets.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -266,6 +336,7 @@ class JobEditorDialog(FormDialog):
         self.nonselected_mode = QComboBox()
         for label, key in _UNSELECTED_MODES:
             self.nonselected_mode.addItem(label, key)
+        self.nonselected_mode.currentIndexChanged.connect(lambda *_: self._store_current())
         self.nonselected_mode.setToolTip(
             "What the OUTPUT copy does with the sheets you did not include (the source is "
             "never modified):\n"
@@ -278,24 +349,44 @@ class JobEditorDialog(FormDialog):
         )
         self.combine_pdf = QCheckBox("Combine selected sheets into one PDF")
         self.combine_pdf.setToolTip("One PDF for this workbook, in the listed sheet order.")
+        self.combine_pdf.toggled.connect(lambda *_: self._store_current())
         self.combine_pdf.toggled.connect(self._update_output_example)
         input_form.addRow("Job name", name_row)
-        workbook_box = QGroupBox("Workbooks")
-        workbook_layout = QVBoxLayout(workbook_box)
-        workbook_layout.addLayout(wbs_row)
-        source_form = QFormLayout()
-        source_form.addRow("Input Excel file", wb_row)
-        workbook_layout.addLayout(source_form)
-        workbook_layout.addWidget(section_title("Sheets and email attachments"))
-        workbook_layout.addWidget(self.sheets)
-        workbook_layout.addWidget(sheets_hint)
+        details = QWidget()
+        details_col = QVBoxLayout(details)
+        details_col.setContentsMargins(0, 0, 0, 0)
+        details_col.setSpacing(8)
+        details_col.addWidget(self.wb_title)
+        details_col.addWidget(self.wb_path)
+        details_col.addWidget(self.wb_banner)
+        details_col.addSpacing(4)
+        details_col.addWidget(section_title("Sheets and email attachments"))
+        details_col.addWidget(self.sheets)
+        details_col.addWidget(sheets_hint)
         options_form = QFormLayout()
         options_form.addRow("Other local sheets", self.nonselected_mode)
         options_form.addRow("PDF output", self.combine_pdf)
-        workbook_layout.addLayout(options_form)
+        space_layout(options_form, margin=0)
+        details_col.addLayout(options_form)
+        details_col.addStretch(1)
+        self.wb_split = QSplitter(Qt.Orientation.Horizontal)
+        self.wb_split.setChildrenCollapsible(False)
+        self.wb_split.setHandleWidth(16)
+        self.wb_split.addWidget(self.wb_list)
+        self.wb_split.addWidget(details)
+        self.wb_split.setStretchFactor(0, 0)
+        self.wb_split.setStretchFactor(1, 1)
+        self.wb_split.setSizes([300, 600])
+        self.empty_zone = EmptyDropZone()
+        self.empty_zone.add_requested.connect(self._pick_workbooks)
+        self.wb_stack = QStackedWidget()
+        self.wb_stack.addWidget(self.empty_zone)
+        self.wb_stack.addWidget(self.wb_split)
+        workbook_box = QGroupBox("Workbooks")
+        workbook_layout = QVBoxLayout(workbook_box)
+        workbook_layout.addWidget(self.wb_stack)
         space_layout(workbook_layout)
-        general_layout.addWidget(workbook_box)
-        general_layout.addStretch()
+        general_layout.addWidget(workbook_box, 1)
         # ---- Output tab ----
         output_tab = QWidget()
         output_form = QFormLayout(output_tab)
@@ -540,7 +631,17 @@ class JobEditorDialog(FormDialog):
             space_layout(page.layout())
         timeout_group.setSpacing(8)
         wait_group.setSpacing(8)
-        self.tabs.addTab(scroll_page(general_tab), "General")
+        general_scroll = scroll_page(general_tab)
+        # A narrow window stacks the list above the sheets — decided on the width the tab
+        # can SHOW (side by side, the box itself is never narrower than both panes).
+        self._general_view = general_scroll.viewport()
+        self._general_view.installEventFilter(self)
+        self.tabs.addTab(general_scroll, "General")
+        # Excel files can be dropped anywhere on the General tab.
+        self.drop_overlay = DropOverlay(general_scroll.viewport())
+        self._drops = FileDropFilter(
+            general_tab, self.drop_overlay, self._add_paths, zone=self.empty_zone
+        )
         self.tabs.addTab(scroll_page(output_tab), "Output")
         self.tabs.addTab(scroll_page(schedule_tab), "Schedule")
         self.tabs.addTab(scroll_page(email_tab), "Email")
@@ -584,7 +685,6 @@ class JobEditorDialog(FormDialog):
 
     def _preview_job(self) -> dict[str, Any]:
         """What is on screen now, so the template preview shows this job's real email."""
-        self._commit_current()
         return {
             "name": self.name.text().strip(),
             "subject": self.subject.text().strip(),
@@ -606,133 +706,309 @@ class JobEditorDialog(FormDialog):
         return box
 
     # -- workbooks -----------------------------------------------------------------
-    def _commit_current(self) -> None:
-        """Copy the widgets back into the current workbook's state."""
-        wb = self._workbooks[self._current_wb]
-        wb.path = self.input_excel.text().strip()
+    def _current(self) -> _WorkbookState | None:
+        if self._current_wb is None or not 0 <= self._current_wb < len(self._workbooks):
+            return None
+        return self._workbooks[self._current_wb]
+
+    def _store_current(self) -> None:
+        """Every edit of the sheets table, the other-sheets choice or the PDF option goes
+        straight into the shown workbook's state — results read in the background then
+        always merge into the latest choices."""
+        wb = self._current()
+        if wb is None or self._syncing:
+            return
         wb.rows = self._rows()
         wb.unselected = self.nonselected_mode.currentData()
         wb.pdf_mode = "combined" if self.combine_pdf.isChecked() else "separate"
+        self._refresh_row(wb)
 
-    def _show_workbook(self, index: int) -> None:
+    def _row_view(self, wb: _WorkbookState) -> RowView:
+        included = sum(1 for row in wb.rows if row.include)
+        gone = [row.name for row in wb.rows if row.include and row.missing]
+        if wb.reading and wb.total is None and wb.read == "unread":
+            status, kind = "Reading sheets…", "busy"
+        elif wb.read == "missing":
+            status, kind = "⚠ File not found", "warning"
+        elif wb.read == "unreadable":
+            status, kind = "⚠ Can't open the file", "warning"
+        elif gone:
+            status, kind = f"⚠ {_plural(len(gone), 'sheet')} missing", "warning"
+        elif wb.total is not None:
+            status, kind = f"{included} of {_plural(wb.total, 'sheet')}", "muted"
+        else:
+            status, kind = _plural(included, "sheet"), "muted"
+            if wb.read == "offline":
+                status += " · not refreshed"
+        tooltip = wb.path + (f"\n{wb.error}" if wb.error else "")
+        return RowView(wb.label, wb.path, status, kind, tooltip)
+
+    def _refresh_row(self, wb: _WorkbookState) -> None:
+        if wb in self._workbooks:
+            self.wb_list.update_row(self._workbooks.index(wb), self._row_view(wb))
+
+    def _set_workbooks(self, workbooks: list[_WorkbookState]) -> None:
+        self._workbooks = list(workbooks)
+        self.wb_list.set_rows([self._row_view(wb) for wb in self._workbooks], 0)
+        self._show_workbook(0 if self._workbooks else None)
+        self._refresh_workbook_chrome()
+
+    def _show_workbook(self, index: int | None) -> None:
+        """Show workbook ``index`` (None: the job has none — the drop zone shows)."""
+        if index is None or not 0 <= index < len(self._workbooks):
+            self._current_wb = None
+            self.wb_stack.setCurrentWidget(self.empty_zone)
+            self._set_rows([])
+            self._update_output_example()
+            return
         self._current_wb = index
+        self.wb_stack.setCurrentWidget(self.wb_split)
         wb = self._workbooks[index]
+        if self.wb_list.current() != index:
+            self.wb_list.set_current(index)
+        self.wb_title.setText(wb.label)
+        self.wb_path.setText(wb.path)
+        self.wb_path.setToolTip(wb.path)
         self._syncing = True
         try:
-            self.input_excel.setText(wb.path)
             self.combine_pdf.setChecked(wb.pdf_mode == "combined")
             mode_index = self.nonselected_mode.findData(wb.unselected)
             self.nonselected_mode.setCurrentIndex(max(mode_index, 0))
         finally:
             self._syncing = False
         self._set_rows(wb.rows)
+        self._show_banner(wb)
         self._update_output_example()
 
-    def _set_workbooks(self, workbooks: list[_WorkbookState]) -> None:
-        self._workbooks = workbooks or [_WorkbookState()]
-        self._syncing = True
-        try:
-            while self.workbook_tabs.count():
-                self.workbook_tabs.removeTab(0)
-            for wb in self._workbooks:
-                self.workbook_tabs.addTab(wb.label)
-            self.workbook_tabs.setCurrentIndex(0)
-        finally:
-            self._syncing = False
-        self._show_workbook(0)
-        self._refresh_workbook_chrome()
-
-    def _on_workbook_switched(self, index: int) -> None:
-        if self._syncing or index < 0 or index == self._current_wb:
+    def _show_banner(self, wb: _WorkbookState) -> None:
+        gone = [row.name for row in wb.rows if row.include and row.missing]
+        retry = True
+        if wb.read == "missing":
+            text = (
+                "The ReportFlow service can't find this file — it may have moved, or be on a "
+                "drive the service can't see. The job's sheet choices are kept."
+            )
+        elif wb.read == "unreadable":
+            text = f"This file couldn't be opened: {wb.error}"
+        elif wb.read == "offline":
+            text = "The ReportFlow service isn't reachable, so the sheet list can't be refreshed."
+        elif gone:
+            names = ", ".join(f"“{name}”" for name in gone)
+            text = (
+                f"{names} {'is' if len(gone) == 1 else 'are'} no longer in this workbook — "
+                f"untick {'it' if len(gone) == 1 else 'them'} below, or replace the file."
+            )
+            retry = False
+        else:
+            self.wb_banner.hide()
             return
-        self._commit_current()
-        self._show_workbook(index)
+        self.wb_banner_text.setText(text)
+        self.wb_banner_retry.setVisible(retry)
+        self.wb_banner_replace.setVisible(wb.read != "offline")
+        self.wb_banner.show()
 
-    def _add_workbook(self, path: str) -> None:
-        """Append a workbook, switch to it, and read its sheets."""
-        self._commit_current()
-        self._workbooks.append(_WorkbookState(path=path))
-        self._syncing = True
-        try:
-            index = self.workbook_tabs.addTab(self._workbooks[-1].label)
-            self.workbook_tabs.setCurrentIndex(index)
-        finally:
-            self._syncing = False
+    def _on_workbook_selected(self, index: int) -> None:
+        if index < 0 or index == self._current_wb:
+            return
         self._show_workbook(index)
-        self._refresh_workbook_chrome()
-        if path:
-            self._discover_sheets()
+        self._request_read(self._workbooks[index])  # at most every few seconds
 
-    def _pick_additional_workbook(self) -> None:
-        start = open_start_dir(self.input_excel.text().strip())
+    def _pick_workbooks(self) -> None:
+        current = self._current()
+        start = open_start_dir(current.path if current else "")
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Add Excel files to this job", start, "Excel (*.xlsx *.xlsm)"
+            self, "Add Excel workbooks to this job", start, "Excel (*.xlsx *.xlsm)"
         )
-        self.add_workbooks(paths)
+        self._add_paths(paths)
 
     def add_workbooks(self, paths: list[str]) -> None:
-        """Add several workbooks at once; files already in the job are skipped, with one
-        warning naming them (adding the same file twice would build it twice)."""
-        self._commit_current()
-        skipped: list[str] = []
-        for path in paths:
-            if self._workbook_index(path) is not None:
-                skipped.append(Path(path).name)
+        self._add_paths(paths)
+
+    def _add_paths(self, paths: list[str]) -> None:
+        """Add the Excel files among ``paths``; anything already in the job (however its
+        path is spelled) or not an Excel workbook is left out, with one notice saying so."""
+        seen: set[str] = set()
+        added: list[_WorkbookState] = []
+        duplicates: list[str] = []
+        not_excel: list[str] = []
+        for raw in paths:
+            path = str(raw).strip()
+            if not path:
                 continue
-            if len(self._workbooks) == 1 and not self._workbooks[0].path:
-                # A new job's first tab is still empty: fill it rather than leave it blank.
-                self.input_excel.setText(path)
-                self._discover_sheets()
+            name = Path(path).name
+            if Path(path).is_dir() or not is_excel_path(path):
+                not_excel.append(name)
                 continue
-            self._add_workbook(path)
-        if skipped:
-            QMessageBox.warning(
-                self,
-                "Already in this job",
-                "These files are already in this job, so they weren't added again:\n"
-                + "\n".join(f"• {name}" for name in skipped),
-            )
+            key = _same_file_key(path)
+            existing = self._workbook_index(path)
+            if existing is not None or key in seen:
+                duplicates.append(name)
+                if existing is not None:
+                    self.wb_list.flash(existing)
+                continue
+            seen.add(key)
+            wb = _WorkbookState(path=path, fresh=True)
+            self._workbooks.append(wb)
+            self.wb_list.insert_row(len(self._workbooks) - 1, self._row_view(wb))
+            added.append(wb)
+        if added:
+            self._show_workbook(len(self._workbooks) - 1)
+            self._refresh_workbook_chrome()
+            for wb in added:
+                self._request_read(wb, force=True)
+        problems = []
+        if duplicates:
+            problems.append(f"Already in this job: {', '.join(duplicates)}")
+        if not_excel:
+            problems.append(f"Not an Excel workbook (.xlsx, .xlsm): {', '.join(not_excel)}")
+        if problems:
+            toast(self, ". ".join(problems) + ".", "warning")
 
     def _workbook_index(self, path: str, *, ignore: int | None = None) -> int | None:
-        """The tab already holding ``path`` (same file, however it's spelled), or None."""
+        """The workbook already holding ``path`` (same file, however it's spelled), or None."""
         key = _same_file_key(path)
         for i, wb in enumerate(self._workbooks):
             if i != ignore and wb.path and _same_file_key(wb.path) == key:
                 return i
         return None
 
-    def _remove_workbook(self, index: int) -> None:
-        if len(self._workbooks) <= 1:
-            return  # the × is hidden then; a job always has one workbook
-        label = self._workbooks[index].label
-        confirm = QMessageBox.question(self, "Remove workbook", f"Remove {label} from this job?")
-        if confirm != QMessageBox.StandardButton.Yes:
+    def _replace_workbook(self, index: int) -> None:
+        """Point a workbook at another file (e.g. next month's), keeping its sheet choices."""
+        if not 0 <= index < len(self._workbooks):
             return
-        self._commit_current()
-        del self._workbooks[index]
-        self._syncing = True
-        try:
-            self.workbook_tabs.removeTab(index)
-            new_index = min(index, len(self._workbooks) - 1)
-            self.workbook_tabs.setCurrentIndex(new_index)
-        finally:
-            self._syncing = False
-        self._show_workbook(new_index)
+        wb = self._workbooks[index]
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Replace {wb.label}", open_start_dir(wb.path), "Excel (*.xlsx *.xlsm)"
+        )
+        if path:
+            self.replace_workbook(index, path)
+
+    def replace_workbook(self, index: int, path: str) -> None:
+        wb = self._workbooks[index]
+        other = self._workbook_index(path, ignore=index)
+        if other is not None:
+            self.wb_list.flash(other)
+            toast(self, f"{Path(path).name} is already in this job.", "warning")
+            return
+        wb.path = path
+        wb.read, wb.error, wb.total = "unread", "", None
+        self._refresh_row(wb)
+        self._show_workbook(index)
+        self._request_read(wb, force=True)
+
+    def _remove_workbook(self, index: int) -> None:
+        if not 0 <= index < len(self._workbooks):
+            return
+        wb = self._workbooks.pop(index)
+        if self._loader is not None:
+            self._loader.forget(wb.uid)
+        self.wb_list.remove_row(index)
+        self._current_wb = None
+        self._show_workbook(min(index, len(self._workbooks) - 1) if self._workbooks else None)
         self._refresh_workbook_chrome()
+        toast(
+            self,
+            f"Removed {wb.label}.",
+            "info",
+            action=("Undo", lambda: self._restore_workbook(index, wb)),
+        )
+
+    def _restore_workbook(self, index: int, wb: _WorkbookState) -> None:
+        index = min(index, len(self._workbooks))
+        self._workbooks.insert(index, wb)
+        self.wb_list.insert_row(index, self._row_view(wb))
+        self._current_wb = None
+        self._show_workbook(index)
+        self._refresh_workbook_chrome()
+        self._request_read(wb, force=True)
 
     def _refresh_workbook_chrome(self) -> None:
         """Bits that depend on how many workbooks there are."""
         multi = len(self._workbooks) > 1
-        self.workbook_tabs.setTabsClosable(multi)
         self._output_form.setRowVisible(self.on_failure, multi)
         self._update_output_example()
 
-    def _on_input_path_edited(self, text: str) -> None:
-        if self._syncing:
+    def _fit_workbook_layout(self) -> None:
+        """Side by side when there's room; in a narrow window the list sits above."""
+        narrow = self._general_view.width() < _STACK_BELOW
+        orientation = Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal
+        if self.wb_split.orientation() != orientation:
+            self.wb_split.setOrientation(orientation)
+            self.wb_list.setMaximumHeight(220 if narrow else 16777215)
+            self.wb_list.setMinimumWidth(0 if narrow else 200)
+            # Stacked: the list part is only as tall as it needs; the sheets get the rest.
+            self.wb_split.setSizes([220, 2000] if narrow else [300, 600])
+
+    def eventFilter(self, watched: Any, event: QEvent) -> bool:  # noqa: N802
+        if watched is getattr(self, "_general_view", None) and event.type() == QEvent.Type.Resize:
+            self._fit_workbook_layout()
+        return super().eventFilter(watched, event)
+
+    # -- reading sheets (always current, in the background) ---------------------------
+    def _make_loader(self) -> SheetLoader | None:
+        make_reader = getattr(self._api, "sheet_reader", None)
+        if make_reader is None:
+            return None  # an API without one (a bare test double): nothing is read
+        executor = getattr(self._api, "sheet_executor", None) or PoolExecutor.shared()
+        loader = SheetLoader(make_reader(), executor, self)
+        loader.loaded.connect(self._on_sheets_loaded)
+        return loader
+
+    def _request_read(self, wb: _WorkbookState, *, force: bool = False) -> None:
+        if self._loader is None or not wb.path:
             return
-        self._workbooks[self._current_wb].path = text.strip()
-        self.workbook_tabs.setTabText(self._current_wb, self._workbooks[self._current_wb].label)
-        self._update_output_example()
+        now = time.monotonic()
+        if not force and (wb.reading or now - wb.last_read < _REREAD_SECONDS):
+            return
+        # Marked first: an immediate answer (e.g. a fast local read) must find it reading.
+        wb.reading = True
+        wb.last_read = now
+        self._refresh_row(wb)
+        self._loader.request(wb.uid, wb.path)
+
+    def _on_sheets_loaded(self, uid: int, path: str, outcome: SheetOutcome) -> None:
+        wb = next((w for w in self._workbooks if w.uid == uid), None)
+        if wb is None or wb.path != path:
+            return  # removed or replaced since it was asked for
+        wb.reading = False
+        wb.last_read = time.monotonic()
+        wb.read = outcome.state
+        wb.error = outcome.message
+        changed = False
+        if outcome.state == "ok":
+            wb.total = len(outcome.names)
+            merged = merge_sheets(wb.rows, list(outcome.names), tick_all=wb.fresh)
+            wb.fresh = False
+            changed = merged != wb.rows
+            wb.rows = merged
+        self._refresh_row(wb)
+        if wb is self._current():
+            if changed:
+                self._set_rows(wb.rows, keep_view=True)
+            self._show_banner(wb)
+            self._update_output_example()
+
+    def _retry_current(self) -> None:
+        wb = self._current()
+        if wb is not None:
+            self._request_read(wb, force=True)
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            self._reactivated.start()  # back from Excel: the files may have changed
+
+    def _on_reactivated(self) -> None:
+        modal = QApplication.activeModalWidget()
+        if modal is not None and modal is not self:
+            return  # a file dialog or message box is up; activation is just churn
+        for wb in self._workbooks:
+            self._request_read(wb)
+
+    def done(self, result: int) -> None:
+        if self._loader is not None:
+            self._loader.close()
+        super().done(result)
 
     # -- sheet table -----------------------------------------------------------------
     @staticmethod
@@ -746,16 +1022,32 @@ class JobEditorDialog(FormDialog):
         item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
         return item
 
-    def _set_rows(self, rows: list[_SheetRow]) -> None:
+    def _set_rows(self, rows: list[_SheetRow], *, keep_view: bool = False) -> None:
+        scroll = self.sheets.verticalScrollBar()
+        position = scroll.value() if keep_view and scroll is not None else 0
+        current = (self.sheets.currentRow(), self.sheets.currentColumn())
         self._syncing = True
         try:
-            self.sheets.setMaximumHeight(min(320, max(150, 36 * (len(rows) + 1))))
+            # Exactly tall enough for its rows (scrolling only past ~9 of them), so the
+            # space below can never squeeze it.
+            header = self.sheets.horizontalHeader().sizeHint().height()
+            body = 34 * max(len(rows), 3)
+            self.sheets.setFixedHeight(min(header + body + 14, 360))
             self.sheets.setRowCount(0)
             for row in rows:
                 r = self.sheets.rowCount()
                 self.sheets.insertRow(r)
-                name = QTableWidgetItem(row.name)
+                label = f"⚠  {row.name} — not in the file any more" if row.missing else row.name
+                name = QTableWidgetItem(label)
+                name.setData(Qt.ItemDataRole.UserRole, row.name)
+                name.setData(Qt.ItemDataRole.UserRole + 1, row.missing)
                 name.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                if row.missing:
+                    name.setForeground(QColor("#fbbf24"))
+                    name.setToolTip(
+                        "The job includes this sheet, but the workbook doesn't have it any more. "
+                        "Untick it, or replace the file."
+                    )
                 self.sheets.setItem(r, _COL_NAME, name)
                 self.sheets.setItem(r, _COL_INCLUDE, self._check_item(row.include))
                 self.sheets.setItem(r, _COL_EXCEL, self._check_item(row.excel))
@@ -764,26 +1056,41 @@ class JobEditorDialog(FormDialog):
                 self._sync_row_enabled(r)
         finally:
             self._syncing = False
+        if keep_view:
+            if scroll is not None:
+                scroll.setValue(position)
+            if 0 <= current[0] < self.sheets.rowCount():
+                self.sheets.setCurrentCell(*current)
 
     def _rows(self) -> list[_SheetRow]:
         def checked(r: int, c: int) -> bool:
             item = self.sheets.item(r, c)
             return item is not None and item.checkState() == Qt.CheckState.Checked
 
-        def name(r: int) -> str:
+        def name(r: int) -> tuple[str, bool]:
             item = self.sheets.item(r, _COL_NAME)
-            return item.text() if item is not None else ""
-
-        return [
-            _SheetRow(
-                name=name(r),
-                include=checked(r, _COL_INCLUDE),
-                excel=checked(r, _COL_EXCEL),
-                pdf=checked(r, _COL_PDF),
-                hidden=checked(r, _COL_HIDDEN),
+            if item is None:
+                return "", False
+            stored = item.data(Qt.ItemDataRole.UserRole)
+            return (
+                str(stored) if stored is not None else item.text(),
+                bool(item.data(Qt.ItemDataRole.UserRole + 1)),
             )
-            for r in range(self.sheets.rowCount())
-        ]
+
+        rows = []
+        for r in range(self.sheets.rowCount()):
+            sheet, missing = name(r)
+            rows.append(
+                _SheetRow(
+                    name=sheet,
+                    include=checked(r, _COL_INCLUDE),
+                    excel=checked(r, _COL_EXCEL),
+                    pdf=checked(r, _COL_PDF),
+                    hidden=checked(r, _COL_HIDDEN),
+                    missing=missing,
+                )
+            )
+        return rows
 
     def _sync_row_enabled(self, r: int) -> None:
         """PDF / Hidden only apply to included sheets — grey them out otherwise."""
@@ -814,6 +1121,10 @@ class JobEditorDialog(FormDialog):
                 self._sync_row_enabled(item.row())
             finally:
                 self._syncing = False
+        self._store_current()
+        wb = self._current()
+        if wb is not None:
+            self._show_banner(wb)
         self._update_output_example()
 
     def _toggle_column(self, col: int) -> None:
@@ -821,11 +1132,13 @@ class JobEditorDialog(FormDialog):
         if col == _COL_NAME:
             return
         rows = self._rows()
-        # PDF/Hidden only apply to included sheets.
+        # PDF/Hidden only apply to included sheets; a sheet the file no longer has is never
+        # ticked by "all".
         targets = [
             r
             for r, row in enumerate(rows)
-            if col == _COL_INCLUDE or (row.include and (col != _COL_HIDDEN or row.excel))
+            if (col == _COL_INCLUDE or (row.include and (col != _COL_HIDDEN or row.excel)))
+            and not (row.missing and not row.include)
         ]
         items = [self.sheets.item(r, col) for r in targets]
         all_on = all(i is not None and i.checkState() == Qt.CheckState.Checked for i in items)
@@ -839,55 +1152,20 @@ class JobEditorDialog(FormDialog):
         return [row.name for row in self._rows() if row.include]
 
     # -- actions -----------------------------------------------------------------
-    def _pick_input_excel(self) -> None:
-        # Reopen at the currently-selected file's folder, else the Downloads folder.
-        start = open_start_dir(self.input_excel.text().strip())
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Excel file", start, "Excel (*.xlsx *.xlsm)"
-        )
-        if path:
-            other = self._workbook_index(path, ignore=self._current_wb)
-            if other is not None:
-                QMessageBox.warning(
-                    self,
-                    "Already in this job",
-                    f"{Path(path).name} is already in this job (tab {other + 1}). Choose a "
-                    "different file, or use that tab.",
-                )
-                return
-            self.input_excel.setText(path)
-            self._discover_sheets()
-            self._update_output_example()
-
     def _pick_output_dir(self) -> None:
-        start = open_start_dir(self.output_dir.text().strip() or self.input_excel.text().strip())
+        current = self._current()
+        start = open_start_dir(self.output_dir.text().strip() or (current.path if current else ""))
         path = QFileDialog.getExistingDirectory(self, "Select output folder", start)
         if path:
             self.output_dir.setText(path)
-
-    def _discover_sheets(self) -> None:
-        path = self.input_excel.text().strip()
-        if not path:
-            return
-        try:
-            names = self._api.workbook_sheets(path)
-        except ApiError as e:
-            QMessageBox.warning(self, "Sheet discovery failed", str(e))
-            return
-        known = {row.name: row for row in self._rows()}
-        # Fresh discovery with nothing ticked yet (a new workbook): include everything —
-        # exporting all sheets is the common case, unticking the exception. Re-discovery
-        # keeps each known sheet's saved choices.
-        include_all = not any(row.include for row in known.values())
-        self._set_rows([known.get(name) or _SheetRow(name, include=include_all) for name in names])
-        self._update_output_example()
 
     def _update_output_example(self) -> None:
         pattern = self.output_name.text().strip() or DEFAULT_OUTPUT_STEM
         multi = len(self._workbooks) > 1
         if multi and "{workbook}" not in pattern:
             pattern += "_{workbook}"  # mirrors the launcher: several outputs need distinct names
-        current = self.input_excel.text().strip()
+        shown = self._current()
+        current = shown.path if shown is not None else ""
         stem = expand_output_name(
             pattern,
             job_name=self.name.text().strip() or "job",
@@ -961,18 +1239,25 @@ class JobEditorDialog(FormDialog):
 
         ``tab_index`` is the workbook tab to bring forward (None: not workbook-specific).
         """
-        self._commit_current()
         if not self.name.text().strip():
             return None, "Job name is required."
+        if not self._workbooks:
+            return None, "Add at least one workbook — drop Excel files here, or Add workbooks…"
         seen: set[str] = set()
         for i, wb in enumerate(self._workbooks):
-            if not wb.path:
-                return i, "Select the input Excel file."
             if _same_file_key(wb.path) in seen:
                 return i, f"{wb.label} is added twice."
             seen.add(_same_file_key(wb.path))
             included = [row for row in wb.rows if row.include]
+            gone = [row.name for row in included if row.missing]
+            if gone:
+                return i, (
+                    f"{wb.label}: {', '.join(gone)} {'is' if len(gone) == 1 else 'are'} no "
+                    "longer in the workbook — untick it, or replace the file."
+                )
             if not included:
+                if wb.read in ("missing", "unreadable", "offline") or wb.reading:
+                    return i, f"{wb.label}: its sheets couldn't be read yet. {wb.error}".strip()
                 return i, f"Include at least one sheet of {wb.label}."
             excel_rows = [row for row in included if row.excel]
             if excel_rows and all(row.hidden for row in excel_rows):
@@ -1006,7 +1291,7 @@ class JobEditorDialog(FormDialog):
             tab, message = problem
             if tab is not None:
                 self.tabs.setCurrentIndex(0)
-                self.workbook_tabs.setCurrentIndex(tab)
+                self._show_workbook(tab)
             QMessageBox.warning(self, "Validation", message)
             return
         try:
@@ -1050,7 +1335,6 @@ class JobEditorDialog(FormDialog):
 
     # -- payload -----------------------------------------------------------------
     def payload(self) -> dict[str, Any]:
-        self._commit_current()
         data: dict[str, Any] = {
             "name": self.name.text().strip(),
             "enabled": self.enabled.isChecked(),
@@ -1132,7 +1416,7 @@ class JobEditorDialog(FormDialog):
             # Renaming is allowed: the service moves the run history and template along.
             self._original_name = job.get("name")
         self.enabled.setChecked(job.get("enabled", True))
-        # Only the included sheets are known until "Discover sheets" reads the workbook.
+        # Only the included sheets are known until the workbook is read (right after this).
         self._set_workbooks(
             [
                 _WorkbookState(

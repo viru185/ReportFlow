@@ -141,6 +141,14 @@ class FakeApi:
     def workbook_sheets(self, path):
         return self._sheets
 
+    def sheet_reader(self):
+        return self.workbook_sheets
+
+    # Sheets are read straight away in tests (the app reads them on a thread pool).
+    from reportflow.ui.sheet_loader import InlineExecutor as _Inline
+
+    sheet_executor = _Inline()
+
     def get_config(self):
         return {
             "smtp": {
@@ -249,9 +257,8 @@ def test_editor_builds_payload_with_new_fields(qtbot):
     qtbot.addWidget(dlg)
 
     dlg.name.setText("daily")
-    dlg.input_excel.setText("C:/t.xlsx")
+    dlg.add_workbooks(["C:/t.xlsx"])  # its sheets are read straight away
     dlg.output_dir.setText("C:/reports")
-    dlg._discover_sheets()
     _check_all(dlg)
     _type(dlg.prod_to, "boss@corp.example.com, mgr@corp.example.com")
     _type(dlg.test_to, "dev@corp.example.com")
@@ -298,14 +305,13 @@ def test_editor_new_job_discovery_checks_all_sheets(qtbot):
 
     dlg = JobEditorDialog(FakeApi())
     qtbot.addWidget(dlg)
-    dlg.input_excel.setText("C:/t.xlsx")
-    dlg._discover_sheets()
-    # New job: everything ticked by default (export-all is the common case).
+    dlg.add_workbooks(["C:/t.xlsx"])
+    # A workbook just added: everything ticked (export-all is the common case).
     assert dlg._checked_sheet_names() == ["Summary", "Detail"]
 
-    # A deliberate partial selection survives re-discovery (no re-check-all).
+    # A deliberate partial selection survives reading the file again.
     _sheet_cell(dlg, "Detail", 1).setCheckState(Qt.CheckState.Unchecked)
-    dlg._discover_sheets()
+    dlg._request_read(dlg._workbooks[0], force=True)
     assert dlg._checked_sheet_names() == ["Summary"]
 
 
@@ -1220,8 +1226,7 @@ def test_editor_stage_and_refresh_wait(qtbot):
 
     # Extra wait plumbs into the payload; stage rides along.
     dlg.name.setText("j")
-    dlg.input_excel.setText("C:/t.xlsx")
-    dlg._discover_sheets()
+    dlg.add_workbooks(["C:/t.xlsx"])  # its sheets are read straight away
     _check_all(dlg)
     _type(dlg.prod_to, "a@x.com")
     _type(dlg.test_to, "b@x.com")
@@ -1249,8 +1254,7 @@ def test_editor_advanced_output_safety_fields(qtbot):
     dlg = JobEditorDialog(FakeApi())
     qtbot.addWidget(dlg)
     dlg.name.setText("j")
-    dlg.input_excel.setText("C:/t.xlsx")
-    dlg._discover_sheets()
+    dlg.add_workbooks(["C:/t.xlsx"])  # its sheets are read straight away
     _check_all(dlg)
     _type(dlg.prod_to, "a@x.com")
     _type(dlg.test_to, "b@x.com")
@@ -1286,7 +1290,7 @@ def test_editor_loads_legacy_single_workbook_job(qtbot):
     dlg = JobEditorDialog(FakeApi(), job)
     qtbot.addWidget(dlg)
     assert dlg.nonselected_mode.currentData() == "keep"
-    assert dlg.input_excel.text() == "C:/t.xlsx"
+    assert dlg._workbooks[0].path == "C:/t.xlsx" and dlg.wb_path.text() == "C:/t.xlsx"
     assert dlg.payload()["workbooks"][0]["sheets"] == [
         {"name": "Summary", "excel": True, "pdf": False, "hidden": False}
     ]
@@ -1304,8 +1308,7 @@ def test_editor_per_sheet_pdf_and_hidden(qtbot):
 
     dlg = JobEditorDialog(FakeApi(sheets=["Summary", "Detail", "Raw"]))
     qtbot.addWidget(dlg)
-    dlg.input_excel.setText("C:/t.xlsx")
-    dlg._discover_sheets()
+    dlg.add_workbooks(["C:/t.xlsx"])  # its sheets are read straight away
     _sheet_cell(dlg, "Detail", 3).setCheckState(Qt.CheckState.Unchecked)  # no PDF
     _sheet_cell(dlg, "Raw", 4).setCheckState(Qt.CheckState.Checked)  # hidden
     sheets = dlg.payload()["workbooks"][0]["sheets"]
@@ -1348,16 +1351,15 @@ def test_editor_attachment_choices_survive_switch_and_rediscovery(qtbot):
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
     dlg = JobEditorDialog(FakeApi(sheets=["Summary", "Detail"]), _sample_job_dict())
-    qtbot.addWidget(dlg)
-    dlg._discover_sheets()
+    qtbot.addWidget(dlg)  # its workbook is read on open
     _sheet_cell(dlg, "Summary", 2).setCheckState(Qt.CheckState.Unchecked)
     assert not _sheet_cell(dlg, "Summary", 4).flags() & Qt.ItemFlag.ItemIsEnabled
     dlg.combine_pdf.setChecked(True)
     dlg.require_pi.setChecked(True)
-    dlg._add_workbook("C:/second.xlsx")
+    dlg.add_workbooks(["C:/second.xlsx"])
     assert not dlg.combine_pdf.isChecked()
-    dlg.workbook_tabs.setCurrentIndex(0)
-    dlg._discover_sheets()
+    dlg.wb_list.list.setCurrentRow(0)  # back to the first workbook
+    dlg._request_read(dlg._workbooks[0], force=True)
     assert dlg.combine_pdf.isChecked()
     assert _sheet_cell(dlg, "Summary", 2).checkState() == Qt.CheckState.Unchecked
     job = JobConfig.model_validate(dlg.payload())
@@ -1367,29 +1369,29 @@ def test_editor_attachment_choices_survive_switch_and_rediscovery(qtbot):
     assert job.workbooks[1].pdf_mode == "separate"
 
 
-def test_editor_multiple_workbooks(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
+def test_editor_multiple_workbooks(qtbot):
+    from reportflow.ui.feedback import toasts
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
     api = FakeApi(sheets=["Summary", "Detail"])
     dlg = JobEditorDialog(api, _sample_job_dict())
     qtbot.addWidget(dlg)
-    assert not dlg.workbook_tabs.tabsClosable()  # one workbook: nothing to remove
+    assert dlg.wb_list.count() == 1
     assert not dlg._output_form.isRowVisible(dlg.on_failure)
 
-    dlg._add_workbook("C:/data/Stock.xlsx")  # switches to it and reads its sheets
-    assert dlg.workbook_tabs.count() == 2 and dlg.workbook_tabs.tabText(1) == "Stock.xlsx"
-    assert dlg.input_excel.text() == "C:/data/Stock.xlsx"
+    dlg.add_workbooks(["C:/data/Stock.xlsx"])  # shows it and reads its sheets
+    assert dlg.wb_list.count() == 2
+    assert dlg.wb_list.rows()[1].name.full_text() == "Stock.xlsx"
+    assert dlg.wb_title.text() == "Stock.xlsx" and dlg._current().path == "C:/data/Stock.xlsx"
     assert dlg._checked_sheet_names() == ["Summary", "Detail"]
-    assert dlg.workbook_tabs.tabsClosable()
+    assert dlg.wb_list.rows()[1].status.text() == "2 of 2 sheets"
     assert dlg._output_form.isRowVisible(dlg.on_failure)
     dlg.on_failure.setCurrentIndex(dlg.on_failure.findData("send_partial"))
     assert "_Stock" in dlg.output_example.text()  # outputs get told apart by workbook
 
-    # Switching tabs keeps each workbook's own state.
-    dlg.workbook_tabs.setCurrentIndex(0)
-    assert dlg.input_excel.text() == "C:/t.xlsx"
+    # Selecting another workbook shows its own state.
+    dlg.wb_list.list.setCurrentRow(0)
+    assert dlg._current().path == "C:/t.xlsx"
     assert dlg._checked_sheet_names() == ["Summary"]
     payload = dlg.payload()
     assert [w["input_excel_path"] for w in payload["workbooks"]] == [
@@ -1398,18 +1400,18 @@ def test_editor_multiple_workbooks(qtbot, monkeypatch):
     ]
     assert payload["on_workbook_failure"] == "send_partial"
 
-    # The same file twice is refused at save.
-    dlg.workbook_tabs.setCurrentIndex(1)
-    dlg.input_excel.setText("C:/t.xlsx")
+    # The same file twice (e.g. from an imported config) is refused at save.
+    dlg._workbooks[1].path = "C:/t.xlsx"
     tab, message = dlg._validation_error()
     assert tab == 1 and "twice" in message
+    dlg._workbooks[1].path = "C:/data/Stock.xlsx"
 
-    monkeypatch.setattr(
-        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
-    )
+    # Remove is one click, with Undo instead of an "are you sure?".
     dlg._remove_workbook(1)
-    assert dlg.workbook_tabs.count() == 1 and len(dlg.payload()["workbooks"]) == 1
-    assert not dlg.workbook_tabs.tabsClosable()
+    assert dlg.wb_list.count() == 1 and len(dlg.payload()["workbooks"]) == 1
+    assert "Removed Stock.xlsx." in toasts(dlg)
+    dlg._restore_workbook(1, dlg._workbooks[0].__class__(path="C:/data/Stock.xlsx"))
+    assert dlg.wb_list.count() == 2
 
 
 def test_settings_debug_toggle_saves(qtbot):
@@ -2031,45 +2033,48 @@ def test_editor_hands_the_template_preview_this_job(qtbot, monkeypatch):
 
 
 def test_add_several_workbooks_at_once_and_skip_duplicates(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from PySide6.QtWidgets import QFileDialog
 
+    from reportflow.ui.feedback import toasts
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
-    warned = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: warned.append(a[2])))
     picked = ["C:/data/Sales.xlsx", "C:/data/Stock.xlsx", "C:/data/Energy.xlsx"]
     monkeypatch.setattr(
         QFileDialog, "getOpenFileNames", staticmethod(lambda *a, **k: (picked, "Excel"))
     )
     dlg = JobEditorDialog(FakeApi(sheets=["Summary"]))
     qtbot.addWidget(dlg)
+    assert dlg.wb_stack.currentWidget() is dlg.empty_zone  # a new job starts empty
 
-    dlg._pick_additional_workbook()  # one dialog, three files
-    # The new job's empty first tab is filled, not left blank.
+    dlg._pick_workbooks()  # one dialog, three files
     assert [wb.path for wb in dlg._workbooks] == picked
-    assert dlg.workbook_tabs.count() == 3 and not warned
+    assert dlg.wb_list.count() == 3 and not toasts(dlg)
+    assert dlg.wb_stack.currentWidget() is dlg.wb_split
 
-    # Picking files that are already in the job (any spelling) adds nothing and says so.
+    # Files already in the job (any spelling) are skipped, with one notice naming them.
     picked = ["c:\\DATA\\sales.xlsx", "C:/data/New.xlsx"]
-    dlg._pick_additional_workbook()
+    dlg._pick_workbooks()
     assert [Path(wb.path).name for wb in dlg._workbooks][-1] == "New.xlsx"
     assert len(dlg._workbooks) == 4
-    assert warned and "sales.xlsx" in warned[-1]
+    assert any("Already in this job: sales.xlsx" in t for t in toasts(dlg))
 
 
-def test_browse_refuses_a_workbook_another_tab_has(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QFileDialog, QMessageBox
+def test_browse_refuses_a_workbook_another_tab_has(qtbot):
+    """Replace refuses a file another workbook already has, and keeps sheet choices."""
+    from PySide6.QtCore import Qt
 
+    from reportflow.ui.feedback import toasts
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
-    warned = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: warned.append(a[2])))
-    dlg = JobEditorDialog(FakeApi(), _sample_job_dict())  # tab 1: C:/t.xlsx
+    dlg = JobEditorDialog(FakeApi(), _sample_job_dict())  # workbook 1: C:/t.xlsx
     qtbot.addWidget(dlg)
-    dlg._add_workbook("C:/data/Other.xlsx")
-    monkeypatch.setattr(
-        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("C:\\T.xlsx", "Excel"))
-    )
-    dlg._pick_input_excel()
-    assert dlg.input_excel.text() == "C:/data/Other.xlsx"  # unchanged
-    assert warned and "tab 1" in warned[-1]
+    dlg.add_workbooks(["C:/data/Other.xlsx"])
+    dlg.replace_workbook(1, "C:\\T.xlsx")
+    assert dlg._workbooks[1].path == "C:/data/Other.xlsx"  # unchanged
+    assert "T.xlsx is already in this job." in toasts(dlg)
+
+    # Next month's file: same sheets, same choices.
+    _sheet_cell(dlg, "Detail", 1).setCheckState(Qt.CheckState.Unchecked)
+    dlg.replace_workbook(1, "C:/data/Other_Nov.xlsx")
+    assert dlg._workbooks[1].path == "C:/data/Other_Nov.xlsx"
+    assert dlg._checked_sheet_names() == ["Summary"]

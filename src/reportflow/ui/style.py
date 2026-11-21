@@ -528,6 +528,82 @@ QListView#completerPopup::item:selected {{
     background: {ACCENT};
     color: #ffffff;
 }}
+/* -- workbook list (ui/windows/workbook_panel.py) -- */
+QListWidget#workbookItems {{
+    padding: 4px;
+    outline: none;
+}}
+QListWidget#workbookItems::item {{
+    border-radius: 6px;
+    margin: 1px 0;
+}}
+QListWidget#workbookItems::item:selected {{
+    background: #1f3350;
+}}
+QFrame#workbookRow {{
+    background: transparent;
+    border-radius: 6px;
+}}
+QFrame#workbookRow:hover {{
+    background: rgba(255, 255, 255, 0.04);
+}}
+QFrame#workbookRow[flash="true"] {{
+    background: #1d3a5f;
+}}
+QLabel#workbookName {{
+    font-weight: 600;
+    color: {TEXT};
+}}
+QLabel#workbookStatus {{
+    font-size: 12px;
+    color: {TEXT_MUTED};
+}}
+QLabel#workbookStatus[kind="warning"] {{
+    color: #fbbf24;
+}}
+QLabel#workbookStatus[kind="busy"] {{
+    color: {ACCENT_HOVER};
+}}
+QToolButton#workbookAction {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0;
+    color: {TEXT_MUTED};
+}}
+QToolButton#workbookAction:hover {{
+    background: {FIELD_BG};
+    border-color: {BORDER_HOVER};
+}}
+QToolButton#workbookAction[danger="true"] {{
+    font-size: 16px;
+}}
+QToolButton#workbookAction[danger="true"]:hover {{
+    color: #f87171;
+    border-color: #7f1d1d;
+}}
+QLabel#dropHint {{
+    font-size: 12px;
+}}
+QLabel#dropTitle {{
+    font-size: 15px;
+    font-weight: 600;
+}}
+QLabel#workbookTitle {{
+    font-size: 15px;
+    font-weight: 600;
+}}
+QLabel#workbookPath {{
+    font-size: 12px;
+}}
+QFrame#workbookBanner {{
+    background: #3a2c10;
+    border: 1px solid #6b4f12;
+    border-radius: 6px;
+}}
+QFrame#workbookBanner QLabel {{
+    color: #fde68a;
+}}
 /* -- segmented toggle (e.g. Preview as Testing | Production) -- */
 QPushButton[segment="true"][segmentPos="first"] {{
     border-top-right-radius: 0;

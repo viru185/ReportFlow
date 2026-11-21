@@ -33,7 +33,7 @@ from reportflow.core.state import RunStore, RunTrigger
 from reportflow.service.bootstrap import seed_data_files
 from reportflow.service.launcher import Launcher
 from reportflow.service.scheduler import SchedulerService
-from reportflow.service.workbook import WorkbookError, discover_sheets
+from reportflow.service.workbook import WorkbookError, WorkbookNotFound, discover_sheets
 
 
 class GroupInUseError(Exception):
@@ -640,6 +640,8 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
     def workbook_sheets(req: SheetsRequest) -> dict[str, Any]:
         try:
             return {"sheets": discover_sheets(Path(req.path))}
+        except WorkbookNotFound as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
         except WorkbookError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 

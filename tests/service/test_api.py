@@ -67,9 +67,20 @@ def test_workbook_sheet_discovery(client):
     assert resp.json()["sheets"] == ["Summary", "Detail"]
 
 
-def test_workbook_missing_returns_400(client):
+def test_workbook_missing_returns_404_and_says_why(client):
     c, tmp_path = client
     resp = c.post("/workbook/sheets", json={"path": str(tmp_path / "nope.xlsx")})
+    # 404 = the file isn't there (for the service's account); the editor shows that
+    # differently from a file it can't open (400) or a service that is down.
+    assert resp.status_code == 404
+    assert "full network path" in resp.json()["detail"]
+
+
+def test_workbook_that_is_not_excel_returns_400(client):
+    c, tmp_path = client
+    bad = tmp_path / "bad.xlsx"
+    bad.write_text("not a workbook", encoding="utf-8")
+    resp = c.post("/workbook/sheets", json={"path": str(bad)})
     assert resp.status_code == 400
 
 

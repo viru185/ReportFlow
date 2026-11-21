@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -135,6 +136,20 @@ class ApiClient:
     # -- workbook / email --
     def workbook_sheets(self, path: str) -> list[str]:
         return self._request("POST", "/workbook/sheets", json={"path": path})["sheets"]
+
+    def sheet_reader(self) -> Callable[[str], list[str]]:
+        """A sheet-name reader safe to call on a worker thread: each call uses its own
+        short-lived client, so no HTTP connection is shared between threads."""
+        base_url = self.base_url
+
+        def read(path: str) -> list[str]:
+            client = ApiClient(base_url, timeout=20.0)
+            try:
+                return client.workbook_sheets(path)
+            finally:
+                client.close()
+
+        return read
 
     def email_preview(self, job_name: str | None = None) -> str:
         payload = {"job_name": job_name} if job_name else {}
