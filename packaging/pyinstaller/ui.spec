@@ -66,16 +66,16 @@ a = Analysis(
     [os.path.join(ROOT, "src", "reportflow", "ui", "__main__.py")],
     pathex=[os.path.join(ROOT, "src")],
     datas=[
-        (os.path.join(ROOT, "assets", "reportflow.png"), "assets"),
-        (os.path.join(ROOT, "assets", "check.svg"), "assets"),
-        (os.path.join(ROOT, "assets", "group.svg"), "assets"),
-        (os.path.join(ROOT, "assets", "workbook.svg"), "assets"),
-        (os.path.join(ROOT, "assets", "replace.svg"), "assets"),
+        # Every UI image: the logo, the arrows and all the line icons (kit buttons, menus,
+        # the Output card…). A glob, so a new icon can't be forgotten here (0.14 added 15).
+        *[
+            (os.path.join(ROOT, "assets", name), "assets")
+            for name in sorted(os.listdir(os.path.join(ROOT, "assets")))
+            if name.endswith((".svg", ".png"))
+        ],
         # The Help guide (loaded from next to the help_dialog module).
         (os.path.join(ROOT, "src", "reportflow", "ui", "help", "user_guide.md"),
          os.path.join("reportflow", "ui", "help")),
-        (os.path.join(ROOT, "assets", "arrow-up.png"), "assets"),
-        (os.path.join(ROOT, "assets", "arrow-down.png"), "assets"),
         # The version lives only in pyproject.toml; frozen exes read package metadata.
         *copy_metadata("reportflow"),
     ],
