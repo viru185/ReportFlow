@@ -47,6 +47,21 @@ def section_title(text: str) -> QLabel:
     return label
 
 
+def is_checked(value: object) -> bool:
+    """Whether a CheckStateRole value means ticked — whichever form it comes back in.
+
+    ``setCheckState`` stores the number 2, but ``setData(CheckStateRole, Qt.CheckState…)``
+    stores the enum, and ``Qt.CheckState.Checked == 2`` is False in PySide6. Comparing with
+    ``.value`` alone drew a re-ticked box as empty (and the third click could not untick):
+    the 0.14 "untick and tick again doesn't work" report."""
+    if isinstance(value, Qt.CheckState):
+        return value == Qt.CheckState.Checked
+    try:
+        return int(value) == Qt.CheckState.Checked.value  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return False
+
+
 class CenteredCheckDelegate(QStyledItemDelegate):
     """Use the same centered rectangle for painting and mouse hit testing."""
 
@@ -63,7 +78,7 @@ class CenteredCheckDelegate(QStyledItemDelegate):
         button.rect = self.indicator_rect(option)
         button.state = (
             QStyle.StateFlag.State_On
-            if index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked.value
+            if is_checked(index.data(Qt.ItemDataRole.CheckStateRole))
             else QStyle.StateFlag.State_Off
         )
         if index.flags() & Qt.ItemFlag.ItemIsEnabled:
@@ -90,7 +105,7 @@ class CenteredCheckDelegate(QStyledItemDelegate):
                 return False
         else:
             return False
-        checked = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked.value
+        checked = is_checked(index.data(Qt.ItemDataRole.CheckStateRole))
         return model.setData(
             index,
             Qt.CheckState.Unchecked if checked else Qt.CheckState.Checked,

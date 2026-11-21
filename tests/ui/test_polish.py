@@ -53,6 +53,40 @@ def test_sheet_checkbox_center_mouse_and_keyboard(qtbot):
     assert table.item(0, 2).checkState() == Qt.CheckState.Checked
 
 
+def test_unticking_and_ticking_again_shows_the_tick(qtbot, themed_app):
+    """0.14 hot fix: the stored state flipped, but a re-ticked box was drawn empty."""
+    from PySide6.QtGui import QColor
+    from tests.ui.test_ui import FakeApi, _sample_job_dict
+
+    from reportflow.ui.style import ACCENT
+
+    dialog = JobEditorDialog(FakeApi(), _sample_job_dict())  # one workbook: the table shows
+    qtbot.addWidget(dialog)
+    dialog.resize(900, 680)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    table = dialog.sheets
+    index = table.model().index(0, 1)  # Include
+    option = QStyleOptionViewItem()
+    option.widget = table
+    option.rect = table.visualRect(index)
+    box = CenteredCheckDelegate.indicator_rect(option)
+
+    def drawn_ticked() -> bool:
+        image = table.viewport().grab().toImage()
+        ratio = image.devicePixelRatio()
+        pixel = image.pixelColor(int((box.left() + 3) * ratio), int((box.top() + 3) * ratio))
+        return pixel.name() == QColor(ACCENT).name()  # a ticked box is filled blue
+
+    assert drawn_ticked()
+    for expected in (False, True, False, True):
+        qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=box.center())
+        state = table.item(0, 1).checkState() == Qt.CheckState.Checked
+        assert state is expected
+        assert drawn_ticked() is expected  # what you see matches what will be saved
+    assert dialog._rows()[0].include is True
+
+
 def test_editor_pages_scroll_with_actions_outside_content(qtbot):
     dialog = JobEditorDialog(SimpleNamespace(get_config=lambda: {}))
     qtbot.addWidget(dialog)
