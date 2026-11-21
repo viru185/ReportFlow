@@ -120,7 +120,8 @@ Click **+ New Job**. The editor is organized in sections:
   *⚠ Can't open*, or *Service not reachable*. **Replace…** (keeps the sheet choices) and
   **Remove** (with **Undo**) sit beside the selected workbook's name, with its path (copy / open
   in Explorer) underneath; right-click and the **Delete** key work too. Every run builds all the
-  workbooks and sends **one** email with every file attached.
+  workbooks and sends **one** email with every file attached — in list order: drag a row's
+  **⠿** grip (shown on hover), press **Alt+↑/↓**, or use **Move up / Move down** in its menu.
 - **Sheets are read automatically** — when the editor opens, when a file is added or replaced,
   when you select a workbook and when you come back to the window — so the list is always
   current; there is no Browse or Discover button. A new workbook has every sheet ticked; sheets
@@ -158,7 +159,8 @@ Click **+ New Job**. The editor is organized in sections:
 with its own ×; **+ Add time** opens a small picker — press **Add** (or Enter) and the time
 appears as a pill straight away, so every time shown is a time that will run (a time already in
 the rule is refused in the picker). Weekly rules pick days with **Mon … Sun** toggles. Each card
-has a quiet **Remove**. The summary above the cards says when the job runs, and turns amber with
+has a quiet **Remove**, and a **⠿** grip beside its kind to drag it into place (or **Alt+↑/↓**);
+a custom rule keeps its place when the job is reopened. The summary above the cards says when the job runs, and turns amber with
 the reason when a rule can't be used. Two rules that would start the job at the same moment
 (the same rule twice, or Daily 06:00 and Sunday 06:00) are caught as you edit: the later card is
 outlined in red with the reason and Save waits — nothing is merged away silently. The service
@@ -198,6 +200,12 @@ highlighted — **Enter** or **Tab** adds it (arrows pick another). Without sugg
 Tab, `,` or `;` adds what you typed, and a pasted list is split. Only a chip's **×** removes it;
 Backspace in an empty box removes the last chip. Suggestions leave out whoever is already in the
 set (directly or through a group).
+
+**The order is the email's order** (who comes first matters to corporate readers): a group's
+members go out at the group's place. **Drag a chip** to reorder it, or into another box of the
+same set (To → Cc); **double-click an address** (or F2) to fix it in place; **right-click** for
+Edit, Copy, Move to To / Cc / Bcc and Remove; **←** selects the last chip, **Alt+←/→** moves the
+selected one.
 
 - **Email groups** (File → Settings → Email groups) — name a list of addresses once and use the
   name in any job. **Double-click a group's chip** in a job to edit the group there (it says
@@ -254,6 +262,9 @@ Two single-click actions on each job card — the job's stage answers "who gets 
 While a job is **running**, its card shows a live elapsed counter and the run buttons lock so
 it can't be double-fired. Multiple jobs run in parallel, each in its own disposable worker
 process. A failed run is never retried automatically — it's recorded and visible in history.
+
+Drag a card's **⠿** grip (shown on hover) to put the jobs in the order you want — it's saved for
+everyone using this ReportFlow — or select a card and press **Alt+↑/↓**.
 
 Each card's **coloured left edge** tells the last run's outcome at a glance — green =
 success, red = failed, amber = running, grey = never ran (or paused) — and the detail line
