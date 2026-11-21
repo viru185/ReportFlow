@@ -84,4 +84,5 @@ def test_double_clicking_a_chip_edits_the_group_and_the_job_follows(qtbot, monke
     assert editor.test_to.chip(GROUP, "Plant managers").label.text() == "Plant managers · 2"
     assert "Plant managers" in editor._email_groups
     assert any("Saved the group Plant managers" in t for t in toasts(editor))
-    assert editor.payload()["test"]["to_groups"] == ["Plant managers"]
+    # An old-shaped job (groups apart) loads; the renamed group keeps its place.
+    assert editor.payload()["test"]["to"] == ["dev@corp.example.com", {"group": "Plant managers"}]

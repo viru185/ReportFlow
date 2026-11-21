@@ -9,6 +9,7 @@ from reportflow.core.config.models import (
     AppConfig,
     EmailGroup,
     EmailSettings,
+    GroupRef,
     JobConfig,
     Recipients,
 )
@@ -35,9 +36,46 @@ def test_overlapping_groups_email_everyone_once_to_before_cc_before_bcc():
 
 
 def test_to_needs_an_address_or_a_group():
-    assert Recipients(to_groups=["Plant leads"]).to == []
+    assert Recipients(to=[{"group": "Plant leads"}]).groups("to") == ["Plant leads"]
     with pytest.raises(ValidationError, match="at least one address or email group"):
         Recipients(cc=["a@corp.example.com"])
+
+
+def test_people_are_sent_in_the_order_the_job_lists_them():
+    """0.15: order matters to corporate readers — a group goes out at its place in the
+    list, its members in the group's own order."""
+    recipients = Recipients(
+        to=["boss@corp.example.com", {"group": "Plant leads"}, "mary@corp.example.com"],
+        cc=[{"group": "Energy team"}, "audit@corp.example.com"],
+    )
+    resolved = resolve(recipients, [LEADS, ENERGY])
+    assert resolved.to == [
+        "boss@corp.example.com",
+        "a@corp.example.com",
+        "B@corp.example.com",
+        "mary@corp.example.com",
+    ]
+    assert resolved.cc == ["c@corp.example.com", "audit@corp.example.com"]  # b@ is in To
+
+
+def test_an_old_job_keeps_its_email_order():
+    """Before 0.15 groups were stored apart and sent after the addresses: they load there,
+    and are saved back in the new shape."""
+    old = Recipients.model_validate(
+        {"to": ["boss@corp.example.com"], "to_groups": ["Plant leads", "plant LEADS"]}
+    )
+    assert old.to == ["boss@corp.example.com", GroupRef(group="Plant leads")]
+    dumped = old.model_dump(mode="json")
+    assert dumped["to"] == ["boss@corp.example.com", {"group": "Plant leads"}]
+    assert "to_groups" not in dumped
+    assert Recipients.model_validate(dumped) == old
+
+
+def test_a_bad_address_reports_only_the_address_problem():
+    with pytest.raises(ValidationError) as info:
+        Recipients(to=["boss@corp.example.com", "not-an-address"])
+    errors = info.value.errors()
+    assert len(errors) == 1 and "email" in errors[0]["msg"]
 
 
 def test_group_names_must_be_usable_and_unique():

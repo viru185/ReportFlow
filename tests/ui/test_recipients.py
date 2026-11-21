@@ -85,7 +85,8 @@ def test_adding_a_group_takes_over_the_people_it_covers_with_undo(qtbot, prod):
     assert notice.plain.startswith("Removed a@corp.example.com, b@corp.example.com")
     notice.linkActivated.emit("action")  # Undo
     assert to.groups() == []
-    assert cc.emails() == ["ops@corp.example.com", "a@corp.example.com"]
+    # 0.15: Undo puts people back where they were, not at the end.
+    assert cc.emails() == ["a@corp.example.com", "ops@corp.example.com"]
     assert bcc.emails() == ["b@corp.example.com"]
 
 

@@ -554,15 +554,20 @@ def test_email_groups_rename_follows_into_jobs_and_in_use_groups_stay(client):
     ]
     assert c.put("/email-groups", json={"groups": groups}).status_code == 200
     job = dict(_job_payload(tmp_path))
-    job["prod"] = {"to": ["boss@corp.example.com"], "cc_groups": ["Plant leads"]}
+    job["prod"] = {
+        "to": ["boss@corp.example.com"],
+        "cc": ["x@corp.example.com", {"group": "Plant leads"}, "y@corp.example.com"],
+    }
     assert c.post("/jobs", json=job).status_code == 201
 
     # The promotion confirmation names everyone production will get, groups expanded.
     summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
     assert summary["prod_recipients"] == [
         "boss@corp.example.com",
+        "x@corp.example.com",
         "a@corp.example.com",
         "b@corp.example.com",
+        "y@corp.example.com",
     ]
 
     # Deleting a group a job still uses is refused, naming the job.
@@ -572,7 +577,12 @@ def test_email_groups_rename_follows_into_jobs_and_in_use_groups_stay(client):
     # Renaming carries the job along; the unused group can go.
     renamed = {**groups[0], "name": "Plant managers", "renamed_from": "Plant leads"}
     assert c.put("/email-groups", json={"groups": [renamed]}).status_code == 200
-    assert c.get("/jobs/daily").json()["job"]["prod"]["cc_groups"] == ["Plant managers"]
+    # ... and the renamed group keeps its place in the list.
+    assert c.get("/jobs/daily").json()["job"]["prod"]["cc"] == [
+        "x@corp.example.com",
+        {"group": "Plant managers"},
+        "y@corp.example.com",
+    ]
     names = [g["name"] for g in c.get("/config").json()["email"]["groups"]]
     assert names == ["Plant managers"]
 
@@ -581,7 +591,7 @@ def test_job_with_an_unknown_email_group_is_refused(client):
     c, tmp_path = client
     _make_wb(tmp_path / "t.xlsx")
     job = dict(_job_payload(tmp_path))
-    job["prod"] = {"to_groups": ["Nobody"]}
+    job["prod"] = {"to": [{"group": "Nobody"}]}
     resp = c.post("/jobs", json=job)
     assert resp.status_code == 400 and "doesn't exist" in resp.json()["detail"]
 

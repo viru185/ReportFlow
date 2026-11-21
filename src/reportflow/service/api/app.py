@@ -18,7 +18,7 @@ from pydantic import BaseModel, EmailStr, Field
 from reportflow import __version__
 from reportflow.core import paths, secrets
 from reportflow.core.config.loader import ConfigError, load_config, save_config
-from reportflow.core.config.models import AppConfig, JobConfig
+from reportflow.core.config.models import RECIPIENT_FIELDS, AppConfig, JobConfig
 from reportflow.core.email import (
     build_log_bundle,
     redact_config,
@@ -142,9 +142,13 @@ class ServiceState:
             ]
             for job in data["job"]:
                 for side in ("prod", "test"):
-                    for key in ("to_groups", "cc_groups", "bcc_groups"):
+                    for key in RECIPIENT_FIELDS:
+                        # A renamed group keeps its place in the list.
                         job[side][key] = [
-                            renames.get(name.casefold(), name) for name in job[side][key]
+                            {"group": renames.get(e["group"].casefold(), e["group"])}
+                            if isinstance(e, dict)
+                            else e
+                            for e in job[side][key]
                         ]
             new_config = AppConfig.model_validate(data)
             save_config(new_config)

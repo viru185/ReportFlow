@@ -656,11 +656,12 @@ stage = "live"                            # "testing" (default) emails testers; 
     { name = "Detail",  pdf = false, hidden = true },
   ]
 
-  [job.prod]
-  to  = ["managers@corp.example.com"]
-  to_groups = ["Plant managers"]          # email groups; To needs an address or a group
+  [job.prod]                              # in the order the email lists people
+  to  = ["managers@corp.example.com", { group = "Plant managers" }]  # To needs one or more
   cc  = ["ops@corp.example.com"]          # optional
-  # bcc = [...] / cc_groups / bcc_groups  # optional
+  # bcc = [...]                           # optional; groups go in as { group = "..." }
+  # (Before 0.15 groups were separate keys — to_groups / cc_groups / bcc_groups — and were
+  #  sent after the addresses; such configs still load, in that order.)
 
   [job.test]
   to  = ["dev-team@corp.example.com"]

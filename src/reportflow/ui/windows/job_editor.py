@@ -82,7 +82,12 @@ from reportflow.ui.placeholder_picker import (
 from reportflow.ui.recipient_field import RecipientField, RecipientSet, header_recipients
 from reportflow.ui.sheet_loader import PoolExecutor, SheetLoader, SheetOutcome
 from reportflow.ui.style import WARNING
-from reportflow.ui.suggestions import concurrency_groups, email_groups, known_addresses
+from reportflow.ui.suggestions import (
+    concurrency_groups,
+    email_groups,
+    field_entries,
+    known_addresses,
+)
 from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 from reportflow.ui.windows.output_preview import OutputPreview, plan_outputs
@@ -1564,21 +1569,16 @@ class JobEditorDialog(FormDialog):
             "blank_out_values": _split_csv(self.blank_values.text()),
             "subject": self.subject.text().strip() or None,
             "stage": self.stage.currentData(),
+            # In the order shown: the email lists people that way (groups at their place).
             "prod": {
-                "to": self.prod_to.emails(),
-                "cc": self.prod_cc.emails(),
-                "bcc": self.prod_bcc.emails(),
-                "to_groups": self.prod_to.groups(),
-                "cc_groups": self.prod_cc.groups(),
-                "bcc_groups": self.prod_bcc.groups(),
+                "to": self.prod_to.entries(),
+                "cc": self.prod_cc.entries(),
+                "bcc": self.prod_bcc.entries(),
             },
             "test": {
-                "to": self.test_to.emails(),
-                "cc": self.test_cc.emails(),
-                "bcc": self.test_bcc.emails(),
-                "to_groups": self.test_to.groups(),
-                "cc_groups": self.test_cc.groups(),
-                "bcc_groups": self.test_bcc.groups(),
+                "to": self.test_to.entries(),
+                "cc": self.test_cc.entries(),
+                "bcc": self.test_bcc.entries(),
             },
             "notes": self.notes.toPlainText().strip(),
         }
@@ -1662,10 +1662,10 @@ class JobEditorDialog(FormDialog):
             if self._editing:
                 self._detect_template_link(job.get("name", ""))
         prod = job.get("prod", {})
-        self.prod_to.set_value(prod.get("to") or [], prod.get("to_groups"))
-        self.prod_cc.set_value(prod.get("cc") or [], prod.get("cc_groups"))
-        self.prod_bcc.set_value(prod.get("bcc") or [], prod.get("bcc_groups"))
+        self.prod_to.set_entries(field_entries(prod, "to"))
+        self.prod_cc.set_entries(field_entries(prod, "cc"))
+        self.prod_bcc.set_entries(field_entries(prod, "bcc"))
         test = job.get("test", {})
-        self.test_to.set_value(test.get("to") or [], test.get("to_groups"))
-        self.test_cc.set_value(test.get("cc") or [], test.get("cc_groups"))
-        self.test_bcc.set_value(test.get("bcc") or [], test.get("bcc_groups"))
+        self.test_to.set_entries(field_entries(test, "to"))
+        self.test_cc.set_entries(field_entries(test, "cc"))
+        self.test_bcc.set_entries(field_entries(test, "bcc"))

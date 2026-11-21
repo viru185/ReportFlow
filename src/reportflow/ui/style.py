@@ -187,6 +187,36 @@ QFrame[recipientChip="true"][flash="true"] {{
     background: #1d3a5f;
     border-color: {ACCENT_HOVER};
 }}
+QFrame[recipientChip="true"][selected="true"] {{
+    background: {ACCENT};
+    border-color: {ACCENT_HOVER};
+}}
+QFrame[recipientChip="true"][selected="true"] QLabel#chipText {{
+    color: #ffffff;
+}}
+QFrame[recipientChip="true"][selected="true"] QToolButton#chipRemove {{
+    color: #dbeafe;
+}}
+QFrame[recipientField="true"][dropTarget="true"] {{
+    border-color: {ACCENT};
+}}
+QFrame#chipDropCaret {{
+    background: {ACCENT_HOVER};
+    border: none;
+    border-radius: 1px;
+}}
+QFrame[recipientField="true"] QLineEdit[chipEditor="true"] {{
+    background: #2a303c;
+    color: {TEXT};
+    border: 1px solid {ACCENT};
+    border-radius: 12px;
+    padding: 0 9px;
+    min-height: 22px;  /* + border = the chip's 24 px (text boxes are 24 + border elsewhere) */
+    selection-background-color: {ACCENT};
+}}
+QFrame[recipientField="true"] QLineEdit[chipEditor="true"][invalid="true"] {{
+    border-color: {ERROR};
+}}
 QFrame[recipientChip="true"] QLabel#chipText {{
     color: {TEXT};
 }}

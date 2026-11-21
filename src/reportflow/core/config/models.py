@@ -11,9 +11,18 @@ Design rules encoded here:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    EmailStr,
+    Field,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 CONFIG_VERSION = 1
 
@@ -31,35 +40,91 @@ def _clean_group_names(names: list[str]) -> list[str]:
     return list(cleaned.values())
 
 
-class Recipients(_Base):
-    """Email recipient set: addresses and/or email groups per field.
+class GroupRef(_Base):
+    """An email group named in To/Cc/Bcc: its members are sent at this spot in the list."""
 
-    To needs at least one address or group; Cc/Bcc are optional. Group names refer to
-    Settings → Email groups and are expanded (and de-duplicated) when the email is sent —
-    see ``core.email.recipients.resolve``.
+    group: str
+
+    @field_validator("group")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("an email group needs a name")
+        return v
+
+
+def _entry_kind(value: object) -> str:
+    return "group" if isinstance(value, (dict, GroupRef)) else "address"
+
+
+# One To/Cc/Bcc entry: an address, or a group ({group = "Plant leads"} in the TOML). The
+# discriminator picks the branch up front, so a bad address reports only the address error.
+RecipientEntry = Annotated[
+    Annotated[EmailStr, Tag("address")] | Annotated[GroupRef, Tag("group")],
+    Discriminator(_entry_kind),
+]
+
+RECIPIENT_FIELDS = ("to", "cc", "bcc")
+
+
+class Recipients(_Base):
+    """Email recipient set: addresses and email groups per field, IN ORDER.
+
+    The email lists people in this order (0.15: who comes first matters to corporate
+    readers), and a group's members go out at the group's place. To needs at least one
+    entry; Cc/Bcc are optional. Group names refer to Settings → Email groups and are
+    expanded (and de-duplicated) when the email is sent — ``core.email.recipients.resolve``.
     """
 
-    to: list[EmailStr] = Field(default_factory=list)
-    cc: list[EmailStr] = Field(default_factory=list)
-    bcc: list[EmailStr] = Field(default_factory=list)
-    to_groups: list[str] = Field(default_factory=list)
-    cc_groups: list[str] = Field(default_factory=list)
-    bcc_groups: list[str] = Field(default_factory=list)
+    to: list[RecipientEntry] = Field(default_factory=list)
+    cc: list[RecipientEntry] = Field(default_factory=list)
+    bcc: list[RecipientEntry] = Field(default_factory=list)
 
-    @field_validator("to_groups", "cc_groups", "bcc_groups")
+    @model_validator(mode="before")
     @classmethod
-    def _group_names(cls, v: list[str]) -> list[str]:
-        return _clean_group_names(v)
+    def _fold_legacy_groups(cls, data: Any) -> Any:
+        """Before 0.15 groups were kept apart (``to_groups`` …) and sent after the field's
+        addresses: they join the list there, so an old job's email doesn't change."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for name in RECIPIENT_FIELDS:
+            legacy = data.pop(f"{name}_groups", None) or []
+            if legacy:
+                data[name] = [*(data.get(name) or []), *({"group": g} for g in legacy)]
+        return data
+
+    @field_validator("to", "cc", "bcc")
+    @classmethod
+    def _one_entry_per_group(cls, v: list[str | GroupRef]) -> list[str | GroupRef]:
+        seen: set[str] = set()
+        out: list[str | GroupRef] = []
+        for entry in v:
+            if isinstance(entry, GroupRef):
+                if entry.group.casefold() in seen:
+                    continue
+                seen.add(entry.group.casefold())
+            out.append(entry)
+        return out
 
     @model_validator(mode="after")
     def _to_is_required(self) -> Recipients:
-        if not self.to and not self.to_groups:
+        if not self.to:
             raise ValueError("To needs at least one address or email group")
         return self
 
+    def addresses(self, name: str) -> list[str]:
+        """The literal addresses in one field (``"to"`` / ``"cc"`` / ``"bcc"``), in order."""
+        return [str(e) for e in getattr(self, name) if not isinstance(e, GroupRef)]
+
+    def groups(self, name: str) -> list[str]:
+        """The group names in one field, in order."""
+        return [e.group for e in getattr(self, name) if isinstance(e, GroupRef)]
+
     def group_names(self) -> list[str]:
         """Every email group this set refers to (To, Cc, Bcc), de-duplicated."""
-        return _clean_group_names([*self.to_groups, *self.cc_groups, *self.bcc_groups])
+        return _clean_group_names([g for name in RECIPIENT_FIELDS for g in self.groups(name)])
 
     def all_addresses(self) -> list[str]:
         """Every literal envelope address (To + CC + BCC), de-duplicated, order preserved.
@@ -67,8 +132,9 @@ class Recipients(_Base):
         Groups are not expanded here — use ``core.email.recipients.resolve``.
         """
         seen: dict[str, None] = {}
-        for addr in [*self.to, *self.cc, *self.bcc]:
-            seen.setdefault(str(addr), None)
+        for name in RECIPIENT_FIELDS:
+            for addr in self.addresses(name):
+                seen.setdefault(addr, None)
         return list(seen)
 
 

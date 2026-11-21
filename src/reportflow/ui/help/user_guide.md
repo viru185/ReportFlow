@@ -175,6 +175,17 @@ are optional.
 - Text that is neither a group nor an address stays in the box, outlined in red, until you fix it.
 - Suggestions only offer people who aren't in the list yet.
 
+**Order matters.** The email lists people in the order of the chips, and a group's members go out
+at the group's place. To change it:
+
+- **Drag a chip** to another place — a blue bar shows where it will land. Drag it into *Cc* or
+  *Bcc* (or back up to *To*) to move it there.
+- **Double-click an address** (or select it and press **F2**) to fix a typo in place. **Enter**
+  or clicking away saves, **Esc** cancels, and clearing the text removes the person.
+- **Right-click a chip** for Edit, Copy, Move to *To* / *Cc* / *Bcc*, and Remove.
+- From the keyboard: **←** in an empty box selects the last chip, **←**/**→** walk the chips,
+  **Alt+←**/**Alt+→** move the selected one, and **Delete** removes it.
+
 > 💡 **Each person is emailed once.** ReportFlow won't add someone who is already in the list —
 > directly or through a group — and the note under the list says where they already are. Adding a
 > group removes the people it now covers (with **Undo**), but never moves anyone down from *To* to
@@ -200,6 +211,7 @@ In **File → Settings → Email groups**, give a list of addresses a name (say 
 then use that name in any job's To, Cc or Bcc instead of typing each address.
 
 - Change a group's members once and every job that uses it follows.
+- A group's members are emailed in the group's order; drag its chips to change it.
 - **Double-click a group's chip** in a job to edit the group right there — its name and members.
   The window says which other jobs use it, because the change applies to all of them as soon as
   you click Save.
@@ -378,6 +390,8 @@ stay visible in the history.
 | **Ctrl+S** | saves the job editor, Settings or the template editor |
 | **Esc** | cancels — and asks first if you changed something |
 | **Enter** | adds the highlighted suggestion (or what you typed) in a recipient box; it never closes a window |
+| **F2** | edits the selected address chip in place |
+| **Alt+←** / **Alt+→** | moves the selected recipient chip |
 | **Delete** | removes the selected workbook (with Undo) |
 
 - Windows reopen at the size you left them.

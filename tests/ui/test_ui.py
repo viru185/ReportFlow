@@ -1900,9 +1900,9 @@ def test_editor_uses_groups_in_recipient_lists(qtbot):
     assert not hasattr(dlg, "prod_unique")  # the unique-count line is gone
     _type(dlg.test_to, "dev@corp.example.com")
     payload = dlg.payload()
-    assert payload["prod"]["to"] == ["boss@corp.example.com"]
-    assert payload["prod"]["to_groups"] == ["Plant leads"]
-    assert payload["prod"]["cc_groups"] == ["Energy team"]
+    # In the order typed: the email lists people that way.
+    assert payload["prod"]["to"] == [{"group": "Plant leads"}, "boss@corp.example.com"]
+    assert payload["prod"]["cc"] == [{"group": "Energy team"}]
     # Concurrency groups already in use are offered while typing.
     model = dlg.group.completer().model()
     assert [model.index(i, 0).data() for i in range(model.rowCount())] == ["pi-server"]
