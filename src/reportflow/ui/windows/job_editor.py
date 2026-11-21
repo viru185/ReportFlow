@@ -46,12 +46,18 @@ from reportflow.core.config.models import migrate_legacy_job
 from reportflow.core.email.render import template_error
 from reportflow.core.output_names import (
     DEFAULT_OUTPUT_STEM,
+    OUTPUT_NAME_TOKENS,
     expand_output_name,
     overwrites_same_day,
 )
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.feedback import FormDialog, InlineNotice
 from reportflow.ui.fs_util import open_start_dir
+from reportflow.ui.placeholder_picker import (
+    PlaceholderButton,
+    email_placeholders,
+    output_name_placeholders,
+)
 from reportflow.ui.recipient_field import RecipientField, RecipientSet, header_recipients
 from reportflow.ui.suggestions import concurrency_groups, email_groups, known_addresses
 from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
@@ -309,11 +315,19 @@ class JobEditorDialog(FormDialog):
         dir_row.addWidget(browse_dir)
         self.output_name = QLineEdit()
         self.output_name.setPlaceholderText(DEFAULT_OUTPUT_STEM)
+        tokens = ", ".join(token for _, token, _ in OUTPUT_NAME_TOKENS)
         self.output_name.setToolTip(
-            "Optional filename (without extension). Placeholders: {job}, {date} (20261007), "
-            "{time} (061500), {datetime} (20261007_061500), {run_id}, {workbook} (the input "
-            f"file's name). Leave empty for {DEFAULT_OUTPUT_STEM}."
+            f"Optional filename (without extension). Placeholders: {tokens} — use Insert "
+            f"placeholder to pick one. Leave empty for {DEFAULT_OUTPUT_STEM}."
         )
+        self.output_placeholders = PlaceholderButton(
+            self.output_name,
+            lambda: output_name_placeholders(job_name=self.name.text()),
+            field_name="File name",
+        )
+        output_name_row = QHBoxLayout()
+        output_name_row.addWidget(self.output_name, 1)
+        output_name_row.addWidget(self.output_placeholders)
         self.output_name.textChanged.connect(self._update_output_example)
         self.output_example = QLabel("")
         self.output_example.setProperty("muted", True)
@@ -334,7 +348,7 @@ class JobEditorDialog(FormDialog):
             "the run lists the failed one as a warning."
         )
         output_form.addRow("Output folder", dir_row)
-        output_form.addRow("Filename (optional)", self.output_name)
+        output_form.addRow("Filename (optional)", output_name_row)
         output_form.addRow("", self.output_example)
         output_form.addRow("", self.freeze)
         output_form.addRow("If a workbook fails", self.on_failure)
@@ -351,9 +365,14 @@ class JobEditorDialog(FormDialog):
         self.subject.setPlaceholderText("e.g. Daily production report — {{ today }}")
         self.subject.setToolTip(
             "Email subject; Testing-stage runs are prefixed [TEST]. Placeholders work here "
-            "too — e.g. {{ today }}, {{ yesterday }}, {{ month }}. Help → Email placeholders "
-            "lists them all."
+            "too — e.g. {{ today }}, {{ month }}; Insert placeholder lists them all."
         )
+        self.subject_placeholders = PlaceholderButton(
+            self.subject, lambda: email_placeholders(subject=True), field_name="Subject"
+        )
+        subject_row = QHBoxLayout()
+        subject_row.addWidget(self.subject, 1)
+        subject_row.addWidget(self.subject_placeholders)
         # Lifecycle stage. New jobs always start in Testing (the combo is locked on create —
         # promotion happens from the job card's "Go live" after a verified run); editing a
         # job exposes it so a live job can be moved back to Testing.
@@ -405,7 +424,7 @@ class JobEditorDialog(FormDialog):
         tpl_row.addWidget(edit_template)
         tpl_row.addWidget(self.template_status)
         tpl_row.addStretch()
-        email_form.addRow("Subject", self.subject)
+        email_form.addRow("Subject", subject_row)
         email_form.addRow("Stage", self.stage)
         email_form.addRow(section_title("Production recipients"))
         email_form.addRow("Production: To", self.prod_to)

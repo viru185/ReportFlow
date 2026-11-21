@@ -528,6 +528,50 @@ QListView#completerPopup::item:selected {{
     background: {ACCENT};
     color: #ffffff;
 }}
+/* -- placeholder picker (ui/placeholder_picker.py) -- */
+QListWidget#placeholderList {{
+    padding: 4px;
+    outline: none;
+}}
+QListWidget#placeholderList::item {{
+    border-radius: 6px;
+    padding: 0;
+}}
+QListWidget#placeholderList::item:selected {{
+    background: #22324a;
+}}
+QLabel#placeholderGroup {{
+    color: {TEXT_MUTED};
+    font-size: 11px;
+    font-weight: 700;
+    padding: 10px 10px 2px 10px;
+}}
+QLabel#placeholderName {{
+    font-weight: 600;
+}}
+QLabel#placeholderToken {{
+    font-family: Consolas, 'Cascadia Mono', monospace;
+    color: #9cc3f5;
+    background: #1b2638;
+    border: 1px solid #2d4466;
+    border-radius: 4px;
+    padding: 0 6px;
+}}
+QLabel#placeholderAbout {{
+    color: {TEXT_MUTED};
+    font-size: 12px;
+}}
+QPushButton#placeholderInsert {{
+    background: transparent;
+    border-color: {BORDER};
+    color: {TEXT_MUTED};
+    padding: 3px 12px;
+    min-height: 16px;
+}}
+QPushButton#placeholderInsert:hover {{
+    border-color: {ACCENT};
+    color: {ACCENT_HOVER};
+}}
 /* -- feedback (ui/feedback.py) -- */
 QLineEdit[invalid="true"], QComboBox[invalid="true"], QSpinBox[invalid="true"],
 QPlainTextEdit[invalid="true"], QTimeEdit[invalid="true"], QListWidget[invalid="true"] {{

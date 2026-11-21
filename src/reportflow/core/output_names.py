@@ -14,6 +14,17 @@ DEFAULT_OUTPUT_STEM = "{job}_{datetime}"
 # Tokens that make two runs on the same day produce different file names.
 _UNIQUE_PER_RUN = ("{time}", "{datetime}", "{run_id}")
 
+# (label, token, what it is for) — the one list of filename tokens: the editor's placeholder
+# picker, its tooltip and the Help guide are built from it.
+OUTPUT_NAME_TOKENS: list[tuple[str, str, str]] = [
+    ("Job name", "{job}", "the job's name"),
+    ("Date", "{date}", "the run's date"),
+    ("Time", "{time}", "the run's time — a new file for every run"),
+    ("Date and time", "{datetime}", "the run's date and time — a new file for every run"),
+    ("Run ID", "{run_id}", "the run's id — a new file for every run"),
+    ("Workbook", "{workbook}", "the input workbook's file name"),
+]
+
 
 def expand_output_name(
     pattern: str, *, job_name: str, run_id: str, now: datetime, workbook: str = ""
