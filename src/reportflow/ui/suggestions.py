@@ -1,7 +1,7 @@
 """Autocomplete sources, built from the service's ``GET /config`` snapshot.
 
 Everything the app already knows becomes a suggestion: every address on any job (Production
-and Test, To/Cc/Bcc), every email-group member, the Settings test/support addresses, and
+and Test, To/Cc/Bcc), every email-group member, the Settings support address, and
 every concurrency group in use. Pure functions over the config dict, so they are testable
 without Qt or a service.
 """
@@ -43,9 +43,7 @@ def known_addresses(config: dict[str, Any]) -> list[str]:
                 found.extend(recipients.get(key) or [])
     for members in email_groups(config).values():
         found.extend(members)
-    test = config.get("test") or {}
-    found.extend(test.get("recipients") or [])
-    found.extend(test.get("developer_bundle_recipients") or [])
+    found.extend((config.get("test") or {}).get("developer_bundle_recipients") or [])
     return _unique(found)
 
 

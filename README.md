@@ -274,7 +274,7 @@ the left, application & service on the right):
   encrypted via Windows DPAPI, machine scope — never in the config file). An eye icon shows
   the password while typing, and **Test connection** verifies the settings against the mail
   server without sending anything.
-- **Test & support email** — global test-run fallback recipients and the support address
+- **Support** — the address that receives "Send logs to support" bundles (test runs email each job's own Test recipients; there is no global fallback)
   that receives diagnostic bundles.
 - **Application** — max parallel runs, default time limit (minutes), log retention, and the
   startup update-check toggle (off by default).
@@ -434,7 +434,8 @@ In the installed app, open **File → Settings → Email** and enter these value
 | From address | `reportflow@example.com` |
 | Username | Empty |
 | Password | Leave unchanged or empty, the empty username skips authentication |
-| Test recipients | `tester@example.com` |
+
+Put `tester@example.com` in a job's **Test: To** to catch its test emails.
 
 Click **Test connection**, then **Save**. These settings apply to emails sent by this
 installed instance, including scheduled reports. Use them on your testing laptop.

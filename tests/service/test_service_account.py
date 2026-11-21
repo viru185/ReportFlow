@@ -152,7 +152,7 @@ def client(tmp_path, monkeypatch):
     save_config(
         AppConfig(
             smtp=SmtpConfig(host="127.0.0.1", port=1, use_starttls=False, username=""),
-            test=TestSettings(recipients=["dev@corp.example.com"]),
+            test=TestSettings(),
         )
     )
     state = ServiceState(worker_command=[sys.executable, FAKE])

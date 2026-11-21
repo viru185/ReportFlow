@@ -1,4 +1,4 @@
-"""Settings dialog: SMTP (incl. password), test & developer recipients, app settings."""
+"""Settings dialog: SMTP (incl. password), the support address, app settings, groups."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.assets import asset_icon
 from reportflow.ui.feedback import (
     FormDialog,
     InlineNotice,
@@ -34,6 +35,7 @@ from reportflow.ui.feedback import (
     set_field_error,
     toast,
 )
+from reportflow.ui.group_editor import group_name_problem
 from reportflow.ui.kit import Button, ListWidget, SpinBox, set_variant
 from reportflow.ui.recipient_field import RecipientField, RecipientSet
 from reportflow.ui.suggestions import jobs_using_group, known_addresses
@@ -120,8 +122,7 @@ class SettingsDialog(FormDialog):
             "Leave blank to keep the current password."
         )
         self._pw_toggle = self.smtp_password.addAction(
-            self.style().standardIcon(self.style().StandardPixmap.SP_DialogYesButton),
-            QLineEdit.ActionPosition.TrailingPosition,
+            asset_icon("eye.svg"), QLineEdit.ActionPosition.TrailingPosition
         )
         self._pw_toggle.setToolTip("Show/hide the password while typing.")
         self._pw_toggle.setCheckable(True)
@@ -159,19 +160,15 @@ class SettingsDialog(FormDialog):
         smtp_form.addRow("", test_row)
 
         # Recipients
-        rcpt_box = QGroupBox("Test && support email")
+        # Test runs email each job's own Test recipients (a job can't be saved without
+        # them), so there is no global "test recipients" fallback any more.
+        rcpt_box = QGroupBox("Support")
         rcpt_form = QFormLayout(rcpt_box)
-        self.test_recipients = QLineEdit()
-        self.test_recipients.setToolTip(
-            "Global fallback recipients for TEST runs when a job has no test recipients "
-            "of its own. Comma-separated."
-        )
         self.dev_recipients = QLineEdit()
         self.dev_recipients.setToolTip(
             "Receives the diagnostic log bundles sent from File → Send logs to support. "
             "Comma-separated."
         )
-        rcpt_form.addRow("Test recipients", self.test_recipients)
         rcpt_form.addRow("Support email", self.dev_recipients)
 
         # App settings
@@ -484,15 +481,12 @@ class SettingsDialog(FormDialog):
         problem = self.group_members.commit_pending() if self._current_group() else None
         if problem:
             return problem, self.group_list.currentRow(), self.group_members
-        names: set[str] = set()
+        names: list[str] = []
         for row, g in enumerate(self._groups):
-            if not g["name"]:
-                return "Give the group a name.", row, self.group_name
-            if any(c in g["name"] for c in ",;@"):
-                return "A group name can't contain , ; or @.", row, self.group_name
-            if g["name"].casefold() in names:
-                return f"Another group is already called {g['name']}.", row, self.group_name
-            names.add(g["name"].casefold())
+            name_problem = group_name_problem(g["name"], names)
+            if name_problem:
+                return name_problem, row, self.group_name
+            names.append(g["name"])
             if not g["members"]:
                 return "Add at least one address.", row, self.group_members
         return None
@@ -527,7 +521,6 @@ class SettingsDialog(FormDialog):
         self.smtp_user.setText(smtp.get("username") or "")
 
         test = cfg.get("test", {})
-        self.test_recipients.setText(", ".join(test.get("recipients", [])))
         self.dev_recipients.setText(", ".join(test.get("developer_bundle_recipients", [])))
 
         app_cfg = cfg.get("app", {})
@@ -765,7 +758,6 @@ class SettingsDialog(FormDialog):
         return {
             "smtp": self._smtp_form_values(),
             "test": {
-                "recipients": _split_csv(self.test_recipients.text()),
                 "developer_bundle_recipients": _split_csv(self.dev_recipients.text()),
             },
             "app": {

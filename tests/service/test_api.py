@@ -24,7 +24,7 @@ def client(tmp_path, monkeypatch):
     save_config(
         AppConfig(
             smtp=SmtpConfig(host="127.0.0.1", port=1, use_starttls=False, username=""),
-            test=TestSettings(recipients=["dev@corp.example.com"]),
+            test=TestSettings(),
         )
     )
     state = ServiceState(worker_command=[sys.executable, FAKE])
@@ -367,14 +367,22 @@ def test_settings_update_persists(client):
         "/settings",
         json={
             "smtp": {"host": "smtp.new.example.com", "port": 2525, "use_starttls": False},
-            "test": {"recipients": ["new-dev@corp.example.com"]},
+            "test": {"developer_bundle_recipients": ["new-dev@corp.example.com"]},
         },
     )
     assert resp.status_code == 200
     cfg = c.get("/config").json()
     assert cfg["smtp"]["host"] == "smtp.new.example.com"
     assert cfg["smtp"]["port"] == 2525
-    assert cfg["test"]["recipients"] == ["new-dev@corp.example.com"]
+    assert cfg["test"]["developer_bundle_recipients"] == ["new-dev@corp.example.com"]
+
+
+def test_the_removed_global_test_fallback_is_ignored_not_rejected(client):
+    """Settings saved or exported before 0.14 still carry test.recipients; they load."""
+    c, _ = client
+    resp = c.put("/settings", json={"test": {"recipients": ["old@corp.example.com"]}})
+    assert resp.status_code == 200
+    assert "recipients" not in c.get("/config").json()["test"]
 
 
 def test_settings_rejects_invalid(client):

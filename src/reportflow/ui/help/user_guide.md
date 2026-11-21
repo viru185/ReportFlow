@@ -291,7 +291,6 @@ stay visible in the history.
 - **SMTP** — the mail server's host, port, TLS, from-address, username and password. The password
   is stored encrypted on this machine, never in plain text; the eye icon shows it while you type.
   **Test connection** checks the settings against the server without sending an email.
-- **Test recipients** — the global fallback for test runs.
 - **Support email** — who receives the bundles from "Send logs to support".
 - **Application** — maximum parallel runs, the default time limit, log retention (it drives the
   nightly clean-up), debug logging, and whether to check for updates when the app starts.

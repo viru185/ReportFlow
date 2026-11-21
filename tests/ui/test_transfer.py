@@ -60,7 +60,7 @@ def test_settings_round_trip():
         "smtp": {"host": "smtp.x.com"},
         "ui": {"check_updates_on_startup": True},
         "email": {"default_template_path": "email/default.html"},
-        "test": {"recipients": []},
+        "test": {"developer_bundle_recipients": []},
         "job": [{"name": "ignored"}],  # jobs must NOT travel with settings
         "config_version": 1,
     }

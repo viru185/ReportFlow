@@ -47,7 +47,7 @@ def _config(job: JobConfig, *, smtp_port: int = 25, timeout: int = 30) -> AppCon
     return AppConfig(
         app=AppSettings(max_global_concurrency=2, default_timeout_seconds=timeout),
         smtp=SmtpConfig(host="127.0.0.1", port=smtp_port, use_starttls=False, username=""),
-        test=TestSettings(recipients=["dev@corp.example.com"]),
+        test=TestSettings(),
         jobs=[job],
     )
 

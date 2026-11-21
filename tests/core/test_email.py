@@ -61,7 +61,7 @@ def _config(port: int) -> AppConfig:
             from_address="reportflow@corp.example.com",
             username="",
         ),
-        test=TestSettings(recipients=["fallback@corp.example.com"]),
+        test=TestSettings(),
     )
     return cfg
 

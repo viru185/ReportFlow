@@ -141,10 +141,21 @@ class EmailSettings(_Base):
 
 
 class TestSettings(_Base):
-    """Global test-mode fallbacks and developer-bundle recipients."""
+    """Where File → Send logs to support sends the diagnostic bundle.
 
-    recipients: list[EmailStr] = Field(default_factory=list)
+    There is no global fallback for test runs: every job must have its own Test To (see
+    ``Recipients``), so a fallback could never be used and only misled people (removed in
+    0.14). Old config files and exports that still carry ``recipients`` load fine — the key
+    is dropped here."""
+
     developer_bundle_recipients: list[EmailStr] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_fallback(cls, data: object) -> object:
+        if isinstance(data, dict) and "recipients" in data:
+            data = {k: v for k, v in data.items() if k != "recipients"}
+        return data
 
 
 # What users see for JobConfig.stage. The stored values stay "testing"/"live", so configs,

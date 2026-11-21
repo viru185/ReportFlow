@@ -64,6 +64,7 @@ from reportflow.ui.feedback import (
     toast,
 )
 from reportflow.ui.fs_util import open_start_dir
+from reportflow.ui.group_editor import EmailGroupDialog
 from reportflow.ui.kit import (
     Button,
     ComboBox,
@@ -774,11 +775,41 @@ class JobEditorDialog(FormDialog):
     def _recipient_field(self, tip: str) -> RecipientField:
         box = RecipientField(placeholder="Type a group or an address…")
         box.changed.connect(self._recheck_soon)
+        box.group_edit_requested.connect(self._edit_group)
         box.setToolTip(
             f"{tip}\nType to search email groups and known addresses; Enter, Tab, comma or "
-            "semicolon adds it. Click a chip's × to remove it."
+            "semicolon adds it. Click a chip's × to remove it; double-click a group to edit it."
         )
         return box
+
+    def _edit_group(self, name: str) -> None:
+        """Edit a group from its chip. It is saved to Settings at once (it is shared); this
+        job's chips — saved or not — follow a rename straight away."""
+        try:
+            dialog = EmailGroupDialog(self._api, name, self)
+        except ApiError as e:
+            toast(self, f"Can't edit the group — the service isn't reachable ({e}).", "error")
+            return
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new, members = dialog.saved_name, dialog.saved_members
+        groups = {k: v for k, v in self._email_groups.items() if k.casefold() != name.casefold()}
+        groups[new] = members
+        self._email_groups = groups
+        email = self._config.setdefault("email", {})
+        email["groups"] = [{"name": k, "members": v} for k, v in groups.items()]
+        for box in self._recipient_boxes():
+            if new != name:
+                box.rename_group(name, new)
+        for recipient_set in (self.prod_set, self.test_set):
+            recipient_set.set_groups(groups)
+        others = [j for j in dialog.used_by if j != self.name.text().strip()]
+        where = (
+            f" — also used by {len(others)} other job{'s' if len(others) != 1 else ''}"
+            if others
+            else ""
+        )
+        toast(self, f"Saved the group {new}{where}.", "success")
 
     # -- workbooks -----------------------------------------------------------------
     def _current(self) -> _WorkbookState | None:

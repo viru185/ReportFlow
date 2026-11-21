@@ -187,3 +187,108 @@ def test_group_suggestions_are_listed_by_name_with_an_icon(qtbot, prod):
     assert model.index(row, 0).data(Qt.ItemDataRole.DecorationRole) is not None
     to._on_completed("Plant leads")  # picking it by name adds the group
     assert to.groups() == ["Plant leads"]
+
+
+# -- picking from the suggestion list (the 0.13 "one Enter adds two people" bug) ----------
+
+SIMILAR = ["viren.hirpara@cerebulb.com", "viren.hirpara@gmail.com", "virendra@corp.example.com"]
+
+
+@pytest.fixture
+def typing(qtbot):
+    """A To box offering three similar addresses, with "vire" typed and suggestions open."""
+    from reportflow.ui.feedback import InlineNotice
+
+    to, cc = RecipientField(), RecipientField()
+    notice = InlineNotice()
+    for widget in (to, cc, notice):
+        qtbot.addWidget(widget)
+    RecipientSet({"To": to, "Cc": cc}, groups=GROUPS, addresses=SIMILAR, notice=notice)
+    to.show()
+    qtbot.waitExposed(to)
+    to.edit.setFocus()
+    qtbot.keyClicks(to.edit, "vire")
+    popup = to._completer.popup()
+    qtbot.waitUntil(popup.isVisible, timeout=2000)
+    return to, popup
+
+
+def test_one_enter_adds_exactly_the_highlighted_suggestion(qtbot, typing):
+    to, popup = typing
+    qtbot.keyClick(popup, Qt.Key.Key_Down)  # highlight the first: cerebulb
+    qtbot.keyClick(popup, Qt.Key.Key_Return)
+    assert to.emails() == ["viren.hirpara@cerebulb.com"]  # not gmail as well
+    assert to.edit.text() == "" and not popup.isVisible()
+
+
+def test_enter_with_nothing_highlighted_adds_the_first_match(qtbot, typing):
+    to, popup = typing
+    assert not popup.currentIndex().isValid()
+    # The first row is drawn highlighted, so the user can see what Enter will add.
+    delegate = popup.itemDelegate()
+    first = popup.model().index(0, 0)
+    assert delegate.is_highlighted(
+        popup.viewOptions() if hasattr(popup, "viewOptions") else _opt(), first
+    )
+    qtbot.keyClick(popup, Qt.Key.Key_Return)
+    assert to.emails() == ["viren.hirpara@cerebulb.com"]
+
+
+def test_tab_picks_too_and_the_list_then_offers_the_rest(qtbot, typing):
+    to, popup = typing
+    qtbot.keyClick(popup, Qt.Key.Key_Down)
+    qtbot.keyClick(popup, Qt.Key.Key_Down)  # gmail
+    qtbot.keyClick(popup, Qt.Key.Key_Tab)
+    assert to.emails() == ["viren.hirpara@gmail.com"]
+    assert "viren.hirpara@gmail.com" not in to.choices()
+
+
+def test_leaving_the_box_adds_a_typed_address(qtbot, prod):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QFocusEvent
+    from PySide6.QtWidgets import QApplication
+
+    _rs, to, *_ = prod
+    to.edit.setText("late@corp.example.com")
+    # Offscreen windows are never active, so send the focus change the user would cause.
+    QApplication.sendEvent(
+        to.edit, QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.TabFocusReason)
+    )
+    assert to.emails() == ["late@corp.example.com"]
+    # Switching to another window keeps the half-typed text as it is.
+    to.edit.setText("half@")
+    QApplication.sendEvent(
+        to.edit, QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.ActiveWindowFocusReason)
+    )
+    assert to.edit.text() == "half@" and not to.property("invalid")
+
+
+def test_double_clicking_a_group_chip_asks_to_edit_it(qtbot, prod):
+    _rs, to, *_ = prod
+    to.show()
+    _type(to, "Plant leads")
+    asked: list[str] = []
+    to.group_edit_requested.connect(asked.append)
+    chip = to.chip(GROUP, "Plant leads")
+    qtbot.mouseDClick(chip.label, Qt.MouseButton.LeftButton)
+    assert asked == ["Plant leads"]
+    assert "Double-click to edit" in chip.toolTip()
+
+
+def test_a_renamed_group_keeps_its_place(qtbot, prod):
+    _rs, to, *_ = prod
+    _type(to, "boss@corp.example.com")
+    _type(to, "Plant leads")
+    _type(to, "ops@corp.example.com")
+    to.rename_group("Plant leads", "Plant managers")
+    assert [v for _k, v in to._tokens] == [
+        "boss@corp.example.com",
+        "Plant managers",
+        "ops@corp.example.com",
+    ]
+
+
+def _opt():
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    return QStyleOptionViewItem()

@@ -1,10 +1,16 @@
 """Recipient boxes: addresses and email groups as chips, with autocomplete.
 
 Type to search the email groups (Settings → Email groups) and every address the app already
-knows; Enter, Tab, ``,`` or ``;`` adds what you typed, and a pasted list is split. Each chip
-has its own ×, which is the only thing that removes it, and Backspace in the empty box removes
-the last chip. Text that is neither a known group nor an address stays in the box, outlined
-red, so nothing is silently dropped. Enter never reaches the dialog (it used to press Save).
+knows. While suggestions show, the first one is highlighted and Enter or Tab adds it (arrow
+keys pick another); otherwise Enter, Tab, ``,`` or ``;`` adds what you typed, and a pasted
+list is split. Each chip has its own ×, which is the only thing that removes it, and
+Backspace in the empty box removes the last chip. Double-clicking a group's chip edits the
+group. Text that is neither a known group nor an address stays in the box, outlined red, so
+nothing is silently dropped. Enter never reaches the dialog (it used to press Save).
+
+Picking a suggestion is handled here, not by QCompleter: Qt's own Enter handling also fired
+``editingFinished`` and then completed a remembered row number — after the first add had
+rebuilt the list, so one Enter added two people (0.13).
 
 A :class:`RecipientSet` ties the To/Cc/Bcc boxes of one recipient list together, because each
 person is emailed once (``core.email.recipients.resolve``):
@@ -23,22 +29,43 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtCore import (
+    QEvent,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    QRect,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QMouseEvent,
+    QPainter,
+    QStandardItem,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCompleter,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QSizePolicy,
+    QStyleOptionViewItem,
     QWidget,
 )
 
 from reportflow.ui.assets import asset_icon
 from reportflow.ui.feedback import InlineNotice, flash
-from reportflow.ui.kit import IconButton, styled_completer
+from reportflow.ui.kit import IconButton, PopupItemDelegate, styled_completer
+from reportflow.ui.style import TEXT, TEXT_MUTED
 from reportflow.ui.widgets import FlowLayout
 
 GROUP_PREFIX = "👥 "
@@ -55,9 +82,11 @@ def is_address(text: str) -> bool:
 
 
 class _Chip(QFrame):
-    """One recipient: its text, and a × that is the only way to remove it."""
+    """One recipient: its text, and a × that is the only way to remove it. A group's chip
+    asks to be edited when double-clicked."""
 
     remove_requested = Signal()
+    edit_requested = Signal()
 
     HEIGHT = 24  # fits the 30 px text line, so a box with chips is as tall as an empty one
 
@@ -89,6 +118,13 @@ class _Chip(QFrame):
         self.label.setToolTip(tooltip)
         self.setToolTip(tooltip)
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self.property("groupChip") and event.button() == Qt.MouseButton.LeftButton:
+            self.edit_requested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
 
 @dataclass
 class Verdict:
@@ -105,6 +141,7 @@ class RecipientField(QFrame):
     """Addresses + email groups for one of To / Cc / Bcc. Emits ``changed`` on any edit."""
 
     changed = Signal()
+    group_edit_requested = Signal(str)  # a group chip was double-clicked: edit that group
 
     def __init__(
         self,
@@ -131,8 +168,6 @@ class RecipientField(QFrame):
         self.edit.setFrame(False)
         self.edit.setPlaceholderText(placeholder)
         self.edit.setMinimumWidth(180)
-        self.edit.installEventFilter(self)
-        self.edit.editingFinished.connect(self.commit_pending)  # on focus-out
         self.edit.textEdited.connect(self._on_text_edited)
         self._flow.addWidget(self.edit)
 
@@ -143,8 +178,13 @@ class RecipientField(QFrame):
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._completer.activated.connect(self._on_completed)
         # Long addresses fit even when the box is narrow.
-        styled_completer(self._completer, min_width=300)
+        self._popup = styled_completer(self._completer, min_width=300)
+        self._popup.setItemDelegate(_SuggestionDelegate(self._popup, self._completer))
         self.edit.setCompleter(self._completer)
+        # Installed after QCompleter's own filter, so this one sees keys first. Last in
+        # __init__: the filter uses the popup, and the line edit gets events while it is laid out.
+        self._popup.installEventFilter(self)
+        self.edit.installEventFilter(self)  # Enter/Tab/Backspace, and commit on focus-out
 
     # -- public ------------------------------------------------------------------
 
@@ -174,8 +214,11 @@ class RecipientField(QFrame):
         icon = asset_icon("group.svg")
         for choice in self._choices:
             if choice.startswith(GROUP_PREFIX):
-                item = QStandardItem(icon, choice[len(GROUP_PREFIX) :])
-                item.setToolTip("Email group")
+                name = choice[len(GROUP_PREFIX) :]
+                item = QStandardItem(icon, name)
+                members = self._group_members(name)
+                item.setData(len(members) if members is not None else -1, _COUNT_ROLE)
+                item.setToolTip("Email group: " + ", ".join(members or []))
             else:
                 item = QStandardItem(choice)
             item.setEditable(False)
@@ -282,37 +325,62 @@ class RecipientField(QFrame):
         if not value or self.has(kind, value):
             return
         self._tokens.append((kind, value))
+        self._add_chip(kind, value, position=len(self._tokens) - 1)
+        self.updateGeometry()
+        if notify:
+            self.changed.emit()
+
+    def _add_chip(self, kind: str, value: str, *, position: int) -> None:
         chip = _Chip(value, value, group=kind == GROUP)
         chip.remove_requested.connect(lambda k=kind, v=value: self._remove_token(k, v))
+        if kind == GROUP:
+            chip.edit_requested.connect(lambda v=value: self.group_edit_requested.emit(v))
         self._chips[(kind, value.casefold())] = chip
-        # Chips sit before the text box, in the order they were added.
-        self._flow.insertWidget(self._flow.count() - 1, chip)
+        # Chips sit before the text box, in token order.
+        self._flow.insertWidget(position, chip)
         if kind == GROUP:
             self._update_group_chip(value)
         else:
             chip.set_text(value, value)
-        self.updateGeometry()
-        if notify:
-            self.changed.emit()
+
+    def _group_members(self, name: str) -> list[str] | None:
+        return next(
+            (m for known, m in self._groups.items() if known.casefold() == name.casefold()),
+            None,
+        )
 
     def _update_group_chip(self, name: str) -> None:
         chip = self.chip(GROUP, name)
         if chip is None:
             return
-        members = next(
-            (m for known, m in self._groups.items() if known.casefold() == name.casefold()),
-            None,
-        )
+        members = self._group_members(name)
         if members is None:
             chip.set_text(
                 f"{name} (?)",
-                f"Email group {name!r} doesn't exist any more — remove it.",
+                f"Email group {name!r} doesn't exist any more — remove it, or double-click "
+                "to create it again.",
             )
         else:
             chip.set_text(
                 f"{name} · {len(members)}",
-                f"Email group {name}:\n" + "\n".join(members),
+                f"Email group {name}:\n" + "\n".join(members) + "\n\nDouble-click to edit "
+                "this group.",
             )
+
+    def rename_group(self, old: str, new: str) -> None:
+        """A group was renamed (Settings, or its chip's editor): show the new name in place."""
+        key = old.casefold()
+        for i, (kind, value) in enumerate(self._tokens):
+            if kind == GROUP and value.casefold() == key:
+                if new.casefold() != key and self.has(GROUP, new):
+                    self._remove_token(GROUP, value, notify=False)  # already there
+                else:
+                    self._drop_chip(GROUP, value)
+                    self._tokens[i] = (GROUP, new)
+                    self._add_chip(GROUP, new, position=i)
+                self.updateGeometry()
+                self.changed.emit()
+                return
 
     # -- removing ----------------------------------------------------------------
 
@@ -398,20 +466,55 @@ class RecipientField(QFrame):
             self._set_invalid(False)
 
     def _on_completed(self, text: str) -> None:
+        """A suggestion was clicked (keys are handled in :meth:`_pick_from_popup`)."""
+        self._pick(text)
+        # QCompleter writes the chosen text into the box after this signal; clear it then.
+        _clear_later(self.edit)
+
+    def _pick(self, text: str) -> None:
         refused: list[str] = []
         self._add_token(text, refused)
         self._report(refused)
-        # QCompleter writes the chosen text into the box after this signal; clear it then.
         self.edit.clear()
+        self._set_invalid(False)
         self.edit.setFocus()
-        _clear_later(self.edit)
+
+    def _pick_from_popup(self) -> None:
+        """Enter or Tab while suggestions show: add the highlighted one — or the first."""
+        popup = self._popup
+        index = popup.currentIndex()
+        model = popup.model()
+        if not index.isValid() and model is not None and model.rowCount() > 0:
+            index = model.index(0, 0)
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "") if index.isValid() else ""
+        popup.hide()  # before adding: adding rebuilds the suggestion list
+        if text:
+            self._pick(text)
+        else:
+            self.commit_pending()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        if watched is self.edit and event.type() == QEvent.Type.KeyPress:
+        kind = event.type()
+        if watched is self._popup and kind == QEvent.Type.KeyPress:
             key = event.key()  # type: ignore[attr-defined]
-            popup = self._completer.popup()
-            popup_open = popup is not None and popup.isVisible()
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not popup_open:
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
+                self._pick_from_popup()
+                return True  # QCompleter never sees it: no second add, no editingFinished
+            return False
+        if watched is self.edit and kind == QEvent.Type.FocusOut:
+            reason = event.reason()  # type: ignore[attr-defined]
+            if (
+                reason
+                not in (
+                    Qt.FocusReason.PopupFocusReason,
+                    Qt.FocusReason.ActiveWindowFocusReason,
+                )
+                and not self._popup.isVisible()
+            ):
+                self.commit_pending()
+        if watched is self.edit and kind == QEvent.Type.KeyPress:
+            key = event.key()  # type: ignore[attr-defined]
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 # Enter adds what was typed — and never reaches the dialog's Save button.
                 if self.edit.text().strip():
                     self.commit_pending()
@@ -419,16 +522,76 @@ class RecipientField(QFrame):
             if key == Qt.Key.Key_Backspace and not self.edit.text():
                 self._remove_last()
                 return True
-            if key == Qt.Key.Key_Tab and self.edit.text().strip() and not popup_open:
+            if key == Qt.Key.Key_Tab and self.edit.text().strip():
                 self.commit_pending()
                 return True
         return super().eventFilter(watched, event)
 
 
 def _clear_later(edit: QLineEdit) -> None:
-    from PySide6.QtCore import QTimer
-
     QTimer.singleShot(0, edit, edit.clear)
+
+
+_COUNT_ROLE = Qt.ItemDataRole.UserRole + 7  # a group suggestion's member count
+
+
+class _SuggestionDelegate(PopupItemDelegate):
+    """Suggestion rows: what you typed in bold, a group's size beside its name, and the first
+    row highlighted while nothing is picked — it is what Enter adds."""
+
+    def __init__(self, view: QAbstractItemView, completer: QCompleter) -> None:
+        super().__init__(view)
+        self._view = view
+        self._completer = completer
+
+    def is_highlighted(self, option: Any, index: QModelIndex | QPersistentModelIndex) -> bool:
+        if super().is_highlighted(option, index):
+            return True
+        return index.row() == 0 and not self._view.currentIndex().isValid()
+
+    def paint_text(
+        self,
+        painter: QPainter,
+        opt: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+        rect: QRect,
+        enabled: bool,
+    ) -> None:
+        text = opt.text
+        count = index.data(_COUNT_ROLE)
+        suffix = ""
+        if isinstance(count, int) and count >= 0:
+            suffix = f"  ·  {count} {'person' if count == 1 else 'people'}"
+        metrics = opt.fontMetrics
+        room = rect.width() - (metrics.horizontalAdvance(suffix) if suffix else 0)
+        shown = metrics.elidedText(text, Qt.TextElideMode.ElideMiddle, max(room, 40))
+        needle = self._completer.completionPrefix().strip()
+        at = shown.casefold().find(needle.casefold()) if needle else -1
+        parts = (
+            [
+                (shown[:at], False),
+                (shown[at : at + len(needle)], True),
+                (shown[at + len(needle) :], False),
+            ]
+            if at >= 0
+            else [(shown, False)]
+        )
+        x = rect.left()
+        align = int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        painter.setPen(QColor(TEXT if enabled else TEXT_MUTED))
+        for part, bold in parts:
+            if not part:
+                continue
+            font = QFont(opt.font)
+            font.setBold(bold)
+            painter.setFont(font)
+            width = QFontMetrics(font).horizontalAdvance(part)
+            painter.drawText(QRect(x, rect.top(), width + 1, rect.height()), align, part)
+            x += width
+        if suffix:
+            painter.setFont(opt.font)
+            painter.setPen(QColor(TEXT_MUTED))
+            painter.drawText(QRect(x, rect.top(), rect.right() - x, rect.height()), align, suffix)
 
 
 class RecipientSet(QObject):

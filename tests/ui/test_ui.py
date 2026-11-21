@@ -158,7 +158,7 @@ class FakeApi:
                 "from_address": "rf@x.com",
                 "username": "rf@x.com",
             },
-            "test": {"recipients": ["dev@x.com"], "developer_bundle_recipients": ["dev@x.com"]},
+            "test": {"developer_bundle_recipients": ["dev@x.com"]},
             "app": {
                 "api_host": "127.0.0.1",
                 "api_port": 8787,
@@ -1831,7 +1831,7 @@ def _groups_config():
             },
             {"name": "weekly", "concurrency_group": "PI-Server", "prod": {}, "test": {}},
         ],
-        "test": {"recipients": ["fallback@corp.example.com"]},
+        "test": {"developer_bundle_recipients": ["support@corp.example.com"]},
     }
 
 
@@ -1845,8 +1845,8 @@ def test_suggestions_know_every_address_group_and_concurrency_group():
         "boss@corp.example.com",
         "c@corp.example.com",
         "dev@corp.example.com",
-        "fallback@corp.example.com",
         "qa@corp.example.com",
+        "support@corp.example.com",
     ]
     assert suggestions.concurrency_groups(cfg) == ["pi-server"]  # case-insensitive unique
     assert suggestions.jobs_using_group(cfg, "plant LEADS") == ["daily"]

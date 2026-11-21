@@ -1,7 +1,7 @@
 """Build and send report / developer-bundle emails over SMTP.
 
 The test-mode recipient guard lives HERE, in exactly one place: a test run resolves to the
-job's TEST recipients (or the global test fallback) and can never reach production addresses.
+job's TEST recipients and can never reach production addresses.
 BCC is passed only in the SMTP envelope, never as a header.
 """
 
@@ -16,7 +16,7 @@ from typing import Any
 from loguru import logger
 
 from reportflow.core import secrets
-from reportflow.core.config.models import AppConfig, JobConfig, Recipients, SmtpConfig
+from reportflow.core.config.models import AppConfig, JobConfig, SmtpConfig
 from reportflow.core.email.recipients import ResolvedRecipients, resolve
 from reportflow.core.email.render import (
     final_subject,
@@ -32,13 +32,9 @@ def resolve_recipients(job: JobConfig, config: AppConfig, *, is_test: bool) -> R
 
     Email groups are expanded here, and every address appears once (To > Cc > Bcc).
     """
-    if is_test:
-        if job.test.to or job.test.to_groups:
-            return resolve(job.test, config.email.groups)
-        # Fall back to the global test recipients if the job has none.
-        fallback = Recipients(to=list(config.test.recipients) or ["test@localhost"])
-        return resolve(fallback, ())
-    return resolve(job.prod, config.email.groups)
+    # Every job has its own Test To (``Recipients`` requires one), so there is no fallback:
+    # a test run can only ever reach the people the job names for testing.
+    return resolve(job.test if is_test else job.prod, config.email.groups)
 
 
 def _attach_file(msg: EmailMessage, path: Path) -> None:
