@@ -688,6 +688,10 @@ QFrame[card="true"][invalid="true"] {{
 QFrame[card="true"]:focus {{
     border-color: {ACCENT_HOVER};
 }}
+QFrame[card="true"][flash="true"] {{
+    background: #1d2a3d;
+    border-color: {ACCENT_HOVER};
+}}
 QFrame[card="true"][edge="success"] {{
     border-left: 3px solid #4ade80;
 }}

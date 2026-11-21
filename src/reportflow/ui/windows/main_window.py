@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import asset_icon, logo_pixmap
 from reportflow.ui.feedback import restore_geometry, save_geometry, toast
 from reportflow.ui.fs_util import reveal, save_start_path
-from reportflow.ui.kit import Button, IconButton, Menu, ScrollArea, Tag
+from reportflow.ui.kit import Button, IconButton, Menu, Reorder, ScrollArea, Tag
 from reportflow.ui.schedule_compile import ago_text, describe, friendly_time
 from reportflow.ui.style import (
     card_frame,
@@ -231,6 +232,10 @@ class MainWindow(QMainWindow):
         self.jobs_layout.setContentsMargins(0, 0, 0, 0)
         self.jobs_layout.setSpacing(12)
         self.jobs_layout.addStretch()
+        # Cards are listed in the saved order: drag a card's grip (left edge), Alt+Up/Down,
+        # or Move up / Move down in its menu (0.15).
+        self._jobs_reorder = Reorder(self.jobs_container, self._cards)
+        self._jobs_reorder.moved.connect(self._move_job)
 
         scroll = ScrollArea(self.jobs_container)
         root.addWidget(scroll, 1)
@@ -291,9 +296,9 @@ class MainWindow(QMainWindow):
                 f"{len(status.get('scheduled_jobs', []))} trigger(s) scheduled"
             )
 
-        if QApplication.activePopupWidget() is not None:
-            # A card's ⋯ menu is open: the 4 s rebuild used to delete the card (and with
-            # it the menu) out from under the user. Rebuild once the menu closes instead.
+        if QApplication.activePopupWidget() is not None or self._jobs_reorder.dragging:
+            # A card's ⋯ menu is open (or a card is being dragged): the 4 s rebuild used to
+            # delete the card — and the menu — out from under the user. Rebuild after.
             self._refresh_pending = True
             return
         self._refresh_pending = False
@@ -313,7 +318,50 @@ class MainWindow(QMainWindow):
             # Deferred so the menu finishes closing (and its action fires) first.
             QTimer.singleShot(0, self.refresh)
 
+    def _cards(self) -> list[_JobCard]:
+        """The job cards, top to bottom."""
+        cards = []
+        for i in range(self.jobs_layout.count()):
+            item = self.jobs_layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if isinstance(widget, _JobCard):
+                cards.append(widget)
+        return cards
+
+    def _card_index(self, card: _JobCard) -> int:
+        cards = self._cards()
+        return cards.index(card) if card in cards else -1
+
+    def _move_job(self, source: int, target: int) -> None:
+        """Move a card at once, then save the order; a refusal (another window changed the
+        jobs meanwhile) reloads the dashboard."""
+        cards = self._cards()
+        if not (0 <= source < len(cards) and 0 <= target < len(cards)):
+            return
+        names = [str(card.property("jobName")) for card in cards]
+        names.insert(target, names.pop(source))
+        card = cards[source]
+        self.jobs_layout.removeWidget(card)
+        self.jobs_layout.insertWidget(target, card)
+        card.setFocus(Qt.FocusReason.OtherFocusReason)
+        try:
+            self._api.reorder_jobs(names)
+        except ApiError as e:
+            toast(self, f"Couldn't save the new order: {e}", "error")
+        self._cards_signature = None
+        self.refresh()
+
     def _populate(self, jobs: list[dict]) -> None:
+        # The card with the keyboard keeps it across the rebuild (e.g. after Alt+Down).
+        focus = QApplication.focusWidget()
+        focused = next(
+            (
+                card.property("jobName")
+                for card in self._cards()
+                if focus is not None and (focus is card or card.isAncestorOf(focus))
+            ),
+            None,
+        )
         # Clear existing cards (keep the trailing stretch).
         while self.jobs_layout.count() > 1:
             item = self.jobs_layout.takeAt(0)
@@ -329,9 +377,13 @@ class MainWindow(QMainWindow):
             return
 
         for i, job in enumerate(jobs):
-            self.jobs_layout.insertWidget(i, self._job_card(job))
+            card = self._job_card(job, index=i, count=len(jobs))
+            self.jobs_layout.insertWidget(i, card)
+            if focused is not None and card.property("jobName") == focused:
+                card.show()  # a layout shows new widgets a moment later; focus needs it now
+                card.setFocus(Qt.FocusReason.OtherFocusReason)
 
-    def _job_card(self, job: dict[str, Any]) -> QFrame:
+    def _job_card(self, job: dict[str, Any], *, index: int = 0, count: int = 1) -> QFrame:
         enabled = bool(job.get("enabled", True))
         running = (job.get("last_status") or "") == "running"
 
@@ -347,10 +399,14 @@ class MainWindow(QMainWindow):
         )
         card.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         card.setAccessibleName(f"Job {job.get('name', '')}")
+        card.setProperty("jobName", str(job.get("name", "")))
         card.setToolTip("Double-click to edit. Right-click for job options.")
         lay = QHBoxLayout(card)
-        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setContentsMargins(16, 12, 16, 12)  # the left margin holds the drag grip
         lay.setSpacing(12)
+        # Inset past the card's 3 px status edge.
+        self._jobs_reorder.attach(card, inset=4)
+        self._jobs_reorder.keys(card, partial(self._card_index, card))
 
         info = QVBoxLayout()
         info.setSpacing(8)
@@ -504,6 +560,23 @@ class MainWindow(QMainWindow):
             menu.addAction(
                 asset_icon("pause.svg"), "Pause", lambda *_: self._set_enabled(job_name, False)
             )
+        if count > 1:
+            menu.addSeparator()
+            # After a tab, Qt shows the text in the menu's key column. Only a hint: the
+            # card's own Alt+Up/Down does the work — a shortcut on every card's menu would
+            # make the key ambiguous, and Qt then runs none of them.
+            up = menu.addAction(
+                asset_icon("move-up.svg"),
+                "Move up\tAlt+↑",
+                lambda *_, c=card: self._jobs_reorder.step(self._card_index(c), -1),
+            )
+            up.setEnabled(index > 0)
+            down = menu.addAction(
+                asset_icon("move-down.svg"),
+                "Move down\tAlt+↓",
+                lambda *_, c=card: self._jobs_reorder.step(self._card_index(c), 1),
+            )
+            down.setEnabled(index < count - 1)
         menu.addSeparator()
         menu.addAction(asset_icon("trash.svg"), "Delete", lambda *_: self._delete_job(job_name))
         menu.aboutToHide.connect(self._on_card_menu_closed)

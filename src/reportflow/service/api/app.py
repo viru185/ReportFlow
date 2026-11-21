@@ -266,6 +266,12 @@ class EmailTemplateUpdate(BaseModel):
     content: str
 
 
+class JobOrder(BaseModel):
+    """Every job's name, in the order the dashboard lists them."""
+
+    names: list[str]
+
+
 class RunResponse(BaseModel):
     run_id: str
     status: str = "running"
@@ -508,6 +514,19 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         jobs = [*svc().config.jobs, job]
         _save_jobs_or_400(svc(), jobs)
         return {"ok": True, "name": job.name}
+
+    @app.post("/jobs/reorder")
+    def reorder_jobs(order: JobOrder) -> dict[str, Any]:
+        """Save the dashboard's order (dragged cards). ``names`` must name every job once —
+        a job added or removed meanwhile (another window) gets 409, and the UI reloads."""
+        jobs = svc().config.jobs
+        by_key = {j.name.casefold(): j for j in jobs}
+        keys = [n.casefold() for n in order.names]
+        if len(keys) != len(set(keys)) or set(keys) != set(by_key):
+            raise HTTPException(status_code=409, detail="the job list changed — reload it")
+        logger.info("API: reorder jobs")
+        _save_jobs_or_400(svc(), [by_key[k] for k in keys])
+        return {"ok": True}
 
     @app.put("/jobs/{name}")
     def update_job(name: str, job: JobConfig) -> dict[str, Any]:

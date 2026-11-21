@@ -587,6 +587,19 @@ def test_email_groups_rename_follows_into_jobs_and_in_use_groups_stay(client):
     assert names == ["Plant managers"]
 
 
+def test_dashboard_order_is_saved_and_must_name_every_job(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    for name in ("alpha", "beta", "gamma"):
+        assert c.post("/jobs", json={**_job_payload(tmp_path), "name": name}).status_code == 201
+    assert c.post("/jobs/reorder", json={"names": ["GAMMA", "alpha", "beta"]}).json()["ok"]
+    assert [j["name"] for j in c.get("/jobs").json()] == ["gamma", "alpha", "beta"]
+    # A job added or removed meanwhile (another window): refused, nothing changes.
+    for names in (["gamma", "alpha"], ["gamma", "alpha", "beta", "delta"], ["a", "a", "b"]):
+        assert c.post("/jobs/reorder", json={"names": names}).status_code == 409
+    assert [j["name"] for j in c.get("/jobs").json()] == ["gamma", "alpha", "beta"]
+
+
 def test_job_with_an_unknown_email_group_is_refused(client):
     c, tmp_path = client
     _make_wb(tmp_path / "t.xlsx")

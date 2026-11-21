@@ -331,6 +331,7 @@ class JobEditorDialog(FormDialog):
         self.wb_list.add_requested.connect(self._pick_workbooks)
         self.wb_list.replace_requested.connect(self._replace_workbook)
         self.wb_list.remove_requested.connect(self._remove_workbook)
+        self.wb_list.moved.connect(self.move_workbook)
         # The selected workbook: its name with Replace / Remove beside it, and its folder.
         # Both are shortened in the middle (full text on hover) — a long path or name never
         # makes the page wider than the window.
@@ -1039,6 +1040,21 @@ class JobEditorDialog(FormDialog):
             "info",
             action=("Undo", lambda: self._restore_workbook(index, wb)),
         )
+
+    def move_workbook(self, source: int, target: int) -> None:
+        """Workbooks are built and attached in list order. The one shown stays shown, and
+        the moved row flashes where it landed."""
+        if not (0 <= source < len(self._workbooks) and 0 <= target < len(self._workbooks)):
+            return
+        shown = self._current()
+        self._workbooks.insert(target, self._workbooks.pop(source))
+        current = self._workbooks.index(shown) if shown is not None else target
+        self.wb_list.set_rows([self._row_view(wb) for wb in self._workbooks], current)
+        self._current_wb = None
+        self._show_workbook(current)
+        self._refresh_workbook_chrome()
+        self.wb_list.flash(target)
+        self.wb_list.list.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _restore_workbook(self, index: int, wb: _WorkbookState) -> None:
         index = min(index, len(self._workbooks))

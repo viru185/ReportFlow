@@ -111,6 +111,10 @@ class ApiClient:
     def delete_job(self, name: str) -> dict:
         return self._request("DELETE", f"/jobs/{name}")
 
+    def reorder_jobs(self, names: list[str]) -> dict:
+        """Save the dashboard's order; ``names`` must name every job once (else 409)."""
+        return self._request("POST", "/jobs/reorder", json={"names": names})
+
     def run_job(self, name: str) -> dict:
         return self._request("POST", f"/jobs/{name}/run")
 

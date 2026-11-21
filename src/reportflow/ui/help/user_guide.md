@@ -48,6 +48,9 @@ reachable*, start the **ReportFlow** Windows service and click Refresh.
 - The workbooks are listed on the left; click one to see its sheets on the right. Each row says
   how it's doing: *3 of 5 sheets*, *Reading sheets…*, or a warning.
 - Every run builds **all** the job's workbooks and sends **one email** with every file attached.
+- They are built and attached **in list order**. To change it, hover a workbook and drag the
+  **⠿** grip at its left edge — a blue line shows where it will land — or select it and press
+  **Alt+↑** / **Alt+↓**, or right-click it for **Move up** / **Move down**.
 
 ### Choosing the sheets
 
@@ -149,6 +152,9 @@ example *Daily at 06:00* plus *Weekly on Sunday at 10:00*. Each schedule is one 
   doesn't have are skipped.
 - **Custom (cron)** — full cron control, one expression per line
   (`minute hour day-of-month month day-of-week`).
+
+Schedules stay in the order you arrange them: drag a schedule's **⠿** grip (beside its kind), or
+press **Alt+↑** / **Alt+↓** while working in it.
 
 To add a time, click **+ Add time**, choose the time and click **Add** (or press Enter). It shows
 as a small pill — **every time you can see is a time that will run**. Click a pill's **×** to
@@ -282,6 +288,9 @@ The card's **coloured left edge** is the last run's outcome at a glance: green =
 red = failed, amber = running, grey = never ran. The detail line shows the next run, the last
 outcome ("last: success 2h ago") and the sheet count.
 
+The cards stay in the order you arrange them — for every user of this ReportFlow. Hover a card
+and drag the **⠿** grip at its left edge, or select a card and press **Alt+↑** / **Alt+↓**.
+
 Everything occasional is behind the card's **⋯** menu, so daily actions stay one click:
 
 - **Open last report** — Explorer opens with the last successful report selected.
@@ -292,6 +301,7 @@ Everything occasional is behind the card's **⋯** menu, so daily actions stay o
 - **Pause** — pauses the schedule. A paused job's whole card is dimmed (muted name, grey stage
   pill and edge) and a one-click **Resume** button appears. Manual runs still work while paused
   (the edge turns amber while one runs).
+- **Move up** / **Move down** — the same as dragging the card.
 - **Delete** — removes the job (it asks first).
 
 Jobs run in parallel, each in its own Excel. Failed runs are never retried automatically — they
@@ -393,6 +403,7 @@ stay visible in the history.
 | **F2** | edits the selected address chip in place |
 | **Alt+←** / **Alt+→** | moves the selected recipient chip |
 | **Delete** | removes the selected workbook (with Undo) |
+| **Alt+↑** / **Alt+↓** | moves the selected workbook, schedule or job card up or down |
 
 - Windows reopen at the size you left them.
 - Short messages ("Saved", "Logs sent") appear as notices at the top of the window and fade on

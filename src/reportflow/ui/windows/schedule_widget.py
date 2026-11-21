@@ -5,10 +5,13 @@ compact card: its kind, a row of run times (each a small pill with its own ×), 
 rules a Mon…Sun toggle. "+ Add time" opens a small picker that adds the time and closes, so a
 time on screen is always a time that will run (the old always-visible picker left people
 unsure whether the time in the box was added). No rules = manual only. Compiles to cron
-expressions via the pure ``schedule_compile`` helpers.
+expressions via the pure ``schedule_compile`` helpers. Rules are listed in the order the user
+arranges them: drag a rule's grip (⠿, beside its kind) or press Alt+↑ / Alt+↓ (0.15).
 """
 
 from __future__ import annotations
+
+from functools import partial
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTime, Signal
 from PySide6.QtGui import QKeyEvent
@@ -29,6 +32,7 @@ from reportflow.ui.kit import (
     ComboBox,
     IconButton,
     Popover,
+    Reorder,
     SegmentButton,
     TimeEdit,
     segmented,
@@ -169,7 +173,7 @@ class _RuleRow(QFrame):
         self._pills: dict[str, _TimePill] = {}
         self.popover: _TimePopover | None = None
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setContentsMargins(16, 10, 12, 12)  # the left margin holds the drag grip
         lay.setSpacing(10)
 
         top = QHBoxLayout()
@@ -365,6 +369,8 @@ class ScheduleWidget(QWidget):
         super().__init__(parent)
         self._rows: list[_RuleRow] = []
         self._build()
+        self._reorder = Reorder(self, self.rows)
+        self._reorder.moved.connect(self.move_rule)
 
     # -- construction ------------------------------------------------------------
 
@@ -420,15 +426,35 @@ class ScheduleWidget(QWidget):
         row.remove_requested.connect(self._remove_row)
         self._rows.append(row)
         self._rules_lay.addWidget(row)
+        # The grip sits beside the rule's kind, its first line.
+        self._reorder.attach(row, inset=2, centre_on=row.kind.geometry)
+        self._reorder.keys(row, partial(self._index_of, row))
         self._update_summary()
         return row
+
+    def _index_of(self, row: _RuleRow) -> int:
+        return self._rows.index(row) if row in self._rows else -1
+
+    def move_rule(self, source: int, target: int) -> None:
+        """Rules are saved, listed and summarised in this order."""
+        if not (0 <= source < len(self._rows) and 0 <= target < len(self._rows)):
+            return
+        row = self._rows.pop(source)
+        self._rows.insert(target, row)
+        self._rules_lay.removeWidget(row)
+        self._rules_lay.insertWidget(target, row)
+        self._update_summary()
+        self._reorder.refresh()
+        flash(row, times=1)
 
     def _remove_row(self, row: _RuleRow) -> None:
         if row in self._rows:
             self._rows.remove(row)
             self._rules_lay.removeWidget(row)
+            row.hide()  # until deleteLater runs, it must not count as a row (or catch drops)
             row.deleteLater()
         self._update_summary()
+        self._reorder.refresh()
 
     def _update_summary(self) -> None:
         self.manual_hint.setVisible(not self._rows)

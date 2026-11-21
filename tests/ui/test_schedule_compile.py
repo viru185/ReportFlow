@@ -87,6 +87,23 @@ def test_custom_cron_preserved_alongside_presets():
     assert describe(raw) == "Daily at 06:00; Cron: */5 9-17 * * MON-FRI"
 
 
+def test_a_custom_schedule_keeps_its_place_among_the_others():
+    """0.15: rules can be reordered, so a custom one moved up must stay up when reopened."""
+    rules = [
+        ScheduleRule(kind="cron", crons=["*/5 9-17 * * MON-FRI", "0 12 1 1 *"]),
+        ScheduleRule(kind="daily", times=["06:00"]),
+        ScheduleRule(kind="cron", crons=["*/30 22 * * FRI"]),
+    ]
+    crons = compile_rules(rules)
+    back = parse_crons(crons)
+    assert [(r.kind, r.crons or r.times) for r in back] == [
+        ("cron", ["*/5 9-17 * * MON-FRI", "0 12 1 1 *"]),
+        ("daily", ["06:00"]),
+        ("cron", ["*/30 22 * * FRI"]),
+    ]
+    assert compile_rules(back) == crons
+
+
 def test_mixed_signatures_become_separate_rules():
     crons = ["0 6 * * *", "0 7 * * MON", "30 7 * * MON"]
     rules = parse_crons(crons)

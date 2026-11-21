@@ -199,33 +199,38 @@ def _preset_signature(cron: str) -> tuple[RuleKind, tuple[str, str], str] | None
 
 
 def parse_crons(crons: list[str]) -> list[ScheduleRule]:
-    """Best-effort inverse of :func:`compile_rules`: crons sharing a day pattern become one
-    rule (with several times); leftovers are kept verbatim in a final ``cron`` rule."""
-    rules: dict[tuple[str, str], ScheduleRule] = {}
-    leftovers: list[str] = []
+    """Best-effort inverse of :func:`compile_rules`, keeping the rules' order: crons sharing
+    a day pattern become one rule (with several times), placed where the first of them is;
+    a run of other crons is kept verbatim in a ``cron`` rule at its own place (0.15 — it
+    used to drop to the end, so a custom schedule moved up didn't stay there)."""
+    result: list[ScheduleRule] = []
+    presets: dict[tuple[str, str], ScheduleRule] = {}
+    custom: ScheduleRule | None = None  # the cron rule the next leftover joins
     for cron in (c.strip() for c in crons):
         if not cron:
             continue
         sig = _preset_signature(cron)
         if sig is None:
-            leftovers.append(cron)
+            if custom is None:
+                custom = ScheduleRule(kind="cron", crons=[])
+                result.append(custom)
+            custom.crons.append(cron)
             continue
+        custom = None
         kind, (dom, dow), time = sig
-        rule = rules.get((dom, dow))
+        rule = presets.get((dom, dow))
         if rule is None:
             rule = ScheduleRule(kind=kind)
             if kind == "weekly":
                 rule.weekdays = dow.split(",")
             elif kind == "monthly":
                 rule.month_days = [int(d) for d in dom.split(",")]
-            rules[(dom, dow)] = rule
+            presets[(dom, dow)] = rule
+            result.append(rule)
         if time not in rule.times:
             rule.times.append(time)
-    result = list(rules.values())
     for rule in result:
         rule.times.sort()
-    if leftovers:
-        result.append(ScheduleRule(kind="cron", crons=leftovers))
     return result
 
 

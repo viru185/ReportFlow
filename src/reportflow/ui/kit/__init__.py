@@ -13,6 +13,7 @@ from reportflow.ui.kit.buttons import Button, IconButton, SegmentButton, segment
 from reportflow.ui.kit.inputs import ComboBox, SpinBox, TimeEdit, styled_completer
 from reportflow.ui.kit.labels import ElidedLabel, PathLabel, Tag, breakable, open_folder
 from reportflow.ui.kit.popups import Menu, Popover, round_popup
+from reportflow.ui.kit.reorder import DragHandle, Reorder
 from reportflow.ui.kit.views import (
     ListWidget,
     PopupItemDelegate,
@@ -24,6 +25,7 @@ from reportflow.ui.kit.views import (
 __all__ = [
     "Button",
     "ComboBox",
+    "DragHandle",
     "ElidedLabel",
     "IconButton",
     "ListWidget",
@@ -31,6 +33,7 @@ __all__ = [
     "PathLabel",
     "Popover",
     "PopupItemDelegate",
+    "Reorder",
     "ScrollArea",
     "SegmentButton",
     "SpinBox",

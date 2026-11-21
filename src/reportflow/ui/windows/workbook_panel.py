@@ -4,6 +4,8 @@ The list replaces the old tab strip, which elided names to "…" once a job had 
 Each row shows the file's name and what the editor knows about it ("3 of 5 sheets", "Reading
 sheets…", "⚠ File not found") across the whole row width; Replace… and Remove sit beside the
 selected workbook's name in the editor, and on each row's right-click menu (Delete removes).
+Workbooks are built, and attached to the email, in list order: drag a row's grip (⠿, in its
+left margin) to reorder, or Alt+↑ / Alt+↓, or Move up / Move down in its menu (0.15).
 One "+ Add workbooks…" button sits under the list, and Excel files can be dropped anywhere on
 the General tab. A job without workbooks shows a large drop zone instead of an empty list.
 
@@ -30,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from reportflow.ui.assets import asset_icon
 from reportflow.ui.feedback import flash
-from reportflow.ui.kit import Button, ElidedLabel, ListWidget, Menu
+from reportflow.ui.kit import Button, ElidedLabel, ListWidget, Menu, Reorder
 from reportflow.ui.style import ACCENT_HOVER, BORDER_HOVER, CARD_BG, TEXT, TEXT_MUTED
 
 EXCEL_SUFFIXES = (".xlsx", ".xlsm")
@@ -55,7 +57,7 @@ class _Row(QFrame):
         self.setObjectName("workbookRow")
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         row = QHBoxLayout(self)
-        row.setContentsMargins(10, 8, 10, 8)
+        row.setContentsMargins(16, 8, 10, 8)  # the left margin holds the drag grip
         row.setSpacing(10)
         icon = QLabel()
         icon.setPixmap(asset_icon("workbook.svg").pixmap(20, 20))
@@ -88,6 +90,7 @@ class WorkbookList(QFrame):
     add_requested = Signal()
     replace_requested = Signal(int)
     remove_requested = Signal(int)
+    moved = Signal(int, int)  # (from, to): a workbook was dragged or moved with Alt+↑/↓
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -102,6 +105,14 @@ class WorkbookList(QFrame):
         self.list.currentRowChanged.connect(self._on_current)
         self.list.installEventFilter(self)
         layout.addWidget(self.list, 1)
+        viewport = self.list.viewport()
+        assert viewport is not None
+        # The selected row shows its grip too, so the keyboard path is visible.
+        self.reorder = Reorder(
+            viewport, self.rows, active=lambda row: self._index_of(row) == self.current()
+        )
+        self.reorder.moved.connect(self.moved)
+        self.reorder.keys(self.list, self.current)
         self.add_button = Button(
             "+  Add workbooks…",
             tooltip="Add Excel files to this job — pick several at once. Every workbook is "
@@ -155,8 +166,9 @@ class WorkbookList(QFrame):
         else:
             self.list.insertItem(index, item)
         self.list.setItemWidget(item, row)
+        self.reorder.attach(row, inset=2, tooltip="Drag to reorder · Alt+↑ / Alt+↓")
 
-    def _index_of(self, row: _Row) -> int:
+    def _index_of(self, row: QWidget) -> int:
         for i in range(self.list.count()):
             if self.list.itemWidget(self.list.item(i)) is row:
                 return i
@@ -182,6 +194,7 @@ class WorkbookList(QFrame):
             self.list.setCurrentRow(index)
         finally:
             self.list.blockSignals(False)
+        self.reorder.refresh()
 
     def current(self) -> int:
         return self.list.currentRow()
@@ -196,6 +209,7 @@ class WorkbookList(QFrame):
     # -- behaviour --
 
     def _on_current(self, index: int) -> None:
+        self.reorder.refresh()
         self.current_changed.emit(index)
 
     def _context_menu(self, pos: QPoint) -> None:
@@ -209,6 +223,23 @@ class WorkbookList(QFrame):
             "Replace with another file…",
             lambda: self.replace_requested.emit(index),
         )
+        if self.count() > 1:
+            menu.addSeparator()
+            # After a tab, Qt shows the text in the menu's key column. Only a hint: the
+            # list's own Alt+Up/Down does the work (a real shortcut here would clash).
+            up = menu.addAction(
+                asset_icon("move-up.svg"),
+                "Move up\tAlt+↑",
+                lambda: self.reorder.step(index, -1),
+            )
+            up.setEnabled(index > 0)
+            down = menu.addAction(
+                asset_icon("move-down.svg"),
+                "Move down\tAlt+↓",
+                lambda: self.reorder.step(index, 1),
+            )
+            down.setEnabled(index < self.count() - 1)
+            menu.addSeparator()
         menu.addAction(
             asset_icon("trash.svg"),
             "Remove from this job",
