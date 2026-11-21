@@ -71,6 +71,9 @@ a = Analysis(
         (os.path.join(ROOT, "assets", "group.svg"), "assets"),
         (os.path.join(ROOT, "assets", "workbook.svg"), "assets"),
         (os.path.join(ROOT, "assets", "replace.svg"), "assets"),
+        # The Help guide (loaded from next to the help_dialog module).
+        (os.path.join(ROOT, "src", "reportflow", "ui", "help", "user_guide.md"),
+         os.path.join("reportflow", "ui", "help")),
         (os.path.join(ROOT, "assets", "arrow-up.png"), "assets"),
         (os.path.join(ROOT, "assets", "arrow-down.png"), "assets"),
         # The version lives only in pyproject.toml; frozen exes read package metadata.

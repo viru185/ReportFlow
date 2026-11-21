@@ -1202,7 +1202,7 @@ def test_help_dialog_builds(qtbot):
     dlg = HelpDialog()
     qtbot.addWidget(dlg)
     text = dlg.browser.toPlainText()
-    assert "Help Guide" in text
+    assert "ReportFlow user guide" in text
     assert "Concurrency group" in text
     assert "Time limit" in text and "Wait for add-in data" in text
 

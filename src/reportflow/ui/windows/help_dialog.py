@@ -1,460 +1,294 @@
-"""In-app Help guide — a comprehensive how-to rendered in a QTextBrowser."""
+"""In-app Help: the user guide (``ui/help/user_guide.md``) with a section list and search.
+
+The guide is plain Markdown, so it reads well in the app and on GitHub. Headings carry an id
+(``## Schedules {#schedule}``) so other screens can open the guide at a section — F1 opens the
+part for the current tab — and links such as ``[groups](#groups)`` jump inside it. Three
+tables are generated when the guide loads, from the same lists the app itself uses, so the
+Help can't drift from the app: the email placeholders, their recipes and the file-name tokens.
+"""
 
 from __future__ import annotations
 
-import html
+import re
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QDesktopServices,
+    QFont,
+    QTextBlockFormat,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
+    QTextFormat,
+    QTextFrame,
+    QTextFrameFormat,
+    QTextLength,
+    QTextOption,
+    QTextTable,
+    QTextTableFormat,
+)
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QSplitter,
+    QTextBrowser,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from reportflow import __about__ as about
 from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
-from reportflow.ui.widgets import space_layout
+from reportflow.core.output_names import OUTPUT_NAME_TOKENS, expand_output_name
+from reportflow.ui.feedback import restore_geometry, save_geometry
+from reportflow.ui.style import ACCENT_HOVER, BORDER, CARD_BG, TEXT, TEXT_MUTED
+
+GUIDE_PATH = Path(__file__).resolve().parents[1] / "help" / "user_guide.md"
+EXAMPLE_TIME = datetime(2026, 10, 7, 6, 15)  # stable examples: 07-Oct-2026 06:15
+_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*(?:\{#([\w-]+)\})?\s*$")
+
+_RECIPES = [
+    (
+        "A dated subject",
+        "Daily production report — {{ today }}",
+        "Daily production report — 07-Oct-2026",
+    ),
+    (
+        "Yesterday's data (a report run in the morning)",
+        "Production for {{ yesterday }} is attached.",
+        "Production for 06-Oct-2026 is attached.",
+    ),
+    (
+        "A monthly report run on the 1st",
+        "The {{ previous_month }} summary is attached.",
+        "The September 2026 summary is attached.",
+    ),
+    ("Your own date format", "{{ run_date.strftime('%d/%m/%Y') }}", "07/10/2026"),
+    (
+        "Only when the run has warnings",
+        "{% if warnings %}Please note {{ warning_count }} warning(s).{% endif %}",
+        "(nothing when there are none)",
+    ),
+    (
+        "List the attached files",
+        "<ul>{% for f in attachments %}<li>{{ f }}</li>{% endfor %}</ul>",
+        "a bullet per file",
+    ),
+]
 
 
-def _placeholder_html() -> str:
-    """The placeholder reference, generated from the same list the template editor uses."""
-    sample = sample_context(now=datetime(2026, 10, 7, 6, 15))  # stable examples
-    rows = []
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
+def _code(text: str) -> str:
+    return f"`{_cell(text)}`"
+
+
+def placeholder_table(now: datetime = EXAMPLE_TIME) -> str:
+    sample = sample_context(now=now)
+    rows = ["| Placeholder | Example | What it is |", "|---|---|---|"]
     for group, label, token, about_it in PLACEHOLDERS:
         example = "" if group == "Blocks" else render_email(token, sample)
-        rows.append(
-            f"<tr><td><code>{html.escape(token)}</code></td><td>{html.escape(example)}</td>"
-            f"<td>{html.escape(label)} — {html.escape(about_it)}</td></tr>"
-        )
+        rows.append(f"| {_code(token)} | {_cell(example)} | {_cell(label)} — {_cell(about_it)} |")
+    return "\n".join(rows)
 
-    def code(text: str) -> str:
-        return f"<code>{html.escape(text)}</code>"
 
-    recipes = [
-        (
-            "A dated subject",
-            code("Daily production report — {{ today }}"),
-            "Daily production report — 07-Oct-2026",
-        ),
-        (
-            "Yesterday's data (a report run in the morning)",
-            code("Production for {{ yesterday }} is attached."),
-            "Production for 06-Oct-2026 is attached.",
-        ),
-        (
-            "A monthly report run on the 1st",
-            code("The {{ previous_month }} summary is attached."),
-            "The September 2026 summary is attached.",
-        ),
-        ("Your own date format", code("{{ run_date.strftime('%d/%m/%Y') }}"), "07/10/2026"),
-        (
-            "Only when the run has warnings",
-            code("{% if warnings %}Please note {{ warning_count }} warning(s).{% endif %}"),
-            "(nothing when there are none)",
-        ),
-        (
-            "List the attached files",
-            code("<ul>{% for f in attachments %}<li>{{ f }}</li>{% endfor %}</ul>"),
-            "a bullet per file",
-        ),
+def recipes_table() -> str:
+    rows = ["| For | Write | Gives |", "|---|---|---|"]
+    rows += [
+        f"| {_cell(what)} | {_code(code)} | {_cell(result)} |" for what, code, result in _RECIPES
     ]
-    recipe_rows = "".join(
-        f"<tr><td>{what}</td><td>{snippet}</td><td>{html.escape(result)}</td></tr>"
-        for what, snippet, result in recipes
-    )
-    return (
-        '<h2 id="placeholders">Email placeholders</h2>'
-        "<p>A placeholder is a name in double curly braces — like <code>{{ today }}</code> — "
-        "that ReportFlow replaces with the real value when it sends the email. They work in "
-        "the <b>email body</b> (Email tab → <b>Edit email template…</b>; click one in the "
-        "list on the right to insert it) and in the job's <b>Subject</b>. Click "
-        "<b>Preview</b> in the template editor to see the result. Dates are the date the "
-        "run <i>started</i>.</p>"
-        '<table border="1" cellpadding="4" cellspacing="0">'
-        "<tr><th>Placeholder</th><th>Example</th><th>What it is</th></tr>"
-        + "".join(rows)
-        + "</table>"
-        "<p><b>Recipes</b></p>"
-        '<table border="1" cellpadding="4" cellspacing="0">'
-        "<tr><th>For</th><th>Write</th><th>Gives</th></tr>" + recipe_rows + "</table>"
-        "<p><b>Good to know:</b> spell a placeholder exactly as listed (lower case, with the "
-        "underscores) — an unknown name comes out empty. Date format codes for "
-        "<code>strftime</code>: <code>%d</code> day, <code>%m</code> month number, "
-        "<code>%b</code> Oct, <code>%B</code> October, <code>%Y</code> 2026, "
-        "<code>%A</code> Wednesday, <code>%H:%M</code> 06:15.</p>"
-    )
+    return "\n".join(rows)
 
 
-_PLACEHOLDER_HTML = _placeholder_html()
+def output_tokens_table(now: datetime = EXAMPLE_TIME) -> str:
+    rows = ["| Placeholder | Example | What it is |", "|---|---|---|"]
+    for label, token, about_it in OUTPUT_NAME_TOKENS:
+        example = expand_output_name(
+            token, job_name="Sales", run_id="a1b2c3d4", now=now, workbook="Sales"
+        )
+        rows.append(f"| {_code(token)} | {_cell(example)} | {_cell(label)} — {_cell(about_it)} |")
+    return "\n".join(rows)
 
-_HELP_HTML = f"""
-<h1>{about.NAME} — Help Guide</h1>
 
-<p><b>Contents:</b>
-<a href="#start">Getting started</a> ·
-<a href="#jobs">Creating &amp; editing jobs</a> ·
-<a href="#output">Output files</a> ·
-<a href="#schedule">Scheduling</a> ·
-<a href="#email">Email &amp; templates</a> ·
-<a href="#placeholders">Email placeholders</a> ·
-<a href="#runs">Running &amp; test runs</a> ·
-<a href="#logs">Logs &amp; history</a> ·
-<a href="#settings">Settings (SMTP &amp; more)</a> ·
-<a href="#transfer">Import &amp; export</a> ·
-<a href="#updates">Updates</a> ·
-<a href="#advanced">Advanced options</a> ·
-<a href="#pidatalink">PI DataLink &amp; add-ins</a> ·
-<a href="#dryrun">Build only</a> ·
-<a href="#emailalerts">Email failures</a> ·
-<a href="#exportlogs">Send logs to dev</a>
-</p>
+@dataclass(frozen=True)
+class Section:
+    id: str
+    title: str
+    level: int
 
-<h2 id="start">Getting started</h2>
-<p>{about.NAME} automates Excel-based reports. You define a <b>job</b>: which Excel file to
-open, which sheets to process, where to save the results, when to run, and who to email.
-The background <b>service</b> runs jobs on schedule; this app is the control panel.</p>
-<p>The status pill in the header shows whether the service is reachable. If it shows
-<i>not reachable</i>, start the <b>ReportFlow</b> Windows service and click Refresh.</p>
 
-<h2 id="jobs">Creating &amp; editing jobs</h2>
-<ol>
-<li>Click <b>New Job</b>.</li>
-<li>Give the job a unique <b>name</b> (also used in output filenames). You can rename it
-    later in <b>✎ Edit</b> — its run history and email template move with it (not while a
-    run of it is in progress).</li>
-<li>Browse to the <b>Input Excel file</b> (.xlsx / .xlsm). The sheet table fills in
-    automatically, every sheet included. Per sheet choose:
-    <b>Include</b> (refresh, check and freeze it), <b>PDF</b> (also export it as its own PDF)
-    and <b>Hidden</b> (keep it in the Excel file but hidden — recipients can unhide it; it can
-    still get a PDF). At least one included sheet must stay visible. Click a column title to
-    tick or untick it for every sheet. Sheets are stored by <i>name</i>, so reordering sheets
-    in the workbook is safe.</li>
-<li><b>Sheets not included</b> — what the output copy does with the sheets you didn't
-    include: <i>Remove them from the file</i> (smallest file, but can break charts/defined
-    names that referenced them, so Office may refuse to open the output), <i>Keep them,
-    hidden</i> (very-hidden: references stay intact and the file always opens, but the raw data
-    stays inside it) or <i>Keep them, visible</i>.</li>
-<li>More than one Excel file? <b>+ Add workbook…</b> adds another tab with its own file,
-    sheets and choices — pick several files at once in its file dialog. A file that is already
-    in the job is skipped, and you are told which. Every run builds all of them and sends
-    <b>one email</b> with every file attached. On the Output tab, <b>If a workbook
-    fails</b> decides whether one failing workbook stops the whole run (default — nothing is
-    sent) or the others are still sent with a warning.</li>
-<li>Configure Output, Schedule, and Email in their sections (details below), then
-    <b>Save</b>.</li>
-</ol>
-<p><b>What a run does:</b> for each workbook — opens the input file, refreshes external
-data / Power Query, waits for calculation, optionally freezes formulas to values on the
-included sheets, exports the PDFs using the workbook's own print layout, hides the sheets
-marked Hidden, and saves the output Excel. The input files themselves are never modified.</p>
+def load_guide(path: Path = GUIDE_PATH) -> tuple[str, list[Section]]:
+    """The guide's Markdown (generated tables filled in, ``{#id}`` markers removed) and the
+    sections that have ids, in order."""
+    text = path.read_text(encoding="utf-8")
+    text = text.replace("<!-- placeholders -->", placeholder_table())
+    text = text.replace("<!-- recipes -->", recipes_table())
+    text = text.replace("<!-- output-tokens -->", output_tokens_table())
+    sections: list[Section] = []
+    lines: list[str] = []
+    in_code = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            in_code = not in_code
+        match = None if in_code else _HEADING.match(line)
+        if match and match.group(3):
+            hashes, title, section_id = match.groups()
+            sections.append(Section(section_id, title, len(hashes)))
+            lines.append(f"{hashes} {title}")
+        else:
+            lines.append(line)
+    return "\n".join(lines), sections
 
-<h2 id="output">Output files</h2>
-<p>Pick an <b>Output folder</b> — or leave it empty to save next to the input file.
-Optionally set a <b>Filename</b>; leave it empty for the default
-<code>{{job}}_{{datetime}}</code> (e.g. <code>Sales_20261007_061500</code>) — the run's time is
-part of the name, so a job that runs twice in one day never overwrites its earlier report.
-Available placeholders: <code>{{job}}</code>, <code>{{date}}</code> (20261007),
-<code>{{time}}</code> (061500), <code>{{datetime}}</code> (20261007_061500),
-<code>{{run_id}}</code>, <code>{{workbook}}</code> (the input file's name). A custom name
-without <code>{{time}}</code> / <code>{{datetime}}</code> / <code>{{run_id}}</code> is
-overwritten by a second run on the same day — the editor warns about that.</p>
-<p>Each run writes <code>&lt;filename&gt;.xlsx</code> per workbook plus one
-<code>&lt;filename&gt;_&lt;sheet&gt;.pdf</code> per sheet with PDF ticked. With several
-workbooks, <code>_{{workbook}}</code> is added to the name automatically so their files never
-overwrite each other.</p>
 
-<h2 id="schedule">Scheduling</h2>
-<p>A job with no schedule is <b>manual</b> — it only runs when you click Run. Click
-<b>+ Add schedule</b> to run it automatically, and add <b>more than one</b> to combine them —
-for example <i>Daily at 06:00</i> plus <i>Weekly on Sunday at 10:00</i>. Each schedule is one
-of:</p>
-<ul>
-<li><b>Daily</b> — every day at the times you add. Add several times (e.g. 06:00 and 18:00)
-    for multiple runs per day.</li>
-<li><b>Weekly</b> — tick the weekdays + add times.</li>
-<li><b>Monthly</b> — type the days of the month (e.g. <code>1, 15</code>) + add times.</li>
-<li><b>Custom (cron)</b> — full cron control, one expression per line
-    (<code>minute hour day-of-month month day-of-week</code>).</li>
-</ul>
-<p>Pick a time and click <b>Add</b>; each added time shows as a chip — click its <b>✕</b> to
-remove it. <b>🗑 Delete</b> removes a whole schedule. Two schedules may not fire at the same
-moment (e.g. Daily 06:00 and Sunday 06:00) — that would run the job twice, so the editor
-refuses it and says why.</p>
+# -- styling the rendered guide --------------------------------------------------------
 
-<h2 id="email">Email, recipients &amp; the Testing → Production lifecycle</h2>
-<p>Each job has two recipient sets: <b>Production</b> and <b>Test</b>. <i>To</i> is
-required; <i>Cc</i>/<i>Bcc</i> are optional. Each box holds addresses and
-<a href="#groups">email groups</a> as chips: type to search the groups and every address the
-app already knows, then press Enter, Tab, a comma or a semicolon to add it (a pasted list is
-split). Click a chip's × to remove it. Text that is neither a group nor an address stays in
-the box outlined in red until you fix it. <b>Who gets emailed is decided by the job's
-stage:</b></p>
-<ul>
-<li><b>Testing</b> (every new job starts here, amber pill on the card) — <b>every</b> run,
-    manual or scheduled, emails only the <i>Test</i> recipients, subject prefixed
-    <code>[TEST]</code>. Verify the report internally as long as you need.</li>
-<li><b>Production</b> (green pill) — runs email the <i>Production</i> recipients. Promote
-    with the card's <b>✓ Move to production</b> button; the confirmation shows exactly who will
-    receive future reports. A job in Production can be moved back to Testing in the job
-    editor's Email tab.</li>
-<li>Failures never send email; check the logs instead.</li>
-<li>Emails attach the output Excel and all per-sheet PDFs, and show the run's duration.</li>
-<li>Every run's history entry shows an <b>email:</b> line — sent to how many recipients,
-    or exactly why nothing was sent.</li>
-<li>Each address is emailed <b>once</b>, even when it is in two groups or in both To and a
-    Cc group: To comes first, then Cc, then Bcc. Under each recipient set the editor shows how
-    many unique addresses it reaches.</li>
-</ul>
-<h3 id="groups">Email groups</h3>
-<p><b>File → Settings → Email groups</b>: give a list of addresses a name (say
-<i>Plant managers</i>), then use that name in any job's To, Cc or Bcc instead of typing each
-address. Change the group's members once and every job that uses it follows; renaming it
-keeps those jobs pointing at it. A group that a job still uses can't be deleted — remove it
-from those jobs first, so no report silently loses its recipients.</p>
-<p>Click <b>Edit email template…</b> to author the email body in-app: <b>Simple</b> mode
-(plain text) or <b>HTML</b> mode (full control), with a live preview. <b>Preview as:
-Testing | Production</b> shows the email each stage sends — subject (with <code>[TEST]</code>
-on Testing), To and Cc as recipients will see them, and the body.
-Placeholders like <code>{{{{ today }}}}</code>, <code>{{{{ job_name }}}}</code> and
-<code>{{{{ status }}}}</code> are filled in at send time — in the body and in the Subject. See
-<a href="#placeholders">Email placeholders</a> for the full list and examples.</p>
-<p><b>Using an .html file you made elsewhere:</b> click <b>Load from file…</b> in the template
-editor. By default a <i>copy</i> is saved with the job — later edits to the file are ignored.
-Tick <b>Keep linked to this file</b> instead to have every run read the file again, so your
-edits to it are picked up automatically. A linked file must be readable by the ReportFlow
-service (it runs under its own Windows account — a shared folder works best); the editor
-checks this when you save. If a linked file later goes missing, the email is still sent with
-the default template and the run shows a warning.</p>
+_HEADING_STYLE = {
+    1: (24, TEXT, 4, 10),
+    2: (18, ACCENT_HOVER, 26, 8),
+    3: (15, "#dbe4f3", 18, 6),
+    4: (14, TEXT, 12, 4),
+}
+# Callouts: (background, border) for tips and for notes/warnings.
+_TIP = (QColor("#15243a"), QColor("#274774"))
+_NOTE = (QColor("#2c2312"), QColor("#6b5222"))
+_CODE_BG = QColor("#1b2638")
+_CODE_FG = QColor("#9cc3f5")
 
-{_PLACEHOLDER_HTML}
 
-<h2 id="runs">Running a job — everything is one click</h2>
-<p>Each job card has two run buttons; the job's stage answers "who gets the email":</p>
-<ul>
-<li><b>▶ Run</b> — builds the report and emails it per the stage: the Test recipients while
-    the job is in <b>Testing</b>, the Production recipients once it is in
-    <b>Production</b>.</li>
-<li><b>👁 Build only</b> — builds and verifies the report (checks that PI DataLink / your data
-    source produced real values) but <b>sends no email at all</b>.</li>
-</ul>
-<p>While a run is in flight the card's badge counts the elapsed time and the run buttons
-lock, so a job cannot be started twice by accident. Scheduled cards also show the next fire
-time ("next: tomorrow 06:00").</p>
-<p>The card's <b>coloured left edge</b> is the last run's outcome at a glance:
-<span style="color:#4ade80;">green</span> = success,
-<span style="color:#f87171;">red</span> = failed,
-<span style="color:#fbbf24;">amber</span> = running,
-grey = never ran. The detail line shows the next fire time, the last outcome
-("last: success 2h ago") and the sheet count.</p>
-<p>Everything occasional lives behind the card's <b>⋯</b> menu, so daily actions stay one
-click:</p>
-<ul>
-<li><b>📂 Open last report</b> — Explorer opens with the last successful report
-    pre-selected.</li>
-<li><b>✎ Edit</b> / <b>Logs</b> — the job editor and that job's run history.</li>
-<li><b>⧉ Duplicate</b> — a new job with <i>everything</i> copied from this one — workbooks,
-    sheet choices, output, schedules, recipients, advanced options and the email template.
-    Only two things differ: you give it a new name, and it starts in Testing.</li>
-<li><b>⏸ Pause</b> — pause scheduling. A paused job's whole card is dimmed — muted
-    name, a grey stage pill and edge — and a one-click <b>▸ Resume</b> button appears on the
-    card. Manual runs still work while paused (the edge turns amber while one runs).</li>
-<li><b>🗑 Delete</b> — remove the job (asks for confirmation).</li>
-</ul>
-<p>Jobs run in parallel, each in its own isolated Excel process. Failed runs are never
-retried automatically — they stay visible in the history.</p>
+def _style_document(doc: QTextDocument) -> None:
+    """Give the plain Markdown rendering the app's look: headings, callouts, code, tables."""
+    # A "|" inside a table cell has to be written "\|"; Qt keeps the backslash in code.
+    escaped_pipe = "\\|"
+    cursor = doc.find(escaped_pipe)
+    while not cursor.isNull():
+        cursor.insertText("|", cursor.charFormat())
+        cursor = doc.find(escaped_pipe, cursor)
+    callouts: list[tuple[int, int, bool]] = []  # (first position, last position, is a note)
+    block = doc.begin()
+    while block.isValid():
+        fmt = block.blockFormat()
+        level = fmt.headingLevel()
+        cursor = QTextCursor(block)
+        if level:
+            size, color, top, bottom = _HEADING_STYLE.get(level, _HEADING_STYLE[4])
+            fmt.setTopMargin(top)
+            fmt.setBottomMargin(bottom)
+            cursor.setBlockFormat(fmt)
+            char = QTextCharFormat()
+            char.setFontPointSize(size * 0.75)
+            char.setFontWeight(QFont.Weight.Bold)
+            char.setForeground(QColor(color))
+            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            cursor.mergeCharFormat(char)
+        elif fmt.intProperty(QTextFormat.Property.BlockQuoteLevel) > 0:
+            # Tips and notes: a padded, tinted box (framed below) instead of an indented quote.
+            fmt.setLeftMargin(0)
+            fmt.setRightMargin(0)
+            fmt.setTopMargin(0)
+            fmt.setBottomMargin(0)
+            fmt.setIndent(0)
+            fmt.setTextIndent(0)
+            fmt.setLineHeight(118, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+            cursor.setBlockFormat(fmt)
+            end = block.position() + block.length() - 1
+            if callouts and callouts[-1][1] == block.position() - 1:  # the same quote goes on
+                callouts[-1] = (callouts[-1][0], end, callouts[-1][2])
+            else:
+                callouts.append((block.position(), end, block.text().lstrip().startswith("⚠")))
+        else:
+            fmt.setLineHeight(118, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+            fmt.setBottomMargin(max(fmt.bottomMargin(), 6))
+            cursor.setBlockFormat(fmt)
+        _style_code(block)
+        block = block.next()
+    _style_tables(doc.rootFrame())
+    # Last, from the end, so the positions collected above stay valid.
+    for start, end, note in reversed(callouts):
+        background, border = _NOTE if note else _TIP
+        frame = QTextFrameFormat()
+        frame.setBackground(QBrush(background))
+        frame.setBorder(1)
+        frame.setBorderBrush(QBrush(border))
+        frame.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+        frame.setPadding(12)
+        frame.setTopMargin(6)  # with a paragraph's 6, the usual 12 between blocks
+        frame.setBottomMargin(6)
+        cursor = QTextCursor(doc)
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        box = cursor.insertFrame(frame)  # moves the selected quote inside the new frame
+        # Qt keeps an empty paragraph on each side of a frame; fold them away so the box
+        # sits at the same distance from the text as everything else.
+        for position in (box.firstPosition() - 1, box.lastPosition() + 1):
+            around = doc.findBlock(position)
+            if around.isValid() and not around.text():
+                _collapse(around)
 
-<h2 id="logs">Logs &amp; history</h2>
-<ul>
-<li><b>Logs</b> on a job card — that job's run history with status, timings, output paths,
-    error summaries, and the colour-coded per-run worker log.</li>
-<li><b>Logs → Application logs</b> — the full rolling logs of the Service, Worker, and UI.
-    Switch process with one click, filter by level, search the text, and read it colour-coded
-    by severity.</li>
-<li><b>Logs → Send logs to support</b> — emails a diagnostic bundle (logs + sanitized
-    settings, never passwords) to the configured support email.</li>
-<li><b>Logs → Delete old logs…</b> — frees disk space by deleting run folders, log files,
-    bundles, and history rows older than the retention setting. The service also does this
-    automatically at startup and nightly.</li>
-<li><b>Logs → Delete ALL logs…</b> — wipes everything regardless of age (strong
-    confirmation; runs currently in progress always survive). No undo.</li>
-<li><b>Logs → Open data folder</b> — opens the folder holding config, logs, and outputs
-    metadata in Explorer.</li>
-</ul>
 
-<h2 id="settings">Settings (SMTP &amp; more)</h2>
-<p><b>File → Settings</b> configures:</p>
-<ul>
-<li><b>SMTP</b> — server host, port, TLS, from-address, username, and the password
-    (stored encrypted on this machine, never in plain text). The eye icon shows the
-    password while typing; <b>Test connection</b> verifies the settings against the
-    server without sending an email.</li>
-<li><b>Test recipients</b> — global fallback for test runs.</li>
-<li><b>Support email</b> — receives the diagnostic bundles from "Send logs to support".</li>
-<li><b>Application</b> — max parallel runs, default timeout, log retention (drives the
-    automatic nightly cleanup), and the
-    check-for-updates-on-startup toggle.</li>
-<li><b>Service account (PI DataLink)</b> — set the Windows user the service runs as, right
-    here (see below). Click <b>Use current Windows user</b> to fill in the account you are
-    logged in as, enter its password, and click <b>Validate &amp; apply</b>. The service
-    restarts as that account by itself; the dialog waits and tells you when it's back. The
-    same tab shows whether <b>PI DataLink is trusted</b> for that account, with a one-click
-    fix.</li>
-<li><b>Email groups</b> — named lists of addresses for job recipients (see
-    <a href="#groups">Email groups</a>).</li>
-</ul>
+def _collapse(block: object) -> None:
+    cursor = QTextCursor(block)  # type: ignore[call-overload]
+    fmt = QTextBlockFormat()
+    fmt.setTopMargin(0)
+    fmt.setBottomMargin(0)
+    fmt.setLineHeight(0, QTextBlockFormat.LineHeightTypes.FixedHeight.value)
+    cursor.setBlockFormat(fmt)
+    tiny = QTextCharFormat()
+    tiny.setFontPointSize(1)
+    cursor.setBlockCharFormat(tiny)
 
-<h2 id="transfer">Import &amp; export</h2>
-<ul>
-<li><b>File → Export jobs…</b> — tick the jobs to export (some or all) and save them as a
-    JSON file — handy for backups or moving jobs to another machine.</li>
-<li><b>File → Import jobs…</b> — open an export file, tick which jobs to bring in. If a
-    name already exists you choose per job: <i>Overwrite</i>, <i>Skip</i>, or <i>Import as
-    copy</i>.</li>
-<li><b>File → Export / Import settings…</b> — the same for application settings (SMTP,
-    recipients, app options). The SMTP password never travels — re-enter it after an
-    import.</li>
-</ul>
 
-<h2 id="updates">Updates</h2>
-<p>Run <b>Help → Check for updates…</b> to look for a newer version on GitHub. To have the
-app look automatically each time it starts, tick <b>Check for updates when the app
-starts</b> in File → Settings (off by default; skipped silently when offline). When an
-update exists you see the version and release notes — nothing installs until you click
-<b>Update now</b>; then the download shows its progress and the installer upgrades
-automatically, preserving all jobs, settings, and logs.</p>
-<p><b>Beta versions</b> (e.g. <code>0.11.0-beta</code>) are published on GitHub as
-<i>pre-releases</i> for testing new features. The update check never offers them; install a
-beta by hand from the GitHub releases page. Someone running a beta is offered the final
-release when it comes out.</p>
+def _style_code(block: object) -> None:
+    it = block.begin()  # type: ignore[attr-defined]
+    while not it.atEnd():
+        fragment = it.fragment()
+        if fragment.isValid() and fragment.charFormat().fontFixedPitch():
+            cursor = QTextCursor(block.document())  # type: ignore[attr-defined]
+            cursor.setPosition(fragment.position())
+            cursor.setPosition(
+                fragment.position() + fragment.length(), QTextCursor.MoveMode.KeepAnchor
+            )
+            char = QTextCharFormat()
+            char.setBackground(_CODE_BG)
+            char.setForeground(_CODE_FG)
+            char.setFontFamilies(["Consolas", "Cascadia Mono", "monospace"])
+            cursor.mergeCharFormat(char)
+        it += 1
 
-<h2 id="advanced">Advanced options</h2>
-<ul>
-<li><b>Time limit</b> (minutes) — the longest a whole run may take, start to finish (all
-    workbooks). When it is reached the run is stopped and marked <i>Timed out</i>; nothing is
-    emailed. <b>Default</b> uses File → Settings → <i>Default time limit</i> (15&nbsp;min out
-    of the box). <b>If a report times out because it is simply big</b> — e.g. it pulls a lot
-    of PI data and needs 20+ minutes — raise the limit (30–60&nbsp;min is common for such
-    reports). The run history's error line says the same.</li>
-<li><b>Wait for add-in data</b> (up to N seconds) — Excel can report the refresh as done
-    while an add-in such as <b>PI DataLink</b> is still filling cells. ReportFlow keeps
-    checking for up to this long and <i>moves on as soon as the data stops changing</i>, so a
-    larger value only costs time when the data really is still arriving. Raise it (e.g.
-    60–300&nbsp;s) if sheets arrive partly empty. This wait counts toward the time limit.</li>
-<li><b>Concurrency group</b> — jobs sharing the same group name run one-at-a-time instead
-    of in parallel (useful when several jobs hit the same slow database). Leave empty for
-    normal parallel behavior. Groups other jobs already use are suggested as you type, so a
-    typo doesn't create a second group.</li>
-<li><b>Freeze formulas</b> (Output tab) — converts formulas to plain values on the
-    included sheets in the <i>output copy</i>, so recipients see numbers even without your
-    data connections.</li>
-<li><b>Fail if a sheet comes out empty</b> (default on) — a run whose included sheet has
-    no data fails loudly instead of emailing a blank report.</li>
-<li><b>Fail if a sheet has error cells (strict)</b> (default <i>off</i>) — by default a
-    report with Excel errors (<code>#REF!</code>, <code>#N/A</code>, …) is still
-    <b>delivered</b>, and the errors are listed as a <i>warning</i> on the run. Tick this only
-    if you want any error cell to fail the run instead.</li>
-<li><b>Blank out values</b> — comma-separated cell values removed from the output after
-    saving: error codes (<code>#REF!</code>, <code>#N/A</code>, <code>#NAME?</code>) or
-    add-in strings like "Tag not found".</li>
-<li><b>Debug logging</b> (File → Settings → Application) — verbose logs for
-    troubleshooting; the run history and Logs → Application logs show far more detail.</li>
-</ul>
 
-<h2>Choose email attachments</h2>
-<p>For each included sheet, tick <b>Excel attachment</b>, <b>PDF</b>, or both.
-The emailed Excel file contains exactly the Excel-ticked sheets. A full processed Excel
-copy is always saved locally; <b>Local sheets not included</b> controls its extra sheets.
-Untick Excel for every sheet to send only PDFs. If no attachments are selected, the report
-is built locally and no email is sent.</p>
-<p>Tick <b>Combine selected sheets into one PDF</b> to produce one PDF per workbook,
-in the order shown in the sheet table. Otherwise each PDF-ticked sheet gets its own PDF.
-<b>Hidden</b> applies to Excel-ticked sheets, with at least one visible Excel sheet required.
-Removing other sheets can break references in an Excel attachment when freezing is disabled.</p>
-
-<h2 id="pidatalink">Workbooks using PI DataLink (or other Excel add-ins)</h2>
-<p><b>The single most important rule:</b> PI DataLink is a <i>VSTO</i> add-in that uses
-Windows-integrated security. It <b>cannot load when the service runs as LocalSystem</b> (the
-default) — there is no user profile, no VSTO cache, and no PI identity. When that happens the
-add-in's worksheet functions are unregistered and every PI cell comes out as
-<code>#NAME?</code>. The report is broken, not empty.</p>
-<p><b>The fix — run the service as a PI-enabled Windows user:</b></p>
-<ul>
-<li><b>In the app (easiest):</b> open <b>File → Settings → Service account</b>, click
-    <b>Use current Windows user</b> (the account you are logged in as — the one that has PI
-    DataLink installed), type its password, and click <b>Validate &amp; apply</b>. ReportFlow
-    checks the credentials with Windows, reconfigures the service to run as that user, and
-    restarts it — no admin prompt and no reinstall. The dashboard's red banner has a
-    <b>Set account…</b> button that jumps straight here. (Once the service runs as an ordinary
-    user, changing the account again needs an administrator: rerun the installer or the
-    script below.)</li>
-<li><b>On a fresh install:</b> the installer asks for an optional <i>service account</i> and
-    validates the credentials before continuing — enter the PI-enabled user there.</li>
-<li><b>Admin PowerShell (alternative):</b> run
-    <code>scripts\\set-service-account.ps1 -User "DOMAIN\\your_pi_user"</code>.</li>
-</ul>
-<p><b>Then trust PI DataLink for that account.</b> Windows only loads PI DataLink for an
-account that has accepted its one-time trust prompt. A person accepts it the first time they
-open Excel; a service account never sees the prompt, so PI DataLink stays off and every PI
-cell keeps the value last saved in the workbook — the report still goes out, with stale
-data. In <b>File → Settings → Service account</b>, the <i>PI DataLink</i> line shows whether
-it is trusted; click <b>Trust PI DataLink for this account</b> to record the same trust for
-the service account (only for the PI add-ins an administrator installed). A run whose PI
-DataLink isn't trusted says so in its warnings.</p>
-<p>After applying the account, click <b>👁 Build only</b> on the job to confirm. The worker log
-should show <code>Executing as DOMAIN\\your_pi_user</code> (no trailing <code>$</code>) and
-<code>COM add-in 'PI DataLink': connected=True</code>, with real values instead of
-<code>#NAME?</code>.</p>
-<p><b>Error cells &amp; incomplete data.</b> Pre-existing errors like <code>#REF!</code> no
-longer block delivery — the report is sent and the errors appear as a <i>warning</i> on the
-run (blank them out with the <b>Blank out values</b> list, or fail on them by ticking the
-strict option). If a sheet comes out only partly filled, the add-in's data was still arriving
-when ReportFlow froze it — raise <b>Wait for add-in data</b> (Advanced tab; ReportFlow already
-waits adaptively up to that budget and logs when data is still changing at the end). If the
-run instead ends as <i>Timed out</i>, raise the <b>Time limit</b>.</p>
-<p><b>"Cannot be opened" report.</b> If a delivered report trips Office's
-"Office has detected a problem with this file", the sheet-removal step likely broke a chart or
-defined name that pointed at a removed tab. Switch that workbook's <b>Sheets not
-included</b> to <i>Keep them, hidden</i> (General tab) — the file will always open. If the
-<i>input</i> file shows the same message when you open it by hand, it carries a
-Mark-of-the-Web from being downloaded: right-click → Properties → <b>Unblock</b> (or add its
-folder as a Trusted Location).
-ReportFlow still generates reports from it because the service opens files via automation.</p>
-
-<h3>PI DataLink fails under an existing service account</h3>
-<p>Using a real account is necessary for PI access, but does not guarantee that the VSTO
-add-in can load. <b>Require PI DataLink</b> (Edit → Advanced) stops the workbook if the
-add-in is missing or fails to connect, even when pasted or cached values look healthy.
-Ordinary error-cell strictness remains a separate setting.</p>
-<p>Use <b>Build only</b>, then <b>Logs → Export logs to zip…</b>. Each run contains a
-<b>pi_diagnostics</b> folder with the worker identity, Excel details, add-in registrations,
-connection failures, recent VSTO logs and relevant Application events. This is collected
-through the service account; you do not need to log in as that account. VSTO alerts are
-suppressed so an invisible prompt cannot block the worker.</p>
-<p><b>“The add-in could not be installed”</b> is an outer VSTO error. Use the detailed
-exception to identify inaccessible/missing manifests, runtime dependencies, trust,
-disabled add-ins or profile issues before repairing the relevant component. Excel startup
-<b>0x80070005</b> is a separate access-denied failure, before add-in loading.</p>
-<p>A report containing manually pasted values does not verify automatic PI refresh.
-Check a copy containing original PI formulas against a known current-data query through
-Build only, then repeat after a service restart.</p>
-
-<h2 id="dryrun">Build only — check the report without emailing</h2>
-<p>Each job card has a <b>👁 Build only</b> button (previously "Dry run"). It builds the full
-output workbook and runs the same checks as a real run, but <b>never sends any email</b> — use
-it to verify that PI DataLink (or any data source) is producing real values before you rely on
-scheduled delivery. The result and any warnings show in the run history.</p>
-
-<h2 id="emailalerts">When a report email fails</h2>
-<p>If a run builds successfully but the email cannot be sent (wrong SMTP settings, server
-unreachable), the run history shows an <b>inline warning banner</b> for that run — it no
-longer fails silently, and no pop-up interrupts you while a run is live. The job card also
-shows a small <b>✉ failed</b> marker, and the run history's <code>email:</code> line gives the
-reason. Fix the SMTP settings under File → Settings and re-run.</p>
-
-<h2 id="exportlogs">Sending logs to the developer</h2>
-<p>Both <b>Logs → Export logs to zip…</b> and <b>Logs → Send logs to support…</b> let you type
-a short <b>description of the problem</b> first — it travels inside the bundle (and in the email
-subject/body for the "Send" option) so the developer knows what to look for. Export writes the
-bundle (logs + sanitized settings, never passwords) to a zip you choose — handy when the mail
-server is unreachable; Send emails the same bundle to the configured support address.</p>
-"""
+def _style_tables(frame: QTextFrame) -> None:
+    for child in frame.childFrames():
+        if isinstance(child, QTextTable):
+            fmt = QTextTableFormat(child.format())
+            fmt.setBorder(1)
+            fmt.setBorderBrush(QBrush(QColor(BORDER)))
+            fmt.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+            fmt.setBorderCollapse(True)
+            fmt.setCellPadding(6)
+            fmt.setCellSpacing(0)
+            fmt.setTopMargin(6)
+            fmt.setBottomMargin(10)
+            fmt.setWidth(QTextLength(QTextLength.Type.PercentageLength, 100))
+            child.setFormat(fmt)
+            for column in range(child.columns()):
+                cell = child.cellAt(0, column)
+                cell_fmt = cell.format()
+                cell_fmt.setBackground(QColor(CARD_BG))
+                cell_fmt.setFontWeight(QFont.Weight.Bold)
+                cell_fmt.setForeground(QColor(TEXT_MUTED))
+                cell.setFormat(cell_fmt)
+        _style_tables(child)
 
 
 class HelpDialog(QDialog):
@@ -462,22 +296,215 @@ class HelpDialog(QDialog):
         """``anchor`` opens the guide at that section (e.g. "placeholders")."""
         super().__init__(parent)
         self.setWindowTitle(f"{about.NAME} — Help")
-        self.resize(680, 640)
+        self.resize(1100, 800)
+        self.setMinimumSize(720, 480)
+        markdown, self.sections = load_guide()
 
-        browser = QTextBrowser()
-        browser.setOpenExternalLinks(True)
-        browser.setHtml(_HELP_HTML)
-        browser.document().setDocumentMargin(16)
-        self.browser = browser
+        self.browser = QTextBrowser()
+        self.browser.setObjectName("helpBrowser")
+        self.browser.setOpenLinks(False)  # section links are handled here; web links open
+        self.browser.anchorClicked.connect(self._on_link)
+        # Long paths and tokens wrap too, so the guide never scrolls sideways.
+        self.browser.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.browser.setMarkdown(markdown)
+        doc = self.browser.document()
+        doc.setDocumentMargin(24)
+        _style_document(doc)
+        self._positions = self._heading_blocks()
+
+        # Left: search and the section list.
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search the guide…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._on_search)
+        self.search.returnPressed.connect(self._next_match)
+        self.matches = QLabel("")
+        self.matches.setObjectName("helpMatches")
+        self.matches.setProperty("muted", True)
+        self.matches.setVisible(False)  # only while searching
+        self.matches.setWordWrap(True)
+        self.toc = QListWidget()
+        self.toc.setObjectName("helpToc")
+        self.toc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.toc.setTextElideMode(Qt.TextElideMode.ElideRight)
+        for section in self.sections:
+            item = QListWidgetItem(section.title)
+            item.setData(0x0100, section.id)
+            item.setToolTip(section.title)
+            if section.level >= 3:
+                item.setText("    " + section.title)
+                item.setForeground(QColor(TEXT_MUTED))
+            self.toc.addItem(item)
+        self.toc.itemClicked.connect(lambda item: self.go_to(str(item.data(0x0100))))
+        side = QWidget()
+        side.setMinimumWidth(190)
+        side_col = QVBoxLayout(side)
+        side_col.setContentsMargins(0, 0, 0, 0)
+        side_col.setSpacing(8)
+        side_col.addWidget(self.search)
+        side_col.addWidget(self.matches)
+        side_col.addWidget(self.toc, 1)
+        side_col.addStretch(0)  # holds the space when nothing matches and the list hides
+
+        splitter = QSplitter()
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(12)
+        splitter.addWidget(side)
+        splitter.addWidget(self.browser)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([250, 850])
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         buttons.clicked.connect(lambda *_: self.accept())
 
         layout = QVBoxLayout(self)
-        layout.addWidget(browser)
-        layout.addWidget(buttons)
-        space_layout(layout)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(splitter, 1)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        bottom.addWidget(buttons)
+        layout.addLayout(bottom)
+
+        scroll = self.browser.verticalScrollBar()
+        if scroll is not None:
+            scroll.valueChanged.connect(self._follow_scroll)
+        restore_geometry(self, "help")
         if anchor:
-            # After the first layout pass — before it the anchor has no position yet.
-            QTimer.singleShot(0, lambda: browser.scrollToAnchor(anchor))
+            # After the first layout pass — before it the section has no position yet.
+            QTimer.singleShot(0, lambda: self.go_to(anchor))
+
+    # -- navigation --
+
+    def _heading_blocks(self) -> dict[str, int]:
+        """Section id -> block number of its heading in the rendered guide."""
+        wanted = list(self.sections)
+        found: dict[str, int] = {}
+        block = self.browser.document().begin()
+        while block.isValid() and wanted:
+            if block.blockFormat().headingLevel() and block.text().strip() == wanted[0].title:
+                found[wanted.pop(0).id] = block.blockNumber()
+            block = block.next()
+        return found
+
+    def section_top(self, section_id: str) -> int | None:
+        number = self._positions.get(section_id)
+        if number is None:
+            return None
+        doc = self.browser.document()
+        block = doc.findBlockByNumber(number)
+        layout = doc.documentLayout()
+        return int(layout.blockBoundingRect(block).top()) if layout is not None else None
+
+    def go_to(self, section_id: str) -> None:
+        top = self.section_top(section_id)
+        scroll = self.browser.verticalScrollBar()
+        if top is None or scroll is None:
+            return
+        scroll.setValue(max(0, top - 8))
+        self._select_toc(section_id)
+
+    def _select_toc(self, section_id: str) -> None:
+        self.toc.blockSignals(True)
+        try:
+            for i in range(self.toc.count()):
+                item = self.toc.item(i)
+                if item is not None and item.data(0x0100) == section_id:
+                    self.toc.setCurrentRow(i)
+                    break
+        finally:
+            self.toc.blockSignals(False)
+
+    def current_section(self) -> str | None:
+        scroll = self.browser.verticalScrollBar()
+        position = (scroll.value() if scroll is not None else 0) + 24
+        current = None
+        for section in self.sections:
+            top = self.section_top(section.id)
+            if top is not None and top <= position:
+                current = section.id
+        return current
+
+    def _follow_scroll(self, *_: object) -> None:
+        if self.search.text().strip():
+            return  # the list shows search results then
+        section = self.current_section()
+        if section:
+            self._select_toc(section)
+
+    def _on_link(self, url: QUrl) -> None:
+        target = url.toString()
+        if target.startswith("#"):
+            self.go_to(target[1:])
+        else:
+            QDesktopServices.openUrl(url)
+
+    # -- search --
+
+    def _section_text(self, section_id: str) -> str:
+        numbers = sorted(self._positions.values())
+        start = self._positions.get(section_id)
+        if start is None:
+            return ""
+        end = next((n for n in numbers if n > start), None)
+        doc = self.browser.document()
+        parts = []
+        block = doc.findBlockByNumber(start)
+        while block.isValid() and (end is None or block.blockNumber() < end):
+            parts.append(block.text())
+            block = block.next()
+        return "\n".join(parts)
+
+    def _on_search(self, text: str) -> None:
+        needle = text.strip()
+        selections: list[QTextEdit.ExtraSelection] = []
+        if needle:
+            doc = self.browser.document()
+            cursor = doc.find(needle)
+            while not cursor.isNull() and len(selections) < 500:
+                selection = QTextEdit.ExtraSelection()
+                selection.cursor = cursor  # type: ignore[attr-defined]
+                selection.format.setBackground(QColor("#5c4a12"))  # type: ignore[attr-defined]
+                selection.format.setForeground(QColor("#fff7d6"))  # type: ignore[attr-defined]
+                selections.append(selection)
+                cursor = doc.find(needle, cursor)
+        self.browser.setExtraSelections(selections)
+        lowered = needle.casefold()
+        for i in range(self.toc.count()):
+            item = self.toc.item(i)
+            if item is None:
+                continue
+            section_id = str(item.data(0x0100))
+            item.setHidden(
+                bool(lowered) and lowered not in self._section_text(section_id).casefold()
+            )
+        count = len(selections)
+        self.matches.setVisible(bool(needle))
+        self.toc.setVisible(not needle or count > 0)
+        if needle and count:
+            self.matches.setText(f"{count} match{'es' if count != 1 else ''} — Enter for the next")
+            self._next_match()
+        else:
+            self.matches.setText(f"Nothing in the guide matches “{needle}”." if needle else "")
+            cursor = self.browser.textCursor()
+            cursor.clearSelection()  # no stale highlight from an earlier search
+            self.browser.setTextCursor(cursor)
+
+    def _next_match(self) -> None:
+        needle = self.search.text().strip()
+        if not needle:
+            return
+        doc = self.browser.document()
+        found = doc.find(needle, self.browser.textCursor())
+        if found.isNull():
+            found = doc.find(needle)  # wrap around
+        if not found.isNull():
+            self.browser.setTextCursor(found)
+            self.browser.ensureCursorVisible()
+
+    def done(self, result: int) -> None:
+        if self.isVisible():
+            save_geometry(self, "help")
+        super().done(result)
