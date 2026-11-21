@@ -98,6 +98,15 @@ from reportflow.ui.windows.workbook_panel import (
 
 # Sheet table columns.
 _COL_NAME, _COL_INCLUDE, _COL_EXCEL, _COL_PDF, _COL_HIDDEN = range(5)
+# The tick columns: short titles, so all four share one narrow width and the ticks sit at even
+# gaps. Each sized to its own title ("Excel attachment" 117 px, "PDF" 43 px at 150 %) they
+# drifted; the full meaning is in each title's tooltip.
+_CHECK_COLUMNS = {
+    _COL_INCLUDE: ("Include", "The sheet is refreshed, checked and frozen."),
+    _COL_EXCEL: ("Excel", "The sheet is in the emailed Excel attachment."),
+    _COL_PDF: ("PDF", "The sheet is exported to the emailed PDF."),
+    _COL_HIDDEN: ("Hidden", "Kept in the Excel attachment but hidden (recipients can unhide it)."),
+}
 
 # What the output copy does with the sheets that are NOT included (stored per workbook).
 _UNSELECTED_MODES = [
@@ -362,11 +371,15 @@ class JobEditorDialog(FormDialog):
         self.wb_banner.hide()
         self.sheets = TableWidget(0, 5)
         self.sheets.setHorizontalHeaderLabels(
-            ["Sheet", "Include", "Excel attachment", "PDF", "Hidden"]
+            ["Sheet", *(title for title, _tip in _CHECK_COLUMNS.values())]
         )
         name_header = self.sheets.horizontalHeaderItem(_COL_NAME)
         if name_header is not None:  # over the names it heads, not centred in the gap
             name_header.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        for col, (_title, tip) in _CHECK_COLUMNS.items():
+            column_header = self.sheets.horizontalHeaderItem(col)
+            if column_header is not None:
+                column_header.setToolTip(f"{tip}\nClick to tick or untick it for every sheet.")
         self.sheets.verticalHeader().setVisible(False)
         self.sheets.verticalHeader().setDefaultSectionSize(34)
         self.sheets.setTabKeyNavigation(True)
@@ -378,17 +391,17 @@ class JobEditorDialog(FormDialog):
         self.sheets.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         header = self.sheets.horizontalHeader()
         header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        for col in (_COL_INCLUDE, _COL_EXCEL, _COL_PDF, _COL_HIDDEN):
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        # One width for every tick column: the widest title's (the ticks are centred in it).
+        check_width = max(header.sectionSizeHint(col) for col in _CHECK_COLUMNS)
+        for col in _CHECK_COLUMNS:
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            header.resizeSection(col, check_width)
             self.sheets.setItemDelegateForColumn(col, CenteredCheckDelegate(self.sheets))
         header.setToolTip("Click a column title to tick or untick the whole column.")
         header.sectionClicked.connect(self._toggle_column)
         self.sheets.itemChanged.connect(self._on_sheet_item_changed)
         self.sheets.setToolTip(
-            "Include: the sheet is refreshed, checked and frozen.\n"
-            "Excel attachment: include this sheet in the emailed Excel file.\n"
-            "PDF: include this sheet in PDF output.\n"
-            "Hidden: keep it in the Excel file but hidden (recipients can unhide it)."
+            "\n".join(f"{title}: {tip}" for title, tip in _CHECK_COLUMNS.values())
         )
         sheets_hint = QLabel(
             "Include sheets to process, then choose their Excel and PDF attachments. "

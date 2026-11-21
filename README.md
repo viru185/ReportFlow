@@ -743,7 +743,7 @@ generated from history by [git-cliff](https://git-cliff.org/).
 
 ### Sheet-level email attachments
 
-Each included sheet has independent **Excel attachment** and **PDF** choices. One emailed
+Each included sheet has independent **Excel** (attachment) and **PDF** choices. One emailed
 Excel file per workbook contains exactly the Excel-selected sheets. The regular local
 Excel copy is retained even for PDF-only emails and follows the workbook's existing
 keep/hide/remove setting for other sheets. Local **Open report** still opens that copy.

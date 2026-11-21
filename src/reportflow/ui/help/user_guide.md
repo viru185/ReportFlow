@@ -59,7 +59,7 @@ a job's workbook arrive unticked. For each sheet choose:
 | Column | What it does |
 |---|---|
 | **Include** | the sheet is refreshed, checked and frozen |
-| **Excel attachment** | the sheet is in the emailed Excel file |
+| **Excel** | the sheet is in the emailed Excel attachment |
 | **PDF** | the sheet is also exported as a PDF |
 | **Hidden** | kept in the Excel file but hidden (recipients can unhide it); it can still get a PDF |
 
@@ -106,7 +106,7 @@ output Excel. **Your input files are never modified.**
 
 ### Choose email attachments {#attachments}
 
-- For each included sheet, tick **Excel attachment**, **PDF**, or both. The emailed Excel file
+- For each included sheet, tick **Excel**, **PDF**, or both. The emailed Excel file
   contains exactly the Excel-ticked sheets.
 - A full processed Excel copy is always saved locally; **Other local sheets** controls its extra
   sheets.

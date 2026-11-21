@@ -87,6 +87,30 @@ def test_unticking_and_ticking_again_shows_the_tick(qtbot, themed_app):
     assert dialog._rows()[0].include is True
 
 
+def test_the_tick_columns_are_evenly_spaced_and_compact(qtbot, themed_app):
+    """0.14.1: sized to their own titles the columns were 62/117/43/62 px wide, so the ticks
+    sat at uneven gaps. Now they share one width, no wider than the widest short title."""
+    from tests.ui.test_ui import FakeApi, _sample_job_dict
+
+    dialog = JobEditorDialog(FakeApi(), _sample_job_dict())
+    qtbot.addWidget(dialog)
+    dialog.resize(900, 680)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    table = dialog.sheets
+    header = table.horizontalHeader()
+    titles = [table.horizontalHeaderItem(c).text() for c in range(1, 5)]
+    assert titles == ["Include", "Excel", "PDF", "Hidden"]
+    widths = {header.sectionSize(c) for c in range(1, 5)}
+    assert len(widths) == 1  # one width: the ticks are evenly spaced
+    assert widths.pop() == max(header.sectionSizeHint(c) for c in range(1, 5))  # compact
+    centres = [table.visualRect(table.model().index(0, c)).center().x() for c in range(1, 5)]
+    gaps = {b - a for a, b in zip(centres, centres[1:], strict=False)}
+    assert len(gaps) == 1
+    assert "emailed Excel attachment" in table.horizontalHeaderItem(2).toolTip()
+    assert table.horizontalScrollBar().maximum() == 0
+
+
 def test_editor_pages_scroll_with_actions_outside_content(qtbot):
     dialog = JobEditorDialog(SimpleNamespace(get_config=lambda: {}))
     qtbot.addWidget(dialog)

@@ -214,7 +214,7 @@ class OutputPreview(QFrame):
         self.note.setText(
             ""
             if emailed
-            else "Nothing is attached to the email yet — tick Excel attachment or PDF for a "
+            else "Nothing is attached to the email yet — tick Excel or PDF for a "
             "sheet on the General tab."
         )
         self.note.setVisible(not emailed)
