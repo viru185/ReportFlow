@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
+## [0.14.1] - 2026-11-21
+
+### Bug Fixes
+- A sheet ticked again shows its tick
+- Evenly spaced tick columns in the sheets table
+
+### Chores
+- Prepare 0.14.1
+
 ## [0.14.0] - 2026-11-21
 
 ### Bug Fixes
