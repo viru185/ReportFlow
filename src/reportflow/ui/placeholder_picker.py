@@ -38,6 +38,8 @@ from reportflow.core.output_names import OUTPUT_NAME_TOKENS, expand_output_name
 from reportflow.ui.feedback import InlineNotice
 
 Target = QLineEdit | QPlainTextEdit | QTextEdit
+# A field, or a function returning the field to use now (e.g. the current editor tab).
+TargetRef = Target | Callable[[], Target]
 NB_HYPHEN = "\u2011"
 _INLINE_TOKEN = 22  # longer tokens go on their own line
 
@@ -82,6 +84,10 @@ def output_name_placeholders(
         )
         for label, token, description in OUTPUT_NAME_TOKENS
     ]
+
+
+def _resolve(target: TargetRef) -> Target:
+    return target if isinstance(target, QLineEdit | QPlainTextEdit | QTextEdit) else target()
 
 
 def insert_at_cursor(target: Target, text: str) -> None:
@@ -147,13 +153,15 @@ class PlaceholderPicker(QDialog):
 
     def __init__(
         self,
-        target: Target,
+        target: TargetRef,
         items: list[Placeholder],
         *,
         field_name: str,
         parent: QWidget | None = None,
+        read_only_message: str = "This field can't be edited right now.",
     ) -> None:
-        super().__init__(parent or target.window())
+        super().__init__(parent or _resolve(target).window())
+        self._read_only_message = read_only_message
         self.setObjectName("placeholderPicker")
         self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setWindowTitle(f"Insert placeholder — {field_name}")
@@ -271,7 +279,11 @@ class PlaceholderPicker(QDialog):
             self.insert(item)
 
     def insert(self, item: Placeholder) -> None:
-        insert_at_cursor(self._target, item.token)
+        target = _resolve(self._target)
+        if target.isReadOnly():
+            self.notice.show_notice(self._read_only_message, "warning")
+            return
+        insert_at_cursor(target, item.token)
         self.notice.show_notice(f"Inserted {item.token} into {self._field_name}.", "success")
 
     def eventFilter(self, watched: object, event: object) -> bool:  # noqa: N802
@@ -327,11 +339,12 @@ class PlaceholderButton(QPushButton):
 
     def __init__(
         self,
-        target: Target,
+        target: TargetRef,
         items: Callable[[], list[Placeholder]],
         *,
         field_name: str,
         parent: QWidget | None = None,
+        read_only_message: str = "This field can't be edited right now.",
     ) -> None:
         super().__init__("{ }  Insert placeholder", parent)
         self.setObjectName("placeholderButton")
@@ -340,13 +353,18 @@ class PlaceholderButton(QPushButton):
         self._target = target
         self._items = items
         self._field_name = field_name
+        self._read_only_message = read_only_message
         self.picker: PlaceholderPicker | None = None
         self.clicked.connect(self.open_picker)
 
     def open_picker(self) -> PlaceholderPicker:
         if self.picker is None:
             self.picker = PlaceholderPicker(
-                self._target, self._items(), field_name=self._field_name, parent=self.window()
+                self._target,
+                self._items(),
+                field_name=self._field_name,
+                parent=self.window(),
+                read_only_message=self._read_only_message,
             )
             self.picker.place_near(self)
         self.picker.show()

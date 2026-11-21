@@ -1,4 +1,8 @@
-"""In-app email template editor: Simple (plain text) or HTML mode, with live preview.
+"""In-app email template editor: Simple (plain text) or HTML, beside a live preview.
+
+The editor and the preview sit side by side in a large, resizable window; the preview
+re-renders a moment after each change and shows the email as recipients get it — subject
+(with [TEST] on Testing), To/Cc and body — for either stage, one click apart.
 
 The result is HTML template source (Jinja2 placeholders); Simple mode wraps the text into
 the default scaffold on save. The caller persists it via PUT /jobs/{name}/email-template.
@@ -16,20 +20,19 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
-    QDialog,
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSplitter,
     QTabWidget,
     QTextBrowser,
     QVBoxLayout,
@@ -37,16 +40,17 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.core.config.defaults import DEFAULT_EMAIL_TEMPLATE
-from reportflow.core.email.render import (
-    PLACEHOLDERS,
-    final_subject,
-    render_email,
-    sample_context,
-)
+from reportflow.core.email.render import final_subject, render_email, sample_context
+from reportflow.ui.feedback import FormDialog
 from reportflow.ui.fs_util import open_start_dir
-from reportflow.ui.widgets import space_layout
+from reportflow.ui.placeholder_picker import PlaceholderButton, email_placeholders
+from reportflow.ui.widgets import section_title
 
-_TOKEN_ROLE = Qt.ItemDataRole.UserRole
+_PREVIEW_DELAY_MS = 300  # re-render this long after the last keystroke
+_EMPTY_PREVIEW = (
+    '<p style="color:#888;font-family:Segoe UI,Arial,sans-serif;">Start writing on the left '
+    "— the preview follows as you type.</p>"
+)
 
 _SIMPLE_SCAFFOLD = """\
 <!doctype html>
@@ -99,7 +103,7 @@ def _with_email_header(body: str, subject: str, recipients: dict[str, list[str]]
     return header + body
 
 
-class EmailTemplateDialog(QDialog):
+class EmailTemplateDialog(FormDialog):
     """Edit a job's email body. ``result_html()`` returns the template source to save."""
 
     def __init__(
@@ -117,29 +121,49 @@ class EmailTemplateDialog(QDialog):
         linking is only allowed once it passes. ``preview_job`` is what the job editor has
         on screen (name, subject, stage, sheets, workbooks, recipients per stage), so the
         preview shows this job's email rather than a sample one."""
-        super().__init__(parent)
+        super().__init__(parent, settings_key="template_editor")
         self._preview_job = preview_job or {}
         self.setWindowTitle(f"Email template — {job_name}" if job_name else "Email template")
-        self.resize(820, 640)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        self.setMinimumSize(900, 600)
+        self._size_to_screen()
         self._check_path = check_path
         self._file_path: str | None = linked_path
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(_PREVIEW_DELAY_MS)
+        self._render_timer.timeout.connect(self._preview)
         self._build(existing_html)
         if linked_path:
             self.keep_linked.setChecked(True)
         self._sync_link_ui()
+        self._preview()
+        self.finish_form(self._save_button_widget)
+
+    def _size_to_screen(self) -> None:
+        """Big by default — about 85% of the screen — so both panes have real room."""
+        owner = self.parentWidget()
+        screen = (owner.screen() if owner is not None else None) or (
+            QGuiApplication.primaryScreen()
+        )
+        if screen is None:
+            self.resize(1200, 800)
+            return
+        area = screen.availableGeometry()
+        width = min(area.width(), max(1100, int(area.width() * 0.85)))
+        height = min(area.height(), max(720, int(area.height() * 0.85)))
+        self.resize(width, height)
+
+    # -- construction ------------------------------------------------------------
 
     def _build(self, existing_html: str) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
-        hint = QLabel(
-            "Write the email body in <b>Simple</b> mode (plain text) or switch to "
-            "<b>HTML</b> for full control. Click a placeholder on the right to insert a value "
-            "that is filled in at send time (they work in the job's Subject too)."
-        )
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
+        # Where the body comes from: typed here, or an .html file (copied or linked).
         file_row = QHBoxLayout()
+        file_row.setSpacing(8)
         load = QPushButton("Load from file…")
         load.setToolTip("Use an .html file you made elsewhere as this job's email body.")
         load.clicked.connect(self._pick_file)
@@ -159,66 +183,47 @@ class EmailTemplateDialog(QDialog):
         file_row.addWidget(self.file_label, 1)
         layout.addLayout(file_row)
 
-        body = QHBoxLayout()
+        # ---- left: the editor ----
+        editor_pane = QWidget()
+        editor_col = QVBoxLayout(editor_pane)
+        editor_col.setContentsMargins(0, 0, 0, 0)
+        editor_col.setSpacing(8)
+        editor_head = QHBoxLayout()
+        editor_head.addWidget(section_title("Message"))
+        editor_head.addStretch(1)
+        self.insert_placeholder = PlaceholderButton(
+            self._current_editor,
+            email_placeholders,
+            field_name="Email body",
+            read_only_message="This template is linked to a file — edit that file instead.",
+        )
+        editor_head.addWidget(self.insert_placeholder)
+        editor_col.addLayout(editor_head)
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
         self.tabs = QTabWidget()
         self.simple_edit = QPlainTextEdit()
         self.simple_edit.setPlaceholderText(
             "Hello,\n\nThe {{ job_name }} report finished with status {{ status }}.\n\n"
             "Regards,\nReportFlow"
         )
-        self.simple_edit.setToolTip("Plain text; blank lines separate paragraphs.")
+        self.simple_edit.setToolTip(
+            "Plain text; blank lines separate paragraphs. Use Insert placeholder for values "
+            "filled in when the email is sent."
+        )
         self.html_edit = QPlainTextEdit()
+        self.html_edit.setFont(mono)
+        self.html_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.html_edit.setToolTip("Raw HTML template source (Jinja2 placeholders supported).")
         self.tabs.addTab(self.simple_edit, "Simple")
         self.tabs.addTab(self.html_edit, "HTML")
-        body.addWidget(self.tabs, 3)
+        editor_col.addWidget(self.tabs, 1)
 
-        # Placeholders: one click inserts; each shows what it turns into today.
-        side = QVBoxLayout()
-        side.addWidget(QLabel("<b>Placeholders</b> — click to insert"))
-        self.placeholders = QListWidget()
-        self.placeholders.setWordWrap(True)
-        self.placeholders.setToolTip("Click a placeholder to insert it at the cursor.")
-        samples = sample_context()
-        group = ""
-        for item_group, label, token, about in PLACEHOLDERS:
-            if item_group != group:
-                group = item_group
-                header = QListWidgetItem(group)
-                header.setFlags(Qt.ItemFlag.NoItemFlags)  # a heading, not a placeholder
-                font = header.font()
-                font.setBold(True)
-                header.setFont(font)
-                self.placeholders.addItem(header)
-            try:
-                example = "" if group == "Blocks" else render_email(token, samples)
-            except Exception:  # noqa: BLE001 — a sample must never break the dialog
-                example = ""
-            text = f"{label} — {example}" if example else label
-            item = QListWidgetItem(text)
-            item.setData(_TOKEN_ROLE, token)
-            item.setToolTip(f"{token}\n{about}")
-            self.placeholders.addItem(item)
-        self.placeholders.itemClicked.connect(self._on_placeholder_clicked)
-        side.addWidget(self.placeholders, 1)
-        how_to = QLabel('<a href="#placeholders">How to use placeholders</a>')
-        how_to.setToolTip("Open the Help guide's placeholder section, with examples.")
-        how_to.linkActivated.connect(self._open_placeholder_help)
-        side.addWidget(how_to)
-        body.addLayout(side, 2)
-        layout.addLayout(body, 2)
-
-        if existing_html.strip():
-            self.html_edit.setPlainText(existing_html)
-            self.tabs.setCurrentWidget(self.html_edit)
-        else:
-            self.html_edit.setPlainText(DEFAULT_EMAIL_TEMPLATE)
-
-        preview_btn = QPushButton("Preview")
-        preview_btn.setProperty("accent", True)
-        preview_btn.setToolTip("Render the template with sample data.")
-        preview_btn.clicked.connect(self._preview)
-
+        # ---- right: the live preview ----
+        preview_pane = QWidget()
+        preview_col = QVBoxLayout(preview_pane)
+        preview_col.setContentsMargins(0, 0, 0, 0)
+        preview_col.setSpacing(8)
         # One click switches what the preview shows: the email Testing-stage runs send (with
         # [TEST] and the test recipients) or the one Production runs send.
         self.preview_testing = QPushButton("Testing")
@@ -235,50 +240,93 @@ class EmailTemplateDialog(QDialog):
         live = self._preview_job.get("stage") == "live"
         (self.preview_production if live else self.preview_testing).setChecked(True)
         self._preview_stage.buttonClicked.connect(lambda *_: self._preview())
-
+        preview_head = QHBoxLayout()
+        preview_head.setSpacing(8)
+        preview_head.addWidget(section_title("Preview"))
+        preview_head.addStretch(1)
+        preview_as = QLabel("Show the email as")
+        preview_as.setProperty("muted", True)
+        preview_head.addWidget(preview_as)
+        segments = QHBoxLayout()
+        segments.setSpacing(0)
+        segments.addWidget(self.preview_testing)
+        segments.addWidget(self.preview_production)
+        self.preview_testing.setProperty("segmentPos", "first")
+        self.preview_production.setProperty("segmentPos", "last")
+        preview_head.addLayout(segments)
+        preview_col.addLayout(preview_head)
+        self.preview_error = QLabel("")
+        self.preview_error.setObjectName("previewError")
+        self.preview_error.setWordWrap(True)
+        self.preview_error.hide()
+        preview_col.addWidget(self.preview_error)
         self.preview = QTextBrowser()
-        self.preview.setPlaceholderText("Click Preview to render the email with sample data.")
+        self.preview.setObjectName("emailPreview")
+        self.preview.setOpenExternalLinks(False)
         # Emails are designed on white — the preview is a deliberate light island inside the
         # dark app so it shows what recipients actually see.
         self.preview.setStyleSheet(
-            "QTextBrowser { background: #ffffff; color: #1a1a1a; border: 1px solid #363b47; }"
+            "QTextBrowser { background: #ffffff; color: #1a1a1a; border: 1px solid #363b47; "
+            "border-radius: 6px; padding: 8px; }"
         )
-        preview_row = QHBoxLayout()
-        preview_row.addWidget(QLabel("Email preview"))
-        preview_row.addStretch()
-        preview_row.addWidget(QLabel("Preview as:"))
-        preview_row.addWidget(self.preview_testing)
-        preview_row.addWidget(self.preview_production)
-        preview_row.addSpacing(12)
-        preview_row.addWidget(preview_btn)
-        layout.addLayout(preview_row)
-        layout.addWidget(self.preview, 2)
+        preview_col.addWidget(self.preview, 1)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(12)
+        self.splitter.addWidget(editor_pane)
+        self.splitter.addWidget(preview_pane)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        layout.addWidget(self.splitter, 1)
+
+        if existing_html.strip():
+            self.html_edit.setPlainText(existing_html)
+            self.tabs.setCurrentWidget(self.html_edit)
+        else:
+            self.html_edit.setPlainText(DEFAULT_EMAIL_TEMPLATE)
+        for editor in (self.simple_edit, self.html_edit):
+            editor.textChanged.connect(self._render_timer.start)
+        self.tabs.currentChanged.connect(lambda *_: self._preview())
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
-        buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("accent", True)
+        self._save_button_widget = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self._save_button_widget.setProperty("accent", True)
         layout.addWidget(buttons)
-        space_layout(layout)
+
+    # -- form behaviour (FormDialog) ------------------------------------------------
+
+    def help_anchor(self) -> str | None:
+        return "placeholders"
+
+    def save_form(self) -> None:
+        self._on_save()
+
+    def dirty_key(self) -> str:
+        return "\x00".join(
+            [
+                str(self.tabs.currentIndex()),
+                self.simple_edit.toPlainText(),
+                self.html_edit.toPlainText(),
+                str(self.linked_path()),
+            ]
+        )
 
     # -- behavior ----------------------------------------------------------------
 
-    def _on_placeholder_clicked(self, item: QListWidgetItem) -> None:
-        token = item.data(_TOKEN_ROLE)
-        if token:
-            self._insert(token)
+    def _simple_is_empty(self) -> bool:
+        on_simple = self.tabs.currentWidget() is self.simple_edit
+        return on_simple and not self.simple_edit.toPlainText().strip()
 
-    def _open_placeholder_help(self, *_: object) -> None:
-        from reportflow.ui.windows.help_dialog import HelpDialog
-
-        HelpDialog(self, anchor="placeholders").exec()
+    def _current_editor(self) -> QPlainTextEdit:
+        return self.simple_edit if self.tabs.currentWidget() is self.simple_edit else self.html_edit
 
     def _insert(self, token: str) -> None:
-        editor = (
-            self.simple_edit if self.tabs.currentWidget() is self.simple_edit else self.html_edit
-        )
+        editor = self._current_editor()
         editor.insertPlainText(token)
         editor.setFocus()
 
@@ -332,7 +380,17 @@ class EmailTemplateDialog(QDialog):
     def preview_is_test(self) -> bool:
         return not self.preview_production.isChecked()
 
+    def _show_error(self, message: str) -> None:
+        self.preview_error.setText(message)
+        self.preview_error.setVisible(bool(message))
+
     def _preview(self) -> None:
+        """Render the email as recipients get it. Called on its own as the template changes."""
+        self._render_timer.stop()
+        if self._simple_is_empty():
+            self._show_error("")
+            self.preview.setHtml(_EMPTY_PREVIEW)
+            return
         is_test = self.preview_is_test()
         job = self._preview_job
         name = str(job.get("name") or "") or None
@@ -345,14 +403,19 @@ class EmailTemplateDialog(QDialog):
         )
         try:
             rendered = render_email(self.result_html(), context)
-        except Exception as e:  # noqa: BLE001 — template errors surface to the author
-            QMessageBox.warning(self, "Template error", str(e))
+        except Exception as e:  # noqa: BLE001 — shown above the preview; the last good one stays
+            self._show_error(_describe_template_error(e))
             return
+        self._show_error("")
         subject = final_subject(
             job.get("subject") or None, context["job_name"], context, is_test=is_test
         )
         recipients = (job.get("recipients") or {}).get("testing" if is_test else "live") or {}
+        scroll = self.preview.verticalScrollBar()
+        position = scroll.value() if scroll is not None else 0
         self.preview.setHtml(_with_email_header(rendered, subject, recipients))
+        if scroll is not None:
+            scroll.setValue(position)  # typing must not jump the preview back to the top
 
     def _on_save(self) -> None:
         linked = self.linked_path()
@@ -368,12 +431,25 @@ class EmailTemplateDialog(QDialog):
                 )
                 return
         source = self.result_html()
+        if self._simple_is_empty():
+            self._show_error("The message is empty — write something, or switch to HTML.")
+            self.simple_edit.setFocus()
+            return
         if not source.strip():
-            QMessageBox.warning(self, "Validation", "The template is empty.")
+            self._show_error("The template is empty.")
             return
         try:
             render_email(source, sample_context())  # syntax check before saving
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "Template error", f"The template does not render:\n{e}")
+            self._show_error(_describe_template_error(e))
+            self._current_editor().setFocus()
             return
         self.accept()
+
+
+def _describe_template_error(error: Exception) -> str:
+    """A placeholder mistake in words, with its line when Jinja knows it."""
+    line = getattr(error, "lineno", None)
+    message = getattr(error, "message", None) or str(error)
+    where = f"Line {line}: " if line else ""
+    return f"The template has a mistake — {where}{message}"

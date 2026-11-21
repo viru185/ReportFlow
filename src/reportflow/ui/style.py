@@ -528,6 +528,29 @@ QListView#completerPopup::item:selected {{
     background: {ACCENT};
     color: #ffffff;
 }}
+/* -- segmented toggle (e.g. Preview as Testing | Production) -- */
+QPushButton[segment="true"][segmentPos="first"] {{
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}}
+QPushButton[segment="true"][segmentPos="last"] {{
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: none;
+}}
+QSplitter::handle {{
+    background: transparent;
+}}
+QSplitter::handle:hover {{
+    background: {CARD_BG};
+}}
+QLabel#previewError {{
+    background: #3b1a1a;
+    color: #fca5a5;
+    border: 1px solid #7f1d1d;
+    border-radius: 6px;
+    padding: 6px 10px;
+}}
 /* -- placeholder picker (ui/placeholder_picker.py) -- */
 QListWidget#placeholderList {{
     padding: 4px;

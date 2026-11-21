@@ -1054,20 +1054,26 @@ def test_email_template_dialog_simple_wrap_and_preview(qtbot):
 
 
 def test_email_template_dialog_placeholder_list_inserts_on_click(qtbot):
+    """The template editor uses the same Insert-placeholder picker as the subject."""
     from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
 
     dlg = EmailTemplateDialog(existing_html="<p>x</p>")
     qtbot.addWidget(dlg)
-    items = [dlg.placeholders.item(i) for i in range(dlg.placeholders.count())]
-    today = next(i for i in items if i.text().startswith("Today — "))  # shows its value
-    headers = [i.text() for i in items if not i.data(0x0100)]
-    assert headers == ["Dates", "Run", "Files", "Blocks"]
+    picker = dlg.insert_placeholder.open_picker()
+    qtbot.addWidget(picker)
+    groups = list(dict.fromkeys(p.group for p in picker.items()))
+    assert groups == ["Dates", "Run", "Files", "Blocks"]
+    today = next(p for p in picker.items() if p.token == "{{ today }}")
+    assert today.example  # shows what it becomes
 
     dlg.html_edit.moveCursor(dlg.html_edit.textCursor().MoveOperation.End)
-    dlg._on_placeholder_clicked(today)
+    picker.insert(today)
     assert dlg.result_html().endswith("{{ today }}")
-    dlg._on_placeholder_clicked(items[0])  # a heading inserts nothing
-    assert dlg.result_html().endswith("{{ today }}")
+    # Linked to a file: the editor is read-only, so inserting explains instead.
+    dlg._file_path = "C:/t.html"
+    dlg.keep_linked.setChecked(True)
+    picker.insert(today)
+    assert dlg.result_html().endswith("{{ today }}") and "linked" in picker.notice.plain
 
 
 def test_help_has_placeholder_guide_and_opens_at_it(qtbot):
