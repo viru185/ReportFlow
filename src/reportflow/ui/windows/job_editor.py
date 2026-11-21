@@ -13,6 +13,7 @@ import itertools
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +37,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.core.config.models import migrate_legacy_job
-from reportflow.core.email.render import template_error
+from reportflow.core.email.render import explain_template_error, template_error
 from reportflow.core.output_names import (
     DEFAULT_OUTPUT_STEM,
     OUTPUT_NAME_TOKENS,
@@ -58,7 +58,14 @@ from reportflow.core.output_names import (
     overwrites_same_day,
 )
 from reportflow.ui.api_client import ApiClient, ApiError
-from reportflow.ui.feedback import FormDialog, InlineNotice, toast
+from reportflow.ui.feedback import (
+    FormDialog,
+    InlineNotice,
+    clear_field_error,
+    mark_tab_errors,
+    set_field_error,
+    toast,
+)
 from reportflow.ui.fs_util import open_start_dir
 from reportflow.ui.placeholder_picker import (
     PlaceholderButton,
@@ -123,6 +130,19 @@ def merge_sheets(rows: list[_SheetRow], names: list[str], *, tick_all: bool) -> 
     return merged
 
 
+@dataclass
+class _Problem:
+    """Something that stops Save: where it is, and what to do about it."""
+
+    tab: int
+    message: str
+    widget: QWidget | None = None
+    workbook: int | None = None
+
+
+_TAB_GENERAL, _TAB_OUTPUT, _TAB_SCHEDULE, _TAB_EMAIL, _TAB_ADVANCED = range(5)
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
@@ -181,13 +201,19 @@ class JobEditorDialog(FormDialog):
         prefill: dict[str, Any] | None = None,
         prefill_template: str | None = None,
         prefill_template_link: str | None = None,
+        save_handler: Callable[[JobEditorDialog], str | None] | None = None,
     ) -> None:
         """``job`` opens EDIT mode; ``prefill`` opens CREATE mode seeded from an existing
         job (Duplicate): everything copied except the name (fresh) and the stage (back to
         Testing). ``prefill_template`` is the source job's email template content — the copy
         gets its own file with the same content; ``prefill_template_link`` instead means the
-        source is linked to a file of the user's, and the copy links to the same file."""
+        source is linked to a file of the user's, and the copy links to the same file.
+        ``save_handler(dialog)`` stores the job and returns an error to show, or None —
+        so a save the service refuses keeps the editor open with its edits."""
         super().__init__(parent, settings_key="job_editor")
+        self._save_handler = save_handler
+        self._problem_widgets: list[QWidget] = []
+        self._showing_problems = False
         self._api = api
         self._editing = job is not None
         self._template_html: str | None = None  # authored in-app; caller saves it after job save
@@ -209,6 +235,10 @@ class JobEditorDialog(FormDialog):
         self._reactivated.setSingleShot(True)
         self._reactivated.setInterval(250)
         self._reactivated.timeout.connect(self._on_reactivated)
+        self._recheck = QTimer(self)  # after a refused save, problems clear as fixed
+        self._recheck.setSingleShot(True)
+        self._recheck.setInterval(300)
+        self._recheck.timeout.connect(self._refresh_problems)
         self._build()
         if job:
             self._load(job)
@@ -261,6 +291,7 @@ class JobEditorDialog(FormDialog):
             "the job's run history and email template."
         )
         self.name.textChanged.connect(self._update_output_example)
+        self.name.textChanged.connect(self._recheck_soon)
         self.enabled = QCheckBox("Run on schedule")
         self.enabled.setChecked(True)
         self.enabled.setToolTip("Untick to keep the job configured but never run it on schedule.")
@@ -387,6 +418,8 @@ class JobEditorDialog(FormDialog):
         workbook_layout.addWidget(self.wb_stack)
         space_layout(workbook_layout)
         general_layout.addWidget(workbook_box, 1)
+        self.wb_notice = InlineNotice()  # why the workbooks can't be saved yet
+        general_layout.addWidget(self.wb_notice)
         # ---- Output tab ----
         output_tab = QWidget()
         output_form = QFormLayout(output_tab)
@@ -447,12 +480,14 @@ class JobEditorDialog(FormDialog):
         schedule_tab = QWidget()
         schedule_lay = QVBoxLayout(schedule_tab)
         self.schedule = ScheduleWidget()
+        self.schedule.changed.connect(self._recheck_soon)
         schedule_lay.addWidget(self.schedule)
         schedule_lay.addStretch()
         # ---- Email tab ----
         email_tab = QWidget()
         email_form = QFormLayout(email_tab)
         self.subject = QLineEdit()
+        self.subject.textChanged.connect(self._recheck_soon)
         self.subject.setPlaceholderText("e.g. Daily production report — {{ today }}")
         self.subject.setToolTip(
             "Email subject; Testing-stage runs are prefixed [TEST]. Placeholders work here "
@@ -699,6 +734,7 @@ class JobEditorDialog(FormDialog):
 
     def _recipient_field(self, tip: str) -> RecipientField:
         box = RecipientField(placeholder="Type a group or an address…")
+        box.changed.connect(self._recheck_soon)
         box.setToolTip(
             f"{tip}\nType to search email groups and known addresses; Enter, Tab, comma or "
             "semicolon adds it. Click a chip's × to remove it."
@@ -722,6 +758,7 @@ class JobEditorDialog(FormDialog):
         wb.unselected = self.nonselected_mode.currentData()
         wb.pdf_mode = "combined" if self.combine_pdf.isChecked() else "separate"
         self._refresh_row(wb)
+        self._recheck_soon()
 
     def _row_view(self, wb: _WorkbookState) -> RowView:
         included = sum(1 for row in wb.rows if row.include)
@@ -924,6 +961,7 @@ class JobEditorDialog(FormDialog):
 
     def _refresh_workbook_chrome(self) -> None:
         """Bits that depend on how many workbooks there are."""
+        self._recheck_soon()
         multi = len(self._workbooks) > 1
         self._output_form.setRowVisible(self.on_failure, multi)
         self._update_output_example()
@@ -1234,71 +1272,124 @@ class JobEditorDialog(FormDialog):
                 f"Linked to {Path(self._template_link).name} — read on every run."
             )
 
-    def _validation_error(self) -> tuple[int | None, str] | None:
-        """``(tab_index, message)`` for the first problem, or None when the job is valid.
-
-        ``tab_index`` is the workbook tab to bring forward (None: not workbook-specific).
-        """
+    def _problems(self, *, commit: bool = True) -> list[_Problem]:
+        """Everything that stops Save, in reading order. ``commit`` adds what was typed into
+        the recipient boxes first (Save does; the live re-check while fixing must not)."""
+        problems: list[_Problem] = []
         if not self.name.text().strip():
-            return None, "Job name is required."
+            problems.append(_Problem(_TAB_GENERAL, "Give the job a name.", self.name))
         if not self._workbooks:
-            return None, "Add at least one workbook — drop Excel files here, or Add workbooks…"
+            problems.append(
+                _Problem(
+                    _TAB_GENERAL,
+                    "Add at least one workbook — drop Excel files here, or Add workbooks…",
+                )
+            )
         seen: set[str] = set()
         for i, wb in enumerate(self._workbooks):
-            if _same_file_key(wb.path) in seen:
-                return i, f"{wb.label} is added twice."
-            seen.add(_same_file_key(wb.path))
+            message = None
             included = [row for row in wb.rows if row.include]
             gone = [row.name for row in included if row.missing]
-            if gone:
-                return i, (
+            excel_rows = [row for row in included if row.excel]
+            if _same_file_key(wb.path) in seen:
+                message = f"{wb.label} is added twice."
+            elif gone:
+                message = (
                     f"{wb.label}: {', '.join(gone)} {'is' if len(gone) == 1 else 'are'} no "
                     "longer in the workbook — untick it, or replace the file."
                 )
-            if not included:
+            elif not included:
                 if wb.read in ("missing", "unreadable", "offline") or wb.reading:
-                    return i, f"{wb.label}: its sheets couldn't be read yet. {wb.error}".strip()
-                return i, f"Include at least one sheet of {wb.label}."
-            excel_rows = [row for row in included if row.excel]
-            if excel_rows and all(row.hidden for row in excel_rows):
-                return i, (
+                    message = f"{wb.label}: its sheets couldn't be read yet. {wb.error}".strip()
+                else:
+                    message = f"Include at least one sheet of {wb.label}."
+            elif excel_rows and all(row.hidden for row in excel_rows):
+                message = (
                     f"{wb.label}: at least one Excel attachment sheet must stay visible — untick "
                     "Hidden on one of them."
                 )
+            seen.add(_same_file_key(wb.path))
+            if message:
+                problems.append(_Problem(_TAB_GENERAL, message, workbook=i))
         subject_problem = template_error(self.subject.text())
         if subject_problem:
-            return None, f"The Subject has a placeholder typo: {subject_problem}"
-        for label, box in (
-            ("Production: To", self.prod_to),
-            ("Production: Cc", self.prod_cc),
-            ("Production: Bcc", self.prod_bcc),
-            ("Test: To", self.test_to),
-            ("Test: Cc", self.test_cc),
-            ("Test: Bcc", self.test_bcc),
-        ):
-            problem = box.commit_pending()  # typed but not yet added
-            if problem:
-                return None, f"{label}: {problem}"
-        if self.prod_to.is_empty():
-            return None, "Production: To needs at least one address or email group."
-        if self.test_to.is_empty():
-            return None, "Test: To needs at least one address or email group."
-        return None
-
-    def _on_save(self) -> None:
-        problem = self._validation_error()
-        if problem is not None:
-            tab, message = problem
-            if tab is not None:
-                self.tabs.setCurrentIndex(0)
-                self._show_workbook(tab)
-            QMessageBox.warning(self, "Validation", message)
-            return
+            plain = explain_template_error(subject_problem)
+            message = (
+                plain
+                if plain != subject_problem
+                else f"This placeholder isn't finished: {subject_problem}"
+            )
+            problems.append(_Problem(_TAB_EMAIL, message, self.subject))
+        for box in self._recipient_boxes():
+            typed = box.commit_pending() if commit else None  # typed but not yet added
+            if typed:
+                problems.append(_Problem(_TAB_EMAIL, typed, box))
+        for box in (self.prod_to, self.test_to):
+            if box.is_empty() and not any(p.widget is box for p in problems):
+                problems.append(
+                    _Problem(_TAB_EMAIL, "Add at least one address or email group.", box)
+                )
         try:
             self.schedule.to_crons()
         except ValueError as e:
-            QMessageBox.warning(self, "Schedule", str(e))
+            problems.append(_Problem(_TAB_SCHEDULE, str(e)))
+        return problems
+
+    def _validation_error(self) -> tuple[int | None, str] | None:
+        """``(workbook_index, message)`` for the first problem, or None when the job is valid."""
+        problems = self._problems()
+        if not problems:
+            return None
+        first = problems[0]
+        return first.workbook, first.message
+
+    def _clear_problems(self) -> None:
+        for widget in self._problem_widgets:
+            clear_field_error(widget)
+        self._problem_widgets = []
+        self.wb_notice.clear_notice()
+        mark_tab_errors(self.tabs, set())
+
+    def _show_problems(self, problems: list[_Problem], *, focus: bool) -> None:
+        """Each problem on its own field, a red dot on its tab — no OK popup."""
+        self._clear_problems()
+        for problem in problems:
+            if problem.widget is not None:
+                set_field_error(problem.widget, problem.message)
+                self._problem_widgets.append(problem.widget)
+        workbook = next((p for p in problems if p.tab == _TAB_GENERAL and p.widget is None), None)
+        if workbook is not None:
+            self.wb_notice.show_notice(workbook.message, "error", timeout_ms=0)
+        mark_tab_errors(self.tabs, {p.tab for p in problems})
+        self._showing_problems = bool(problems)
+        if focus and problems:
+            first = problems[0]
+            self.tabs.setCurrentIndex(first.tab)
+            if first.workbook is not None:
+                self._show_workbook(first.workbook)
+            if first.widget is not None:
+                first.widget.setFocus()
+
+    def _recheck_soon(self, *_: object) -> None:
+        if self._showing_problems:
+            self._recheck.start()
+
+    def _refresh_problems(self) -> None:
+        if self._showing_problems:
+            self._show_problems(self._problems(commit=False), focus=False)
+
+    def _on_save(self) -> None:
+        problems = self._problems()
+        if problems:
+            self._show_problems(problems, focus=True)
             return
+        self._clear_problems()
+        if self._save_handler is not None:
+            error = self._save_handler(self)
+            if error:
+                # The service refused it: say so here, with every edit still on screen.
+                toast(self, f"Couldn't save: {error}", "error")
+                return
         self.accept()
 
     # -- form behaviour (FormDialog) --------------------------------------------

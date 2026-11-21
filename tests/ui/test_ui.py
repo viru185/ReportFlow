@@ -620,10 +620,36 @@ def test_main_window_rename_saves_under_the_original_name(qtbot, monkeypatch):
     dlg = mw.JobEditorDialog(api, api.get_job("daily")["job"], win)
     qtbot.addWidget(dlg)
     dlg.name.setText("daily sales")
-    win._save(dlg, create=False)
+    assert win._save(dlg, create=False) is None  # saved while the editor is still open
     name, payload = api.updated_job
     assert name == "daily" and payload["name"] == "daily sales"
+    win._saved(dlg, create=False)
     assert "Renamed" in win.statusBar().currentMessage()
+
+
+def test_a_refused_save_keeps_the_editor_open_with_its_edits(qtbot):
+    from reportflow.ui.feedback import toasts
+    from reportflow.ui.windows import main_window as mw
+
+    api = FakeApi(jobs=[_sample_job_dict()])
+
+    def refuse(name, job):
+        raise ApiError("a job named 'weekly' already exists", 409)
+
+    api.update_job = refuse
+    win = mw.MainWindow(api)
+    qtbot.addWidget(win)
+    dlg = mw.JobEditorDialog(
+        api,
+        api.get_job("daily")["job"],
+        win,
+        save_handler=lambda d: win._save(d, create=False),
+    )
+    qtbot.addWidget(dlg)
+    dlg.name.setText("weekly")
+    dlg._on_save()
+    assert dlg.result() == 0 and dlg.name.text() == "weekly"  # still open, edits intact
+    assert any("already exists" in t for t in toasts(dlg))
 
 
 def test_main_window_pause_and_resume_flip_enabled(qtbot):
@@ -913,6 +939,7 @@ def test_main_window_export_logs_saves_zip(qtbot, tmp_path, monkeypatch):
 def test_main_window_purge_old_and_all_logs(qtbot, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
+    from reportflow.ui.feedback import toasts
     from reportflow.ui.windows import main_window as mw
 
     monkeypatch.setattr(
@@ -921,10 +948,6 @@ def test_main_window_purge_old_and_all_logs(qtbot, monkeypatch):
     monkeypatch.setattr(
         QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
     )
-    shown = []
-    monkeypatch.setattr(
-        QMessageBox, "information", staticmethod(lambda *a, **k: shown.append(a[2]))
-    )
 
     api = FakeApi(jobs=[])
     win = mw.MainWindow(api)
@@ -932,7 +955,7 @@ def test_main_window_purge_old_and_all_logs(qtbot, monkeypatch):
 
     win._purge_old_logs()
     assert api.purged == (30, False)  # retention days from config
-    assert shown and "5.0 MB" in shown[-1] and "3 run folder(s)" in shown[-1]
+    assert any("5.0 MB" in t and "3 run folders, 1 bundle" in t for t in toasts(win))
 
     win._purge_all_logs()
     assert api.purged == (None, True)
@@ -1086,6 +1109,7 @@ def test_help_has_placeholder_guide_and_opens_at_it(qtbot):
 
 
 def test_editor_rejects_a_broken_subject_placeholder(qtbot):
+    from reportflow.ui.feedback import field_error, tabs_with_errors
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
     dlg = JobEditorDialog(FakeApi(), _sample_job_dict())
@@ -1094,7 +1118,10 @@ def test_editor_rejects_a_broken_subject_placeholder(qtbot):
     assert dlg._validation_error() is None
     dlg.subject.setText("Daily — {{ today")
     _, message = dlg._validation_error()
-    assert "Subject" in message
+    assert message.startswith("A placeholder is missing its closing }}")
+    dlg._on_save()  # shown under the Subject, with a dot on the Email tab — no popup
+    assert field_error(dlg.subject).startswith("A placeholder is missing its closing }}")
+    assert tabs_with_errors(dlg.tabs) == {3} and dlg.tabs.currentIndex() == 3
 
 
 def test_email_template_dialog_html_mode(qtbot):
@@ -1517,7 +1544,6 @@ def test_settings_service_account_waits_for_the_restart(qtbot, monkeypatch, come
         QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
     )
     said = []
-    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a: said.append(a[2])))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: said.append(a[2])))
 
     api = FakeApi()
@@ -1538,25 +1564,24 @@ def test_settings_service_account_waits_for_the_restart(qtbot, monkeypatch, come
     dlg._apply_service_account()
 
     if comes_back:
-        assert "now running as" in said[-1]
+        from reportflow.ui.feedback import toasts
+
+        assert any("now running as" in t for t in toasts(dlg)) and not said
     else:
         assert "hasn't come back" in said[-1] and "Restart the 'ReportFlow' service" in said[-1]
 
 
-def test_settings_service_account_needs_both_fields(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
+def test_settings_service_account_needs_both_fields(qtbot):
+    from reportflow.ui.feedback import field_error
     from reportflow.ui.windows.settings_dialog import SettingsDialog
-
-    warned = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a)))
 
     api = FakeApi()
     dlg = SettingsDialog(api)
     qtbot.addWidget(dlg)
     dlg.account_user.setText("CORP\\pi_user")  # no password
     dlg._apply_service_account()
-    assert warned and not hasattr(api, "applied_account")
+    assert field_error(dlg.account_password) == "Enter the account's password."
+    assert not field_error(dlg.account_user) and not hasattr(api, "applied_account")
 
 
 def test_settings_saves_update_toggle(qtbot):
@@ -1774,16 +1799,13 @@ def test_settings_trust_pi_datalink_for_the_service_account(qtbot, monkeypatch):
 
     dlg._trust_pi_addins()
     assert api.pi_trusted
+    from reportflow.ui.feedback import toasts
+
+    [message] = toasts(dlg)
     assert (
-        shown
-        and (
-            "• PI DataLink (64-bit Excel): trusted\n"
-            "• PI DataLink (32-bit Excel): trusted\n"
-            "• PIAFBuilder: trusted"
-        )
-        in shown[0]
-    )
-    assert dlg.pi_trust_status.text().startswith(r"✓ Trusted for CORP\pi_reports")
+        "PI DataLink (64-bit Excel), PI DataLink (32-bit Excel), PIAFBuilder" in message
+    ) and not shown  # a success is a notice, not an OK popup
+    assert dlg.pi_trust_status.text().startswith("✓ Trusted for CORP\\pi_reports")
 
 
 # -- email groups, recipient chips, suggestions ---------------------------------------
@@ -1883,18 +1905,22 @@ def test_editor_uses_groups_in_recipient_lists(qtbot):
 
 
 def test_editor_requires_a_to_and_rejects_unknown_text(qtbot):
+    from reportflow.ui.feedback import field_error
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
     dlg = JobEditorDialog(FakeApi(), _sample_job_dict())
     qtbot.addWidget(dlg)
     assert dlg._validation_error() is None
     dlg.prod_cc.edit.setText("nobody")  # typed, never added
-    _, message = dlg._validation_error()
-    assert message.startswith("Production: Cc:") and "nobody" in message
+    dlg._on_save()
+    assert "nobody" in field_error(dlg.prod_cc) and dlg.result() == 0
     dlg.prod_cc.edit.clear()
     dlg.prod_to.set_value([])
-    _, message = dlg._validation_error()
-    assert "Production: To needs at least one address or email group" in message
+    dlg._on_save()
+    assert field_error(dlg.prod_to) == "Add at least one address or email group."
+    # Fixing it clears the mark as you go (no need to press Save again to find out).
+    dlg.prod_to.set_value(["boss@corp.example.com"])
+    qtbot.waitUntil(lambda: not field_error(dlg.prod_to), timeout=2000)
 
 
 def test_settings_email_groups_tab(qtbot, monkeypatch):
@@ -1906,8 +1932,6 @@ def test_settings_email_groups_tab(qtbot, monkeypatch):
     api.get_config = lambda: {**FakeApi().get_config(), **_groups_config()}
     sent = {}
     api.put_email_groups = lambda groups: sent.setdefault("groups", groups)
-    warned = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: warned.append(a[2])))
     monkeypatch.setattr(
         QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
     )
@@ -1916,9 +1940,9 @@ def test_settings_email_groups_tab(qtbot, monkeypatch):
     assert dlg.group_list.count() == 2
     assert dlg.group_used.text() == "Used by 1 job: daily"
 
-    # A group in use can't be deleted — its jobs would lose recipients.
+    # A group in use can't be deleted — its jobs would lose recipients. Said in place.
     dlg._delete_group()
-    assert warned and "daily" in warned[-1] and dlg.group_list.count() == 2
+    assert "daily" in dlg.group_notice.plain and dlg.group_list.count() == 2
 
     # Rename the used group, empty the other one out of existence, add a new one.
     dlg.group_name.setText("Plant managers")
@@ -1944,22 +1968,21 @@ def test_settings_email_groups_tab(qtbot, monkeypatch):
     ]
 
 
-def test_settings_email_groups_need_a_name_and_members(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
+def test_settings_email_groups_need_a_name_and_members(qtbot):
+    from reportflow.ui.feedback import field_error, tabs_with_errors
     from reportflow.ui.windows.settings_dialog import SettingsDialog
 
-    warned = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: warned.append(a[2])))
     api = FakeApi()
     dlg = SettingsDialog(api)
     qtbot.addWidget(dlg)
     dlg._new_group()
     dlg._save()
-    assert warned[-1] == "Every email group needs a name." and api.saved_settings is None
+    assert field_error(dlg.group_name) == "Give the group a name."
+    assert api.saved_settings is None and tabs_with_errors(dlg.settings_tabs) == {3}
+    dlg.group_name.setText("Empty")
     dlg._group_name_edited("Empty")
     dlg._save()
-    assert "has no addresses" in warned[-1]
+    assert field_error(dlg.group_members) == "Add at least one address."
 
 
 def test_template_preview_as_testing_or_production(qtbot):

@@ -234,3 +234,13 @@ def test_final_subject_is_shared_by_email_and_preview():
     assert final_subject("R&D {{ job_name }}", "Daily", ctx, is_test=True) == "[TEST] R&D Daily"
     assert sample_context(is_test=False)["stage"] == "Production"
     assert sample_context()["stage"] == "Testing" and sample_context()["is_test"] is True
+
+
+def test_placeholder_mistakes_are_explained_in_plain_words():
+    from reportflow.core.email.render import explain_template_error, template_error
+
+    unfinished = explain_template_error(template_error("Daily — {{ today") or "")
+    assert unfinished.startswith("A placeholder is missing its closing }}")
+    stray = explain_template_error(template_error("Daily — {{ today }") or "")
+    assert "stray }" in stray
+    assert explain_template_error("something else entirely") == "something else entirely"

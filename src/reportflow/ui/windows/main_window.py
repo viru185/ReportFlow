@@ -39,8 +39,8 @@ from reportflow import __about__ as about
 from reportflow.core import paths
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import logo_pixmap
-from reportflow.ui.feedback import restore_geometry, save_geometry
-from reportflow.ui.fs_util import save_start_path
+from reportflow.ui.feedback import restore_geometry, save_geometry, toast
+from reportflow.ui.fs_util import reveal, save_start_path
 from reportflow.ui.schedule_compile import ago_text, describe, friendly_time
 from reportflow.ui.style import (
     TEXT_MUTED,
@@ -503,21 +503,27 @@ class MainWindow(QMainWindow):
     # -- job actions --------------------------------------------------------------
 
     def _new_job(self) -> None:
-        dlg = JobEditorDialog(self._api, None, self)
+        dlg = JobEditorDialog(
+            self._api, None, self, save_handler=lambda d: self._save(d, create=True)
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._save(dlg, create=True)
+            self._saved(dlg, create=True)
 
     def _edit_job(self, name: str) -> None:
         try:
             job = self._api.get_job(name)["job"]
         except ApiError as e:
-            QMessageBox.warning(self, "Error", str(e))
+            toast(self, f"Couldn't open {name}: {e}", "error")
             return
-        dlg = JobEditorDialog(self._api, job, self)
+        dlg = JobEditorDialog(
+            self._api, job, self, save_handler=lambda d: self._save(d, create=False)
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._save(dlg, create=False)
+            self._saved(dlg, create=False)
 
-    def _save(self, dlg: JobEditorDialog, *, create: bool) -> None:
+    def _save(self, dlg: JobEditorDialog, *, create: bool) -> str | None:
+        """Store the editor's job (called by the open editor). Returns the service's
+        refusal to show in the editor — which then stays open — or None."""
         payload = dlg.payload()
         logger.info("{} job {!r}", "Creating" if create else "Updating", payload.get("name"))
         # Saved under its ORIGINAL name: a changed name in the payload is a rename.
@@ -531,8 +537,12 @@ class MainWindow(QMainWindow):
             if template is not None:
                 self._api.put_email_template(payload["name"], template)
         except ApiError as e:
-            QMessageBox.warning(self, "Save failed", str(e))
-            return
+            return str(e)
+        return None
+
+    def _saved(self, dlg: JobEditorDialog, *, create: bool) -> None:
+        payload = dlg.payload()
+        original = dlg.original_name() or payload["name"]
         self.refresh()
         if not create and original != payload["name"]:
             self.statusBar().showMessage(
@@ -552,8 +562,9 @@ class MainWindow(QMainWindow):
         try:
             self._api.delete_job(name)
         except ApiError as e:
-            QMessageBox.warning(self, "Delete failed", str(e))
+            toast(self, f"Couldn't delete {name}: {e}", "error")
             return
+        toast(self, f"Deleted {name}.", "success")
         self.refresh()
 
     def _trigger(self, name: str, *, mode: str = "run") -> None:
@@ -562,7 +573,7 @@ class MainWindow(QMainWindow):
         try:
             resp = api_call(name)
         except ApiError as e:
-            QMessageBox.warning(self, f"{kind} failed", str(e))
+            toast(self, f"{kind} didn't start: {e}", "error")
             return
         logger.info("{} started for {!r}: run {}", kind, name, resp.get("run_id"))
         self.statusBar().showMessage(f"{kind} started for {name} (run {resp['run_id']})")
@@ -584,7 +595,7 @@ class MainWindow(QMainWindow):
         try:
             self._api.set_job_stage(name, "live")
         except ApiError as e:
-            QMessageBox.warning(self, "Move to production failed", str(e))
+            toast(self, f"Couldn't move {name} to production: {e}", "error")
             return
         logger.info("Job {!r} promoted to live", name)
         self.statusBar().showMessage(
@@ -600,7 +611,7 @@ class MainWindow(QMainWindow):
             job["enabled"] = enabled
             self._api.update_job(name, job)
         except ApiError as e:
-            QMessageBox.warning(self, "Resume failed" if enabled else "Pause failed", str(e))
+            toast(self, f"Couldn't {'resume' if enabled else 'pause'} {name}: {e}", "error")
             return
         logger.info("Job {!r} {}", name, "resumed" if enabled else "paused")
         self.statusBar().showMessage(
@@ -631,19 +642,20 @@ class MainWindow(QMainWindow):
             job = self._api.get_job(name)["job"]
             template = self._api.get_email_template(name)
         except ApiError as e:
-            QMessageBox.warning(self, "Duplicate failed", str(e))
+            toast(self, f"Couldn't duplicate {name}: {e}", "error")
             return
         linked = template.get("path") if template.get("linked") else None
         dlg = JobEditorDialog(
             self._api,
             None,
             self,
+            save_handler=lambda d: self._save(d, create=True),
             prefill=job,
             prefill_template=None if linked else (template.get("content") or None),
             prefill_template_link=linked,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._save(dlg, create=True)
+            self._saved(dlg, create=True)
 
     def _view_logs(self, name: str | None = None) -> None:
         RunHistoryDialog(self._api, name, self).exec()
@@ -694,11 +706,11 @@ class MainWindow(QMainWindow):
         try:
             resp = self._api.export_logs(note)
         except ApiError as e:
-            QMessageBox.warning(self, "Export failed", str(e))
+            toast(self, f"Couldn't export the logs: {e}", "error")
             return
         source = Path(resp.get("bundle", ""))
         if not source.exists():
-            QMessageBox.warning(self, "Export failed", "The service did not produce a log bundle.")
+            toast(self, "The service didn't produce a log bundle.", "error")
             return
         dest, _ = QFileDialog.getSaveFileName(
             self, "Save logs to zip", save_start_path(None, source.name), "Zip archive (*.zip)"
@@ -708,16 +720,15 @@ class MainWindow(QMainWindow):
         try:
             shutil.copyfile(source, dest)
         except OSError as e:
-            QMessageBox.warning(self, "Export failed", f"Could not save the zip: {e}")
+            toast(self, f"Couldn't save the zip: {e}", "error")
             return
         logger.info("Exported diagnostic logs to {}", dest)
-        opened = QMessageBox.question(
+        toast(
             self,
-            "Logs exported",
-            f"Saved the diagnostic bundle to:\n{dest}\n\nOpen the containing folder?",
+            f"Logs saved to {Path(dest).name}.",
+            "success",
+            action=("Show in folder", lambda: reveal(dest)),
         )
-        if opened == QMessageBox.StandardButton.Yes:
-            os.startfile(str(Path(dest).parent))  # noqa: S606 — deliberate shell open
 
     def _send_support_logs(self) -> None:
         try:
@@ -738,19 +749,20 @@ class MainWindow(QMainWindow):
         try:
             resp = self._api.send_dev_logs(note)
         except ApiError as e:
-            QMessageBox.warning(self, "Send failed", str(e))
+            toast(self, f"Couldn't send the logs: {e}", "error")
             return
-        QMessageBox.information(
-            self, "Sent", f"Diagnostic bundle sent to: {', '.join(resp.get('recipients', []))}"
-        )
+        toast(self, f"Logs sent to {', '.join(resp.get('recipients', []))}.", "success")
 
     @staticmethod
     def _purge_summary(stats: dict) -> str:
+        def n(count: int, word: str) -> str:
+            return f"{count} {word}{'' if count == 1 else 's'}"
+
         mb = stats.get("bytes_freed", 0) / 1e6
         return (
-            f"Freed {mb:.1f} MB — {stats.get('run_dirs', 0)} run folder(s), "
-            f"{stats.get('bundles', 0)} bundle(s), {stats.get('log_files', 0)} log file(s), "
-            f"{stats.get('db_rows', 0)} history row(s)."
+            f"Freed {mb:.1f} MB — {n(stats.get('run_dirs', 0), 'run folder')}, "
+            f"{n(stats.get('bundles', 0), 'bundle')}, {n(stats.get('log_files', 0), 'log file')}, "
+            f"{n(stats.get('db_rows', 0), 'history row')}."
         )
 
     def _purge_old_logs(self) -> None:
@@ -770,9 +782,9 @@ class MainWindow(QMainWindow):
         try:
             stats = self._api.purge_logs(days)
         except ApiError as e:
-            QMessageBox.warning(self, "Delete failed", str(e))
+            toast(self, f"Couldn't delete the logs: {e}", "error")
             return
-        QMessageBox.information(self, "Old logs deleted", self._purge_summary(stats))
+        toast(self, f"Old logs deleted. {self._purge_summary(stats)}", "success")
 
     def _purge_all_logs(self) -> None:
         confirm = QMessageBox.warning(
@@ -789,9 +801,9 @@ class MainWindow(QMainWindow):
         try:
             stats = self._api.purge_logs(everything=True)
         except ApiError as e:
-            QMessageBox.warning(self, "Delete failed", str(e))
+            toast(self, f"Couldn't delete the logs: {e}", "error")
             return
-        QMessageBox.information(self, "All logs deleted", self._purge_summary(stats))
+        toast(self, f"All logs deleted. {self._purge_summary(stats)}", "success")
         self.refresh()
 
     # -- help menu actions ----------------------------------------------------------
@@ -835,9 +847,7 @@ class MainWindow(QMainWindow):
     def _notify_up_to_date(self, thread: _UpdateCheckThread) -> None:
         # Manual check with no newer version found -> tell the user explicitly.
         if not getattr(thread, "_reported", False):
-            QMessageBox.information(
-                self, "Check for updates", f"You are running the latest version ({about.VERSION})."
-            )
+            toast(self, f"You're on the latest version ({about.VERSION}).", "success")
 
     def _on_update_found(self, info: UpdateInfo) -> None:
         logger.info("Update available: v{} (current v{})", info.version, about.VERSION)

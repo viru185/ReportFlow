@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
-from reportflow.ui.fs_util import open_start_dir, save_start_path
+from reportflow.ui.feedback import toast
+from reportflow.ui.fs_util import open_start_dir, reveal, save_start_path
 from reportflow.ui.transfer import (
     TransferError,
     copy_name,
@@ -84,7 +85,7 @@ class _SelectListDialog(QDialog):
 
     def _on_ok(self) -> None:
         if not self.selected():
-            QMessageBox.information(self, "Nothing selected", "Tick at least one entry.")
+            toast(self, "Tick at least one entry.", "warning")
             return
         self.accept()
 
@@ -106,7 +107,7 @@ def export_jobs_flow(api: ApiClient, parent: QWidget) -> None:
         QMessageBox.warning(parent, "Export jobs", str(e))
         return
     if not names:
-        QMessageBox.information(parent, "Export jobs", "There are no jobs to export.")
+        toast(parent, "There are no jobs to export yet.", "info")
         return
 
     dlg = _SelectListDialog("Export jobs", "Choose the jobs to export:", names, parent)
@@ -125,7 +126,12 @@ def export_jobs_flow(api: ApiClient, parent: QWidget) -> None:
     except (ApiError, OSError) as e:
         QMessageBox.warning(parent, "Export jobs", f"Export failed: {e}")
         return
-    QMessageBox.information(parent, "Export jobs", f"Exported {len(jobs)} job(s) to:\n{path}")
+    toast(
+        parent,
+        f"Exported {_plural(len(jobs), 'job')} to {Path(path).name}.",
+        "success",
+        action=("Show in folder", lambda: reveal(path)),
+    )
 
 
 def import_jobs_flow(api: ApiClient, parent: QWidget) -> bool:
@@ -159,7 +165,9 @@ def import_jobs_flow(api: ApiClient, parent: QWidget) -> bool:
         return False
     existing_fold = {e.casefold() for e in existing}
 
-    imported, skipped = [], []
+    imported: list[str] = []
+    skipped: list[str] = []
+    failures: list[str] = []  # one summary at the end, not a popup per job
     for job in jobs:
         if job.name.casefold() not in chosen:
             continue
@@ -178,8 +186,7 @@ def import_jobs_flow(api: ApiClient, parent: QWidget) -> bool:
                     api.update_job(job.name, payload)
                     imported.append(job.name)
                 except ApiError as e:
-                    QMessageBox.warning(parent, "Import jobs", f"{job.name}: {e}")
-                    skipped.append(job.name)
+                    failures.append(f"{job.name}: {e}")
             elif clicked is as_copy:
                 new_name = copy_name(job.name, existing | set(imported))
                 payload["name"] = new_name
@@ -187,8 +194,7 @@ def import_jobs_flow(api: ApiClient, parent: QWidget) -> bool:
                     api.create_job(payload)
                     imported.append(new_name)
                 except ApiError as e:
-                    QMessageBox.warning(parent, "Import jobs", f"{new_name}: {e}")
-                    skipped.append(job.name)
+                    failures.append(f"{new_name}: {e}")
             else:
                 skipped.append(job.name)
         else:
@@ -196,13 +202,19 @@ def import_jobs_flow(api: ApiClient, parent: QWidget) -> bool:
                 api.create_job(payload)
                 imported.append(job.name)
             except ApiError as e:
-                QMessageBox.warning(parent, "Import jobs", f"{job.name}: {e}")
-                skipped.append(job.name)
+                failures.append(f"{job.name}: {e}")
 
-    summary = f"Imported {len(imported)} job(s)."
+    summary = f"Imported {_plural(len(imported), 'job')}."
     if skipped:
-        summary += f"\nSkipped: {', '.join(skipped)}"
-    QMessageBox.information(parent, "Import jobs", summary)
+        summary += f" Skipped: {', '.join(skipped)}."
+    if failures:
+        # What went wrong has to be readable: one dialog listing every failure.
+        listed = "\n".join(f"• {failure}" for failure in failures)
+        QMessageBox.warning(
+            parent, "Import jobs", f"{summary}\n\nThese could not be imported:\n{listed}"
+        )
+    else:
+        toast(parent, summary, "success" if imported else "info")
     return bool(imported)
 
 
@@ -228,11 +240,12 @@ def export_settings_flow(api: ApiClient, parent: QWidget) -> None:
     except OSError as e:
         QMessageBox.warning(parent, "Export settings", f"Export failed: {e}")
         return
-    QMessageBox.information(
+    toast(
         parent,
-        "Export settings",
-        f"Settings exported to:\n{path}\n\nNote: the SMTP password is never exported — "
-        "it stays encrypted on this machine.",
+        f"Settings exported to {Path(path).name}. The SMTP password is never exported — it "
+        "stays encrypted on this machine.",
+        "success",
+        action=("Show in folder", lambda: reveal(path)),
     )
 
 
@@ -263,4 +276,8 @@ def import_settings_flow(api: ApiClient, parent: QWidget) -> None:
     except ApiError as e:
         QMessageBox.warning(parent, "Import settings", f"Import failed: {e}")
         return
-    QMessageBox.information(parent, "Import settings", "Settings imported and applied.")
+    toast(parent, "Settings imported and applied.", "success")
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"

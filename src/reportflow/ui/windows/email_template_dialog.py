@@ -40,8 +40,13 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.core.config.defaults import DEFAULT_EMAIL_TEMPLATE
-from reportflow.core.email.render import final_subject, render_email, sample_context
-from reportflow.ui.feedback import FormDialog
+from reportflow.core.email.render import (
+    explain_template_error,
+    final_subject,
+    render_email,
+    sample_context,
+)
+from reportflow.ui.feedback import FormDialog, toast
 from reportflow.ui.fs_util import open_start_dir
 from reportflow.ui.placeholder_picker import PlaceholderButton, email_placeholders
 from reportflow.ui.widgets import section_title
@@ -343,7 +348,7 @@ class EmailTemplateDialog(FormDialog):
         try:
             source = Path(path).read_text(encoding="utf-8", errors="replace")
         except OSError as e:
-            QMessageBox.warning(self, "Load from file", f"Could not read the file:\n{e}")
+            toast(self, f"Couldn't read {Path(path).name}: {e}", "error")
             return
         self._file_path = path
         self.html_edit.setPlainText(source)
@@ -450,6 +455,6 @@ class EmailTemplateDialog(FormDialog):
 def _describe_template_error(error: Exception) -> str:
     """A placeholder mistake in words, with its line when Jinja knows it."""
     line = getattr(error, "lineno", None)
-    message = getattr(error, "message", None) or str(error)
+    message = explain_template_error(getattr(error, "message", None) or str(error))
     where = f"Line {line}: " if line else ""
     return f"The template has a mistake — {where}{message}"

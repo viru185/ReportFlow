@@ -28,7 +28,14 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
-from reportflow.ui.feedback import FormDialog, InlineNotice
+from reportflow.ui.feedback import (
+    FormDialog,
+    InlineNotice,
+    clear_field_error,
+    mark_tab_errors,
+    set_field_error,
+    toast,
+)
 from reportflow.ui.recipient_field import RecipientField, RecipientSet
 from reportflow.ui.suggestions import jobs_using_group, known_addresses
 from reportflow.ui.widgets import scroll_page, space_layout
@@ -207,6 +214,7 @@ class SettingsDialog(FormDialog):
             "The Windows account the ReportFlow service currently runs as."
         )
         self.account_user = QLineEdit()
+        self.account_user.textEdited.connect(lambda *_: clear_field_error(self.account_user))
         self.account_user.setPlaceholderText("DOMAIN\\user or .\\user")
         self.account_user.setToolTip(
             "A Windows account that has PI DataLink installed and PI access. Use DOMAIN\\user "
@@ -220,6 +228,9 @@ class SettingsDialog(FormDialog):
         user_row.addWidget(use_current)
 
         self.account_password = QLineEdit()
+        self.account_password.textEdited.connect(
+            lambda *_: clear_field_error(self.account_password)
+        )
         self.account_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.account_password.setToolTip(
             "The account's Windows password. It is validated with Windows and passed straight "
@@ -336,6 +347,7 @@ class SettingsDialog(FormDialog):
         self.group_name = QLineEdit()
         self.group_name.setPlaceholderText("e.g. Plant managers")
         self.group_name.textEdited.connect(self._group_name_edited)
+        self.group_name.textEdited.connect(lambda *_: clear_field_error(self.group_name))
         self.group_members = RecipientField(
             allow_groups=False, placeholder="Type or paste addresses…"
         )
@@ -344,6 +356,7 @@ class SettingsDialog(FormDialog):
             "Tab, comma or semicolon adds it, and a pasted list is split."
         )
         self.group_members.changed.connect(self._group_members_edited)
+        self.group_members.changed.connect(lambda: clear_field_error(self.group_members))
         self.group_notice = InlineNotice()
         self._members_set = RecipientSet(
             {"Members": self.group_members},
@@ -437,11 +450,11 @@ class SettingsDialog(FormDialog):
             return
         used = jobs_using_group(self._config, group["original"]) if group["original"] else []
         if used:
-            QMessageBox.warning(
-                self,
-                "Email groups",
-                f"{group['original']!r} is used by: {', '.join(used)}.\n\nRemove it from "
+            self.group_notice.show_notice(
+                f"{group['original']} is used by {', '.join(used)} — remove it from "
                 "those jobs first, so their emails don't lose recipients.",
+                "warning",
+                timeout_ms=10000,
             )
             return
         confirm = QMessageBox.question(
@@ -455,20 +468,25 @@ class SettingsDialog(FormDialog):
         self._refresh_group_list(min(row, len(self._groups) - 1))
 
     def _email_groups_problem(self) -> str | None:
+        found = self._email_groups_issue()
+        return found[0] if found else None
+
+    def _email_groups_issue(self) -> tuple[str, int, QWidget] | None:
+        """The first email-group problem: (message, group row, field to fix)."""
         problem = self.group_members.commit_pending() if self._current_group() else None
         if problem:
-            return f"Email group members: {problem}"
+            return problem, self.group_list.currentRow(), self.group_members
         names: set[str] = set()
-        for g in self._groups:
+        for row, g in enumerate(self._groups):
             if not g["name"]:
-                return "Every email group needs a name."
+                return "Give the group a name.", row, self.group_name
             if any(c in g["name"] for c in ",;@"):
-                return f"Email group names can't contain , ; or @: {g['name']!r}"
+                return "A group name can't contain , ; or @.", row, self.group_name
             if g["name"].casefold() in names:
-                return f"Two email groups are named {g['name']!r}."
+                return f"Another group is already called {g['name']}.", row, self.group_name
             names.add(g["name"].casefold())
             if not g["members"]:
-                return f"The email group {g['name']!r} has no addresses."
+                return "Add at least one address.", row, self.group_members
         return None
 
     def _email_groups_payload(self) -> list[dict[str, Any]]:
@@ -568,23 +586,30 @@ class SettingsDialog(FormDialog):
         try:
             resp = self._api.trust_pi_addins()
         except ApiError as e:
-            QMessageBox.warning(self, "Trust PI DataLink", str(e))
+            toast(self, f"Couldn't trust PI DataLink: {e}", "error")
             return
         results = resp.get("results") or []
         if not results:
-            QMessageBox.information(
-                self, "Trust PI DataLink", "No PI add-ins are installed on this machine."
-            )
+            toast(self, "No PI add-ins are installed on this machine.", "info")
             return
         lines = "\n".join(f"• {r.get('label') or r['name']}: {r['result']}" for r in results)
         failed = any(str(r["result"]).startswith("failed") for r in results)
-        (QMessageBox.warning if failed else QMessageBox.information)(
-            self,
-            "Trust PI DataLink",
-            f"For {resp.get('account', 'the service account')}:\n{lines}\n\n"
-            "Run a Build only to confirm PI DataLink connects.",
-        )
+        account = resp.get("account", "the service account")
         self._show_pi_trust()
+        if failed:
+            # Some add-ins couldn't be trusted: the details matter, so they stay readable.
+            QMessageBox.warning(
+                self,
+                "Trust PI DataLink",
+                f"For {account}:\n{lines}\n\nRun a Build only to confirm PI DataLink connects.",
+            )
+            return
+        names = ", ".join(_addin_labels(results))
+        toast(
+            self,
+            f"Trusted for {account}: {names}. Run a Build only to confirm PI DataLink connects.",
+            "success",
+        )
 
     def _fill_current_user(self) -> None:
         domain = os.environ.get("USERDOMAIN", "")
@@ -595,10 +620,14 @@ class SettingsDialog(FormDialog):
     def _apply_service_account(self) -> None:
         user = self.account_user.text().strip()
         password = self.account_password.text()
+        clear_field_error(self.account_user)
+        clear_field_error(self.account_password)
         if not user or not password:
-            QMessageBox.warning(
-                self, "Service account", "Enter both the account (DOMAIN\\user) and its password."
-            )
+            if not user:
+                set_field_error(self.account_user, "Enter the account, as DOMAIN\\user.")
+            if not password:
+                set_field_error(self.account_password, "Enter the account's password.")
+            (self.account_user if not user else self.account_password).setFocus()
             return
         confirm = QMessageBox.question(
             self,
@@ -618,11 +647,11 @@ class SettingsDialog(FormDialog):
         if self._wait_for_account(account):
             self._show_service_account()
             self._show_pi_trust()
-            QMessageBox.information(
+            toast(
                 self,
-                "Service account",
-                f"The service is now running as {account}.\n\n"
-                "Run a Build only to confirm PI DataLink connects.",
+                f"The service is now running as {account}. Run a Build only to confirm "
+                "PI DataLink connects.",
+                "success",
             )
         else:
             QMessageBox.warning(
@@ -671,10 +700,20 @@ class SettingsDialog(FormDialog):
         return outcome["ok"]
 
     def _save(self) -> None:
-        group_problem = self._email_groups_problem()
-        if group_problem:
-            self.settings_tabs.setCurrentIndex(self.settings_tabs.count() - 1)
-            QMessageBox.warning(self, "Email groups", group_problem)
+        for field in (self.group_name, self.group_members):
+            clear_field_error(field)
+        mark_tab_errors(self.settings_tabs, set())
+        issue = self._email_groups_issue()
+        if issue:
+            # Shown on the field itself, with a dot on the tab — no OK popup.
+            message, row, widget = issue
+            tab = self.settings_tabs.count() - 1
+            self.settings_tabs.setCurrentIndex(tab)
+            if row >= 0 and row != self.group_list.currentRow():
+                self.group_list.setCurrentRow(row)
+            set_field_error(widget, message)
+            mark_tab_errors(self.settings_tabs, {tab})
+            widget.setFocus()
             return
         sections = self._sections()
         try:
@@ -756,9 +795,7 @@ class SettingsDialog(FormDialog):
         except ApiError as e:
             QMessageBox.warning(self, "SMTP test failed", str(e))
             return
-        QMessageBox.information(
-            self, "SMTP test", "Connection successful — the SMTP settings work."
-        )
+        toast(self, "Connected — these SMTP settings work.", "success")
 
     def _clear_password(self) -> None:
         confirm = QMessageBox.question(self, "Clear password", "Remove the stored SMTP password?")
@@ -767,7 +804,8 @@ class SettingsDialog(FormDialog):
         try:
             self._api.clear_smtp_password()
         except ApiError as e:
-            QMessageBox.warning(self, "Clear failed", str(e))
+            toast(self, f"Couldn't clear the password: {e}", "error")
             return
+        toast(self, "The stored SMTP password was removed.", "success")
         self.password_status.setText("No password stored yet.")
         self.smtp_password.clear()

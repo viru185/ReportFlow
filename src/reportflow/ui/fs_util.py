@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -26,3 +28,12 @@ def save_start_path(current_dir: str | None, filename: str) -> str:
     """A default path for a 'save file' dialog: the given folder (or Downloads) + filename."""
     base = Path(current_dir) if current_dir and Path(current_dir).is_dir() else downloads_dir()
     return str(base / filename)
+
+
+def reveal(path: str | Path) -> None:
+    """Open Explorer at ``path`` with the file selected (its folder if it's gone)."""
+    target = Path(path)
+    if target.exists():
+        subprocess.Popen(["explorer", "/select,", str(target)])  # noqa: S603,S607
+    elif target.parent.exists():
+        os.startfile(str(target.parent))  # noqa: S606 — deliberate shell open

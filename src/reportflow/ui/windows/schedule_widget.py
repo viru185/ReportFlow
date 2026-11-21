@@ -358,6 +358,8 @@ class _RuleRow(QFrame):
 
 
 class ScheduleWidget(QWidget):
+    changed = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._rows: list[_RuleRow] = []
@@ -426,6 +428,7 @@ class ScheduleWidget(QWidget):
 
     def _update_summary(self) -> None:
         self.manual_hint.setVisible(not self._rows)
+        self.changed.emit()
         try:
             crons = self.to_crons()
         except ValueError as e:

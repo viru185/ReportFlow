@@ -110,6 +110,24 @@ def template_error(source: str) -> str | None:
     return None
 
 
+_PLAIN_ERRORS = (
+    ("end of print statement", "a placeholder is missing its closing }} — write {{ today }}"),
+    ("unexpected '}'", "there's a stray } — placeholders look like {{ today }}"),
+    ("unexpected end of template", "a placeholder or block isn't closed"),
+    ("expected token 'end of statement block'", "a {% … %} block isn't closed with %}"),
+    ("unknown tag", "a {% … %} block uses a word ReportFlow doesn't know"),
+)
+
+
+def explain_template_error(message: str) -> str:
+    """The template engine's message in plain words, for the common slips."""
+    lowered = message.lower()
+    for needle, plain in _PLAIN_ERRORS:
+        if needle in lowered:
+            return plain[0].upper() + plain[1:] + "."
+    return message
+
+
 def date_context(at: datetime) -> dict[str, Any]:
     """Date placeholders for a run that started at ``at``."""
     day = at.date()

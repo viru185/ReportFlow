@@ -306,7 +306,10 @@ class InlineNotice(QLabel):
         self.setText(body)
         self.setProperty("kind", kind)
         repolish(self)
-        self._timer.start(timeout_ms)
+        if timeout_ms > 0:
+            self._timer.start(timeout_ms)
+        else:
+            self._timer.stop()  # stays until it's fixed (e.g. a validation message)
 
     def clear_notice(self) -> None:
         self._timer.stop()
