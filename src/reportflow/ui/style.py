@@ -137,21 +137,36 @@ QFrame[recipientField="true"] QLineEdit {{
     border: none;
     padding: 3px 2px;
 }}
-QPushButton[recipientChip="true"] {{
-    background: #232a37;
-    border: 1px solid #3f4a5c;
-    border-radius: 10px;
-    color: {TEXT};
-    padding: 2px 8px;
-    font-weight: 500;
+QFrame[recipientChip="true"] {{
+    background: #2a303c;
+    border: 1px solid #434b5c;
+    border-radius: 12px;
 }}
-QPushButton[recipientChip="true"]:hover {{
-    border-color: #e06c6c;
-}}
-QPushButton[groupChip="true"] {{
+QFrame[groupChip="true"] {{
     background: #172c48;
     border-color: #507eaf;
+}}
+QFrame[recipientChip="true"][flash="true"] {{
+    background: #1d3a5f;
+    border-color: {ACCENT_HOVER};
+}}
+QFrame[recipientChip="true"] QLabel#chipText {{
+    color: {TEXT};
+}}
+QFrame[groupChip="true"] QLabel#chipText {{
     color: #dbeafe;
+}}
+QFrame[recipientChip="true"] QToolButton#chipRemove {{
+    background: transparent;
+    border: none;
+    border-radius: 9px;
+    color: {TEXT_MUTED};
+    font-size: 14px;
+    padding: 0;
+}}
+QFrame[recipientChip="true"] QToolButton#chipRemove:hover {{
+    background: #3b2326;
+    color: #f87171;
 }}
 QGroupBox {{
     background: {CARD_BG};
@@ -493,6 +508,25 @@ QToolButton:pressed {{
 }}
 QToolButton::menu-indicator {{
     image: none;
+}}
+QListView#completerPopup {{
+    background: {CARD_BG};
+    color: {TEXT};
+    border: 1px solid {BORDER_HOVER};
+    border-radius: 6px;
+    padding: 4px;
+    outline: none;
+}}
+QListView#completerPopup::item {{
+    padding: 5px 8px;
+    border-radius: 4px;
+}}
+QListView#completerPopup::item:hover {{
+    background: {FIELD_BG};
+}}
+QListView#completerPopup::item:selected {{
+    background: {ACCENT};
+    color: #ffffff;
 }}
 /* -- feedback (ui/feedback.py) -- */
 QLineEdit[invalid="true"], QComboBox[invalid="true"], QSpinBox[invalid="true"],

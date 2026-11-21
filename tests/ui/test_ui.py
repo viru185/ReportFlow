@@ -1831,17 +1831,21 @@ def test_suggestions_know_every_address_group_and_concurrency_group():
 def test_recipient_field_chips(qtbot):
     from PySide6.QtCore import Qt
 
+    from reportflow.ui.feedback import InlineNotice
     from reportflow.ui.recipient_field import RecipientField
 
     field = RecipientField()
     qtbot.addWidget(field)
+    field.notice = InlineNotice()
     field.set_suggestions(["a@corp.example.com"], {"Plant leads": ["a@x.com", "b@x.com"]})
 
-    # A pasted list is split; groups are recognised by name (any case); duplicates ignored.
+    # A pasted list is split; groups are recognised by name (any case); a duplicate is refused
+    # with a visible note instead of vanishing silently.
     assert _type(field, "x@corp.example.com; plant leads, X@corp.example.com") is None
     assert field.emails() == ["x@corp.example.com"]
     assert field.groups() == ["Plant leads"]
-    # The completer's "👥 Name" form adds the group too.
+    assert "already added" in field.notice.plain
+    # The completer's "👥 Name" form is recognised too (and refused: already there).
     field._on_completed("👥 Plant leads")
     assert field.groups() == ["Plant leads"]
 
@@ -1851,13 +1855,13 @@ def test_recipient_field_chips(qtbot):
     assert field.edit.text() == "not-an-address" and field.property("invalid")
     assert field.emails() == ["x@corp.example.com", "y@corp.example.com"]
 
-    # Backspace in the empty box removes the last chip.
+    # Backspace in the empty box removes the chip that is visually last.
     field.edit.clear()
     qtbot.keyClick(field.edit, Qt.Key.Key_Backspace)
-    assert field.groups() == []
+    assert field.emails() == ["x@corp.example.com"] and field.groups() == ["Plant leads"]
 
 
-def test_editor_uses_groups_and_counts_unique_people(qtbot):
+def test_editor_uses_groups_in_recipient_lists(qtbot):
     from reportflow.ui.windows.job_editor import JobEditorDialog
 
     api = FakeApi()
@@ -1865,9 +1869,9 @@ def test_editor_uses_groups_and_counts_unique_people(qtbot):
     dlg = JobEditorDialog(api)
     qtbot.addWidget(dlg)
     assert _type(dlg.prod_to, "Plant leads, boss@corp.example.com") is None
+    # Two groups may share people (b@): each person is still emailed once by the sender.
     assert _type(dlg.prod_cc, "Energy team") is None
-    # a, b (both groups), c, boss -> 4 people, each emailed once
-    assert dlg.prod_unique.text().startswith("→ 4 unique addresses")
+    assert not hasattr(dlg, "prod_unique")  # the unique-count line is gone
     _type(dlg.test_to, "dev@corp.example.com")
     payload = dlg.payload()
     assert payload["prod"]["to"] == ["boss@corp.example.com"]
@@ -1910,7 +1914,7 @@ def test_settings_email_groups_tab(qtbot, monkeypatch):
     dlg = SettingsDialog(api)
     qtbot.addWidget(dlg)
     assert dlg.group_list.count() == 2
-    assert dlg.group_used.text() == "Used by 1 job(s): daily"
+    assert dlg.group_used.text() == "Used by 1 job: daily"
 
     # A group in use can't be deleted — its jobs would lose recipients.
     dlg._delete_group()

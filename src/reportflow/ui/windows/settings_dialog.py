@@ -28,8 +28,8 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
-from reportflow.ui.feedback import FormDialog
-from reportflow.ui.recipient_field import RecipientField
+from reportflow.ui.feedback import FormDialog, InlineNotice
+from reportflow.ui.recipient_field import RecipientField, RecipientSet
 from reportflow.ui.suggestions import jobs_using_group, known_addresses
 from reportflow.ui.widgets import scroll_page, space_layout
 
@@ -344,11 +344,18 @@ class SettingsDialog(FormDialog):
             "Tab, comma or semicolon adds it, and a pasted list is split."
         )
         self.group_members.changed.connect(self._group_members_edited)
+        self.group_notice = InlineNotice()
+        self._members_set = RecipientSet(
+            {"Members": self.group_members},
+            notice=self.group_notice,
+            single_name="this group",
+        )
         self.group_used = QLabel("")
         self.group_used.setWordWrap(True)
         self.group_used.setProperty("muted", True)
         self._group_form.addRow("Name", self.group_name)
         self._group_form.addRow("Members", self.group_members)
+        self._group_form.addRow("", self.group_notice)
         self._group_form.addRow("", self.group_used)
         row.addLayout(left)
         row.addWidget(right, 1)
@@ -364,7 +371,7 @@ class SettingsDialog(FormDialog):
             {"name": g["name"], "members": list(g.get("members") or []), "original": g["name"]}
             for g in (cfg.get("email") or {}).get("groups") or []
         ]
-        self.group_members.set_suggestions(known_addresses(cfg), {})
+        self._members_set.set_addresses(known_addresses(cfg))
         self._groups_changed = False
         self._refresh_group_list(0 if self._groups else -1)
 
@@ -394,7 +401,9 @@ class SettingsDialog(FormDialog):
             return
         used = jobs_using_group(self._config, group["original"]) if group["original"] else []
         self.group_used.setText(
-            f"Used by {len(used)} job(s): {', '.join(used)}" if used else "Not used by any job yet."
+            f"Used by {len(used)} job{'s' if len(used) != 1 else ''}: {', '.join(used)}"
+            if used
+            else "Not used by any job yet."
         )
 
     def _group_name_edited(self, text: str) -> None:

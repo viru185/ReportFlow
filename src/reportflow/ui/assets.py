@@ -20,6 +20,12 @@ def _assets_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "assets"
 
 
+def asset_icon(name: str) -> QIcon:
+    """An icon from the assets folder (empty if the file is missing)."""
+    path = _assets_dir() / name
+    return QIcon(str(path)) if path.exists() else QIcon()
+
+
 def logo_path() -> Path | None:
     p = _assets_dir() / "reportflow.png"
     return p if p.exists() else None

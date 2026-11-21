@@ -50,13 +50,9 @@ from reportflow.core.output_names import (
     overwrites_same_day,
 )
 from reportflow.ui.api_client import ApiClient, ApiError
-from reportflow.ui.feedback import FormDialog
+from reportflow.ui.feedback import FormDialog, InlineNotice
 from reportflow.ui.fs_util import open_start_dir
-from reportflow.ui.recipient_field import (
-    RecipientField,
-    header_recipients,
-    unique_addresses,
-)
+from reportflow.ui.recipient_field import RecipientField, RecipientSet, header_recipients
 from reportflow.ui.suggestions import concurrency_groups, email_groups, known_addresses
 from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
@@ -371,8 +367,8 @@ class JobEditorDialog(FormDialog):
         )
         if not self._editing:
             self.stage.setEnabled(False)  # new jobs always start in Testing
-        # Addresses and Settings → Email groups, as chips with autocomplete. An address in
-        # two groups (or in To and a Cc group) is emailed once — see the unique count below.
+        # Addresses and Settings → Email groups, as chips with autocomplete. Each recipient
+        # list is one RecipientSet: a person is in it once, directly or through a group.
         self._known_addresses = known_addresses(self._config)
         self.prod_to = self._recipient_field(
             "Production To — required: at least one address or email group."
@@ -384,8 +380,20 @@ class JobEditorDialog(FormDialog):
         self.test_to = self._recipient_field("Test To — who receives Testing-stage emails.")
         self.test_cc = self._recipient_field("Test Cc — optional.")
         self.test_bcc = self._recipient_field("Test Bcc — optional.")
-        self.prod_unique = self._help_label("")
-        self.test_unique = self._help_label("")
+        self.prod_notice = InlineNotice()
+        self.test_notice = InlineNotice()
+        self.prod_set = RecipientSet(
+            {"To": self.prod_to, "Cc": self.prod_cc, "Bcc": self.prod_bcc},
+            groups=self._email_groups,
+            addresses=self._known_addresses,
+            notice=self.prod_notice,
+        )
+        self.test_set = RecipientSet(
+            {"To": self.test_to, "Cc": self.test_cc, "Bcc": self.test_bcc},
+            groups=self._email_groups,
+            addresses=self._known_addresses,
+            notice=self.test_notice,
+        )
         edit_template = QPushButton("Edit email template…")
         edit_template.setToolTip(
             "Author the email body in-app (simple text or HTML) with a live preview."
@@ -403,12 +411,12 @@ class JobEditorDialog(FormDialog):
         email_form.addRow("Production: To", self.prod_to)
         email_form.addRow("Production: Cc (optional)", self.prod_cc)
         email_form.addRow("Production: Bcc (optional)", self.prod_bcc)
-        email_form.addRow("", self.prod_unique)
+        email_form.addRow("", self.prod_notice)
         email_form.addRow(section_title("Test recipients"))
         email_form.addRow("Test: To", self.test_to)
         email_form.addRow("Test: Cc (optional)", self.test_cc)
         email_form.addRow("Test: Bcc (optional)", self.test_bcc)
-        email_form.addRow("", self.test_unique)
+        email_form.addRow("", self.test_notice)
         email_form.addRow(section_title("Email content"))
         email_form.addRow("Body", tpl_row)
         # ---- Advanced tab ----
@@ -576,24 +584,7 @@ class JobEditorDialog(FormDialog):
             f"{tip}\nType to search email groups and known addresses; Enter, Tab, comma or "
             "semicolon adds it. Click a chip's × to remove it."
         )
-        box.set_suggestions(self._known_addresses, self._email_groups)
-        box.changed.connect(self._update_unique_counts)
         return box
-
-    def _update_unique_counts(self) -> None:
-        if not hasattr(self, "test_bcc"):
-            return  # fields are still being created
-        for label, fields in (
-            (self.prod_unique, (self.prod_to, self.prod_cc, self.prod_bcc)),
-            (self.test_unique, (self.test_to, self.test_cc, self.test_bcc)),
-        ):
-            count = len(unique_addresses(list(fields), self._email_groups))
-            label.setText(
-                f"→ {count} unique address{'es' if count != 1 else ''} — each person is "
-                "emailed once, even when they're in several groups."
-                if count
-                else ""
-            )
 
     # -- workbooks -----------------------------------------------------------------
     def _commit_current(self) -> None:
