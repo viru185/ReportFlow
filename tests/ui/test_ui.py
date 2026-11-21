@@ -493,7 +493,9 @@ def test_main_window_card_more_menu_holds_occasional_actions(qtbot):
     win = MainWindow(FakeApi(jobs=[_sample_job_dict()]))  # enabled, testing
     qtbot.addWidget(win)
     texts = [a.text() for a in _card_menu(win).actions() if a.text()]
-    assert texts == ["📂 Open last report", "✎ Edit", "Logs", "⧉ Duplicate", "⏸ Pause", "🗑 Delete"]
+    assert texts == ["Open last report", "Edit", "Logs", "Duplicate", "Pause", "Delete"]
+    # Icons, not emoji: each action carries the app's own line icon.
+    assert all(not a.icon().isNull() for a in _card_menu(win).actions() if a.text())
 
 
 def test_main_window_card_menu_delete_action_wired(qtbot, monkeypatch):
@@ -584,7 +586,7 @@ def test_main_window_paused_card_is_dimmed_with_no_extra_status(qtbot):
     name = next(w for w in frames[0].findChildren(QLabel) if w.text() == "daily")
     assert name.property("muted") is True
     stage = frames[0].findChild(QLabel, "jobStage")
-    assert stage.text() == "Testing" and "#9aa1b0" in stage.styleSheet()  # greyed, not amber
+    assert stage.text() == "Testing" and stage.property("badge") == "muted"  # greyed, not amber
     labels = [w.text() for w in win.findChildren(QLabel)]
     assert not any("PAUSED" in t for t in labels)
     assert any("last: success" in t for t in labels)  # the last result is still readable
@@ -592,8 +594,8 @@ def test_main_window_paused_card_is_dimmed_with_no_extra_status(qtbot):
     assert any("Resume" in t for t in buttons)
     # Pause disappears from the menu; promotion stays reachable there (Resume took its slot).
     texts = [a.text() for a in _card_menu(win).actions() if a.text()]
-    assert "⏸ Pause" not in texts
-    assert "✓ Move to production" in texts
+    assert "Pause" not in texts
+    assert "Move to production" in texts
 
 
 def test_main_window_enabled_card_not_dimmed_and_has_pause(qtbot):
@@ -606,7 +608,7 @@ def test_main_window_enabled_card_not_dimmed_and_has_pause(qtbot):
     frames = _card_frames(win)
     assert frames and frames[0].graphicsEffect() is None
     texts = [a.text() for a in _card_menu(win).actions() if a.text()]
-    assert "⏸ Pause" in texts
+    assert "Pause" in texts
     buttons = [b.text() for b in win.jobs_container.findChildren(QPushButton)]
     assert not any("Resume" in t for t in buttons)
 
@@ -684,8 +686,8 @@ def test_main_window_running_card_locks_run_buttons(qtbot):
     qtbot.addWidget(win)
 
     by_text = {b.text(): b for b in win.jobs_container.findChildren(QPushButton)}
-    assert not by_text["▶ Run"].isEnabled()
-    assert not by_text["👁 Build only"].isEnabled()
+    assert not by_text["Run"].isEnabled()
+    assert not by_text["Build only"].isEnabled()
     # Occasional actions in ⋯ stay usable while a run is in flight.
     edit = next(a for a in _card_menu(win).actions() if "Edit" in a.text())
     assert edit.isEnabled()
@@ -905,7 +907,7 @@ def test_main_window_email_failed_badge(qtbot):
     qtbot.addWidget(win)
     from PySide6.QtWidgets import QLabel
 
-    assert any("✉ failed" in w.text() for w in win.findChildren(QLabel))
+    assert any(w.text() == "Email failed" for w in win.findChildren(QLabel))
 
 
 def test_main_window_export_logs_saves_zip(qtbot, tmp_path, monkeypatch):

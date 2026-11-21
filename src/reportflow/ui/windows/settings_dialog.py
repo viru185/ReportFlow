@@ -17,11 +17,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMessageBox,
     QProgressDialog,
-    QPushButton,
-    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -33,9 +30,11 @@ from reportflow.ui.feedback import (
     InlineNotice,
     clear_field_error,
     mark_tab_errors,
+    repolish,
     set_field_error,
     toast,
 )
+from reportflow.ui.kit import Button, ListWidget, SpinBox, set_variant
 from reportflow.ui.recipient_field import RecipientField, RecipientSet
 from reportflow.ui.suggestions import jobs_using_group, known_addresses
 from reportflow.ui.widgets import scroll_page, space_layout
@@ -54,6 +53,12 @@ def _user_part(account: str) -> str:
 def _addin_labels(addins: Iterable[dict[str, Any]]) -> list[str]:
     """Each PI add-in once, in the service's order ("PI DataLink (64-bit Excel)", …)."""
     return list(dict.fromkeys(str(a.get("label") or a["name"]) for a in addins))
+
+
+def _set_tone(label: QLabel, tone: str) -> None:
+    """Colour a status line: "danger", "success", or "" for the normal text colour."""
+    label.setProperty("tone", tone)
+    repolish(label)
 
 
 def _split_csv(text: str) -> list[str]:
@@ -90,7 +95,7 @@ class SettingsDialog(FormDialog):
         smtp_form = QFormLayout(smtp_box)
         self.smtp_host = QLineEdit()
         self.smtp_host.setToolTip("Your mail server's hostname, e.g. smtp.company.com.")
-        self.smtp_port = QSpinBox()
+        self.smtp_port = SpinBox()
         self.smtp_port.setRange(1, 65535)
         self.smtp_port.setValue(587)
         self.smtp_port.setToolTip("587 for STARTTLS (typical), 465 for SSL, 25 for plain.")
@@ -123,7 +128,7 @@ class SettingsDialog(FormDialog):
         self._pw_toggle.toggled.connect(self._toggle_password_visible)
         self.password_status = QLabel("")
         self.password_status.setProperty("muted", True)
-        clear_pw = QPushButton("Clear stored password")
+        clear_pw = Button("Clear stored password")
         clear_pw.clicked.connect(self._clear_password)
         pw_row = QHBoxLayout()
         pw_row.addWidget(self.smtp_password)
@@ -134,10 +139,10 @@ class SettingsDialog(FormDialog):
         tls_row.addWidget(self.smtp_ssl)
         tls_row.addStretch()
 
-        test_btn = QPushButton("Test connection")
-        test_btn.setToolTip(
-            "Connect to the SMTP server with these settings (and log in when a username "
-            "is set) to verify they work — no email is sent."
+        test_btn = Button(
+            "Test connection",
+            tooltip="Connect to the SMTP server with these settings (and log in when a "
+            "username is set) to verify they work — no email is sent.",
         )
         test_btn.clicked.connect(self._test_connection)
         test_row = QHBoxLayout()
@@ -172,10 +177,10 @@ class SettingsDialog(FormDialog):
         # App settings
         app_box = QGroupBox("Application")
         app_form = QFormLayout(app_box)
-        self.max_concurrency = QSpinBox()
+        self.max_concurrency = SpinBox()
         self.max_concurrency.setRange(1, 32)
         self.max_concurrency.setToolTip("Maximum number of jobs allowed to run at the same time.")
-        self.default_timeout = QSpinBox()
+        self.default_timeout = SpinBox()
         self.default_timeout.setRange(1, 24 * 60)
         self.default_timeout.setSuffix(" min")
         self.default_timeout.setToolTip(
@@ -183,7 +188,7 @@ class SettingsDialog(FormDialog):
             "is reached the run is stopped and marked Timed out — raise it (here, or per job "
             "in Edit → Advanced) for big reports that pull a lot of PI data."
         )
-        self.log_retention = QSpinBox()
+        self.log_retention = SpinBox()
         self.log_retention.setRange(1, 365)
         self.log_retention.setSuffix(" days")
         self.log_retention.setToolTip("How long rolling log files are kept.")
@@ -220,8 +225,10 @@ class SettingsDialog(FormDialog):
             "A Windows account that has PI DataLink installed and PI access. Use DOMAIN\\user "
             "for a domain account, or .\\user for a local one."
         )
-        use_current = QPushButton("Use current Windows user")
-        use_current.setToolTip("Fill in the account you are logged in as right now.")
+        use_current = Button(
+            "Use current Windows user",
+            tooltip="Fill in the account you are logged in as right now.",
+        )
         use_current.clicked.connect(self._fill_current_user)
         user_row = QHBoxLayout()
         user_row.addWidget(self.account_user)
@@ -236,11 +243,11 @@ class SettingsDialog(FormDialog):
             "The account's Windows password. It is validated with Windows and passed straight "
             "to the service configuration — never written to the config file."
         )
-        apply_account = QPushButton("Validate && apply")
-        apply_account.setProperty("accent", True)
-        apply_account.setToolTip(
-            "Check the credentials with Windows, then reconfigure the service to run as this "
-            "account and restart it. No reinstall or admin prompt needed."
+        apply_account = Button(
+            "Validate && apply",
+            variant="primary",
+            tooltip="Check the credentials with Windows, then reconfigure the service to run "
+            "as this account and restart it. No reinstall or admin prompt needed.",
         )
         apply_account.clicked.connect(self._apply_service_account)
         apply_row = QHBoxLayout()
@@ -258,11 +265,12 @@ class SettingsDialog(FormDialog):
         # PI cells silently keep their last-saved values (Merian, Nov 2026).
         self.pi_trust_status = QLabel("")
         self.pi_trust_status.setWordWrap(True)
-        trust_pi = QPushButton("Trust PI DataLink for this account")
-        trust_pi.setToolTip(
-            "Windows only loads PI DataLink for an account that has accepted its one-time "
-            "trust prompt. The service account never sees that prompt, so this records the "
-            "same trust for it — only for the PI add-ins an administrator installed."
+        trust_pi = Button(
+            "Trust PI DataLink for this account",
+            tooltip="Windows only loads PI DataLink for an account that has accepted its "
+            "one-time trust prompt. The service account never sees that prompt, so this "
+            "records the same trust for it — only for the PI add-ins an administrator "
+            "installed.",
         )
         trust_pi.clicked.connect(self._trust_pi_addins)
         trust_row = QHBoxLayout()
@@ -282,7 +290,7 @@ class SettingsDialog(FormDialog):
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         self._save_button_widget = buttons.button(QDialogButtonBox.StandardButton.Save)
-        self._save_button_widget.setProperty("accent", True)
+        set_variant(self._save_button_widget, "primary")
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
 
@@ -329,12 +337,12 @@ class SettingsDialog(FormDialog):
 
         row = QHBoxLayout()
         left = QVBoxLayout()
-        self.group_list = QListWidget()
+        self.group_list = ListWidget()
         self.group_list.setMinimumWidth(200)
         self.group_list.currentRowChanged.connect(self._show_group)
-        new_group = QPushButton("+ New group")
+        new_group = Button("+ New group", variant="dashed")
         new_group.clicked.connect(self._new_group)
-        self.delete_group = QPushButton("Delete")
+        self.delete_group = Button("Delete", variant="danger")
         self.delete_group.clicked.connect(self._delete_group)
         group_buttons = QHBoxLayout()
         group_buttons.addWidget(new_group)
@@ -553,10 +561,10 @@ class SettingsDialog(FormDialog):
                 f"⚠ {account} (LocalSystem) — PI DataLink and other add-ins will NOT load. "
                 "Run scripts/set-service-account.ps1 as admin to switch to a PI-enabled user."
             )
-            self.service_account.setStyleSheet("color: #e06c6c;")
+            _set_tone(self.service_account, "danger")
         else:
             self.service_account.setText(account)
-            self.service_account.setStyleSheet("")
+            _set_tone(self.service_account, "")
 
     def _show_pi_trust(self) -> None:
         try:
@@ -568,7 +576,7 @@ class SettingsDialog(FormDialog):
         account = status.get("account") or "the service account"
         if not addins:
             self.pi_trust_status.setText("No PI add-ins are installed on this machine.")
-            self.pi_trust_status.setStyleSheet("")
+            _set_tone(self.pi_trust_status, "")
             return
         missing = _addin_labels(a for a in addins if not a.get("trusted"))
         if missing:
@@ -576,11 +584,11 @@ class SettingsDialog(FormDialog):
                 f"⚠ Not trusted for {account}: {', '.join(missing)} — PI cells will keep their "
                 "last-saved values."
             )
-            self.pi_trust_status.setStyleSheet("color: #e06c6c;")
+            _set_tone(self.pi_trust_status, "danger")
         else:
             names = ", ".join(_addin_labels(addins))
             self.pi_trust_status.setText(f"✓ Trusted for {account}: {names}")
-            self.pi_trust_status.setStyleSheet("color: #4ade80;")
+            _set_tone(self.pi_trust_status, "success")
 
     def _trust_pi_addins(self) -> None:
         try:

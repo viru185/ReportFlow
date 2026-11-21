@@ -33,12 +33,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QSizePolicy,
-    QToolButton,
     QWidget,
 )
 
 from reportflow.ui.assets import asset_icon
 from reportflow.ui.feedback import InlineNotice, flash
+from reportflow.ui.kit import IconButton, styled_completer
 from reportflow.ui.widgets import FlowLayout
 
 GROUP_PREFIX = "👥 "
@@ -77,14 +77,10 @@ class _Chip(QFrame):
         self.label = QLabel(text)
         self.label.setObjectName("chipText")
         row.addWidget(self.label)
-        self.close_button = QToolButton()
+        self.close_button = IconButton(
+            "×", f"Remove {value}", variant="close", size=18, focusable=False
+        )
         self.close_button.setObjectName("chipRemove")
-        self.close_button.setText("×")
-        self.close_button.setFixedSize(18, 18)
-        self.close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.close_button.setToolTip(f"Remove {value}")
-        self.close_button.setAccessibleName(f"Remove {value}")
         self.close_button.clicked.connect(self.remove_requested)
         row.addWidget(self.close_button)
 
@@ -146,10 +142,8 @@ class RecipientField(QFrame):
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._completer.activated.connect(self._on_completed)
-        popup = self._completer.popup()
-        if popup is not None:
-            popup.setObjectName("completerPopup")
-            popup.setMinimumWidth(300)  # long addresses fit even when the box is narrow
+        # Long addresses fit even when the box is narrow.
+        styled_completer(self._completer, min_width=300)
         self.edit.setCompleter(self._completer)
 
     # -- public ------------------------------------------------------------------

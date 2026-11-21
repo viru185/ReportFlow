@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QSplitter,
     QTabWidget,
     QTextBrowser,
@@ -48,6 +47,7 @@ from reportflow.core.email.render import (
 )
 from reportflow.ui.feedback import FormDialog, toast
 from reportflow.ui.fs_util import open_start_dir
+from reportflow.ui.kit import Button, SegmentButton, segmented, set_variant
 from reportflow.ui.placeholder_picker import PlaceholderButton, email_placeholders
 from reportflow.ui.widgets import section_title
 
@@ -169,8 +169,10 @@ class EmailTemplateDialog(FormDialog):
         # Where the body comes from: typed here, or an .html file (copied or linked).
         file_row = QHBoxLayout()
         file_row.setSpacing(8)
-        load = QPushButton("Load from file…")
-        load.setToolTip("Use an .html file you made elsewhere as this job's email body.")
+        load = Button(
+            "Load from file…",
+            tooltip="Use an .html file you made elsewhere as this job's email body.",
+        )
         load.clicked.connect(self._pick_file)
         self.keep_linked = QCheckBox("Keep linked to this file")
         self.keep_linked.setToolTip(
@@ -231,17 +233,15 @@ class EmailTemplateDialog(FormDialog):
         preview_col.setSpacing(8)
         # One click switches what the preview shows: the email Testing-stage runs send (with
         # [TEST] and the test recipients) or the one Production runs send.
-        self.preview_testing = QPushButton("Testing")
-        self.preview_production = QPushButton("Production")
+        self.preview_testing = SegmentButton(
+            "Testing", tooltip="Preview the email Testing-stage runs send."
+        )
+        self.preview_production = SegmentButton(
+            "Production", tooltip="Preview the email Production runs send."
+        )
         self._preview_stage = QButtonGroup(self)
-        for button, tip in (
-            (self.preview_testing, "Preview the email Testing-stage runs send."),
-            (self.preview_production, "Preview the email Production runs send."),
-        ):
-            button.setCheckable(True)
-            button.setProperty("segment", True)  # the checked one shows in the accent colour
-            button.setToolTip(tip)
-            self._preview_stage.addButton(button)
+        for button in (self.preview_testing, self.preview_production):
+            self._preview_stage.addButton(button)  # the checked one shows in the accent colour
         live = self._preview_job.get("stage") == "live"
         (self.preview_production if live else self.preview_testing).setChecked(True)
         self._preview_stage.buttonClicked.connect(lambda *_: self._preview())
@@ -256,12 +256,12 @@ class EmailTemplateDialog(FormDialog):
         segments.setSpacing(0)
         segments.addWidget(self.preview_testing)
         segments.addWidget(self.preview_production)
-        self.preview_testing.setProperty("segmentPos", "first")
-        self.preview_production.setProperty("segmentPos", "last")
+        segmented([self.preview_testing, self.preview_production])
         preview_head.addLayout(segments)
         preview_col.addLayout(preview_head)
         self.preview_error = QLabel("")
         self.preview_error.setObjectName("previewError")
+        self.preview_error.setProperty("banner", "danger")
         self.preview_error.setWordWrap(True)
         self.preview_error.hide()
         preview_col.addWidget(self.preview_error)
@@ -269,11 +269,7 @@ class EmailTemplateDialog(FormDialog):
         self.preview.setObjectName("emailPreview")
         self.preview.setOpenExternalLinks(False)
         # Emails are designed on white — the preview is a deliberate light island inside the
-        # dark app so it shows what recipients actually see.
-        self.preview.setStyleSheet(
-            "QTextBrowser { background: #ffffff; color: #1a1a1a; border: 1px solid #363b47; "
-            "border-radius: 6px; padding: 8px; }"
-        )
+        # dark app so it shows what recipients actually see (QTextBrowser#emailPreview).
         preview_col.addWidget(self.preview, 1)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -300,7 +296,7 @@ class EmailTemplateDialog(FormDialog):
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
         self._save_button_widget = buttons.button(QDialogButtonBox.StandardButton.Save)
-        self._save_button_widget.setProperty("accent", True)
+        set_variant(self._save_button_widget, "primary")
         layout.addWidget(buttons)
 
     # -- form behaviour (FormDialog) ------------------------------------------------

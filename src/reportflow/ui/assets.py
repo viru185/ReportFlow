@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
 
@@ -20,10 +20,17 @@ def _assets_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "assets"
 
 
-def asset_icon(name: str) -> QIcon:
-    """An icon from the assets folder (empty if the file is missing)."""
+def asset_icon(name: str, *, disabled: str | None = None) -> QIcon:
+    """An icon from the assets folder (empty if the file is missing). ``disabled`` names
+    the file to show while its button is disabled (e.g. a grey play for a white one)."""
     path = _assets_dir() / name
-    return QIcon(str(path)) if path.exists() else QIcon()
+    if not path.exists():
+        return QIcon()
+    icon = QIcon(str(path))
+    off = _assets_dir() / disabled if disabled else None
+    if off is not None and off.exists():
+        icon.addFile(str(off), QSize(), QIcon.Mode.Disabled)
+    return icon
 
 
 def logo_path() -> Path | None:

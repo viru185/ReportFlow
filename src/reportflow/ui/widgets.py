@@ -96,12 +96,11 @@ class CenteredCheckDelegate(QStyledItemDelegate):
 
 
 def scroll_page(content: QWidget) -> QScrollArea:
-    """Keep dialog actions visible when content exceeds a small screen."""
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-    scroll.setWidget(content)
-    return scroll
+    """Keep dialog actions visible when content exceeds a small screen. Pages scroll
+    vertically only — content wider than the window is a layout bug, not a scroll."""
+    from reportflow.ui.kit.views import ScrollArea
+
+    return ScrollArea(content)
 
 
 class FlowLayout(QLayout):

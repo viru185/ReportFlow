@@ -58,7 +58,7 @@ def test_editor_pages_scroll_with_actions_outside_content(qtbot):
     qtbot.addWidget(dialog)
     assert all(isinstance(dialog.tabs.widget(i), QScrollArea) for i in range(5))
     buttons = dialog.findChild(QDialogButtonBox)
-    assert buttons.button(QDialogButtonBox.StandardButton.Save).property("accent")
+    assert buttons.button(QDialogButtonBox.StandardButton.Save).property("variant") == "primary"
 
 
 def test_schedule_pending_time_requires_add_and_duplicates_are_disabled(qtbot):
@@ -140,6 +140,59 @@ def test_editor_reflows_without_horizontal_scrolling_and_keeps_save_visible(
     assert dialog.payload()["workbooks"] == job["workbooks"]
 
 
+_LONG_FOLDER = (
+    r"C:\Users\someone\Work\cerebulb\teams_download\PI_Vision_Report_01_Oct_to_31_Oct"
+    r"\PI_Vision_Report_01_Oct_to_31_Oct"
+)
+_SITES = ["Aditya", "Dahej", "Hirakud", "Mahan", "Muri", "Renukoot", "Renusagar", "Utkal"]
+_SHEETS = ["Query 01", "Query 02", "PI Vision", "Monthly Energy Report — Smelter Potline 1"] + [
+    f"Sheet {i}" for i in range(11)
+]
+
+
+def _real_world_job() -> dict:
+    """What the owner's laptop showed: 8 long-named workbooks, one on a UNC share, 15 sheets."""
+    from tests.ui.test_ui import _sample_job_dict
+
+    job = _sample_job_dict()
+    job["workbooks"] = [
+        {
+            "input_excel_path": (
+                r"\\ZWUSEAPAEMS003\Shared\Reports\Monthly\PI_Vision_Report_01_Oct_to_31_Oct"
+                if site == "Utkal"
+                else _LONG_FOLDER
+            )
+            + f"\\{site}_PI_Vision_01_Oct_to_31_Oct.xlsx",
+            "sheets": [
+                {"name": s, "excel": True, "pdf": True, "hidden": False} for s in _SHEETS[:3]
+            ],
+            "unselected_sheets": "remove",
+        }
+        for site in _SITES
+    ]
+    return job
+
+
+@pytest.mark.parametrize("width", [640, 900, 1280, 1920])
+def test_long_real_world_names_never_scroll_the_general_tab_sideways(qtbot, themed_app, width):
+    from tests.ui.test_ui import FakeApi
+
+    dialog = JobEditorDialog(FakeApi(sheets=_SHEETS), _real_world_job())
+    qtbot.addWidget(dialog)
+    dialog.resize(width, 720)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    page = dialog.tabs.widget(0)
+    for index in range(len(_SITES)):
+        dialog._show_workbook(index)
+        qtbot.waitUntil(lambda: page.horizontalScrollBar().maximum() == 0)
+        content = page.widget()
+        assert content.minimumSizeHint().width() <= page.viewport().width()
+    # The names in the list keep both their start and their extension.
+    name = dialog.wb_list.rows()[0].name
+    assert name.full_text() == "Aditya_PI_Vision_01_Oct_to_31_Oct.xlsx"
+
+
 @pytest.mark.parametrize("stage", ["live", "testing"])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_job_card_run_status_and_stage_alignment(qtbot, themed_app, stage, enabled):
@@ -167,8 +220,8 @@ def test_job_card_run_status_and_stage_alignment(qtbot, themed_app, stage, enabl
         labels = card.findChildren(QLabel)
         assert not any("PAUSED" in label.text() for label in labels)
         assert any("running ·" in label.text() for label in labels) == (status == "running")
-        run = next(b for b in card.findChildren(QPushButton) if b.text() == "▶ Run")
-        build = next(b for b in card.findChildren(QPushButton) if b.text() == "👁 Build only")
+        run = next(b for b in card.findChildren(QPushButton) if b.text() == "Run")
+        build = next(b for b in card.findChildren(QPushButton) if b.text() == "Build only")
         assert run.isEnabled() == build.isEnabled() == (status != "running")
         badge = card.findChild(QLabel, "jobStage")
         qtbot.waitUntil(lambda badge=badge: badge.isVisible() and badge.height() > 0)
@@ -201,7 +254,7 @@ def test_job_card_double_click_text_opens_edit_but_actions_stay_separate(qtbot, 
     qtbot.mouseDClick(card, Qt.MouseButton.LeftButton)
     assert edits == ["daily"]
     edits.clear()
-    run = next(button for button in card.findChildren(QPushButton) if button.text() == "▶ Run")
+    run = next(button for button in card.findChildren(QPushButton) if button.text() == "Run")
     qtbot.mouseDClick(run, Qt.MouseButton.LeftButton)
     assert edits == []
     qtbot.mouseClick(run, Qt.MouseButton.LeftButton)

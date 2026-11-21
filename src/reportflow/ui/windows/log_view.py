@@ -9,23 +9,22 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
-    QPushButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.assets import asset_icon
+from reportflow.ui.kit import ComboBox, IconButton, ListWidget
 from reportflow.ui.log_format import LogHighlighter, filter_log_text
-from reportflow.ui.style import status_badge
+from reportflow.ui.style import WARNING, status_badge
 
 _TERMINAL_STATUSES = frozenset({"success", "failed", "timed_out", "crashed"})
 _LEVELS = ("All", "Debug", "Info", "Success", "Warning", "Error")
@@ -42,7 +41,7 @@ class RunHistoryDialog(QDialog):
         self.resize(880, 560)
 
         # -- left: runs list --
-        self.runs = QListWidget()
+        self.runs = ListWidget()
         self.runs.setWordWrap(True)
         self.runs.setSpacing(4)
         self.runs.currentItemChanged.connect(lambda *_: self._show_selected())
@@ -68,14 +67,11 @@ class RunHistoryDialog(QDialog):
 
         self.email_banner = QLabel("")
         self.email_banner.setWordWrap(True)
-        self.email_banner.setStyleSheet(
-            "QLabel { background: #3b1a1a; color: #f8b4b4; border: 1px solid #a33; "
-            "border-radius: 4px; padding: 4px 8px; }"
-        )
+        self.email_banner.setProperty("banner", "danger")
         self.email_banner.setVisible(False)
         right_lay.addWidget(self.email_banner)
 
-        self.level = QComboBox()
+        self.level = ComboBox(min_chars=7)
         self.level.addItems(_LEVELS)
         self.level.setToolTip("Only show log lines at or above this level.")
         self.level.currentIndexChanged.connect(lambda *_: self._render_log())
@@ -88,6 +84,9 @@ class RunHistoryDialog(QDialog):
         filter_row.addWidget(QLabel("Level:"))
         filter_row.addWidget(self.level)
         filter_row.addWidget(self.search, 1)
+        refresh = IconButton(asset_icon("refresh.svg"), "Refresh the list of runs")
+        refresh.clicked.connect(self.reload)
+        filter_row.addWidget(refresh)
         right_lay.addLayout(filter_row)
 
         self.log = QPlainTextEdit()
@@ -106,18 +105,9 @@ class RunHistoryDialog(QDialog):
         splitter.setSizes([220, 640])
         splitter.setHandleWidth(12)
 
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.reload)
-        close = QPushButton("Close")
-        close.clicked.connect(self.accept)
-        btns = QHBoxLayout()
-        btns.addWidget(refresh)
-        btns.addStretch()
-        btns.addWidget(close)
-
+        # No Close button: the title bar has one, and Esc closes the window too.
         root = QVBoxLayout(self)
         root.addWidget(splitter, 1)
-        root.addLayout(btns)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(16)
         left_lay.setSpacing(12)
@@ -174,7 +164,7 @@ class RunHistoryDialog(QDialog):
         self._set_badge(r.get("status"))
         warnings = r.get("warnings") or []
         warn_line = (
-            f"<br><span style='color:#fbbf24;'>warnings: {'; '.join(warnings)}</span>"
+            f"<br><span style='color:{WARNING};'>warnings: {'; '.join(warnings)}</span>"
             if warnings
             else ""
         )

@@ -11,10 +11,8 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QLabel,
-    QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -22,6 +20,7 @@ from PySide6.QtWidgets import (
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.feedback import toast
 from reportflow.ui.fs_util import open_start_dir, reveal, save_start_path
+from reportflow.ui.kit import Button, ListWidget, set_variant
 from reportflow.ui.transfer import (
     TransferError,
     copy_name,
@@ -51,7 +50,7 @@ class _SelectListDialog(QDialog):
         label.setWordWrap(True)
         layout.addWidget(label)
 
-        self.list = QListWidget()
+        self.list = ListWidget()
         self.list.setWordWrap(True)
         self.list.setSpacing(4)
         for name in names:
@@ -61,7 +60,7 @@ class _SelectListDialog(QDialog):
             self.list.addItem(item)
         layout.addWidget(self.list)
 
-        toggle = QPushButton("Select all / none")
+        toggle = Button("Select all / none")
         toggle.clicked.connect(self._toggle)
         layout.addWidget(toggle)
 
@@ -70,7 +69,7 @@ class _SelectListDialog(QDialog):
         )
         buttons.accepted.connect(self._on_ok)
         buttons.rejected.connect(self.reject)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setProperty("accent", True)
+        set_variant(buttons.button(QDialogButtonBox.StandardButton.Ok), "primary")
         layout.addWidget(buttons)
         space_layout(layout)
 

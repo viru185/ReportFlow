@@ -25,12 +25,8 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
-    QMenu,
     QMessageBox,
-    QPushButton,
-    QScrollArea,
     QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -38,12 +34,12 @@ from PySide6.QtWidgets import (
 from reportflow import __about__ as about
 from reportflow.core import paths
 from reportflow.ui.api_client import ApiClient, ApiError
-from reportflow.ui.assets import logo_pixmap
+from reportflow.ui.assets import asset_icon, logo_pixmap
 from reportflow.ui.feedback import restore_geometry, save_geometry, toast
 from reportflow.ui.fs_util import reveal, save_start_path
+from reportflow.ui.kit import Button, IconButton, Menu, ScrollArea, Tag
 from reportflow.ui.schedule_compile import ago_text, describe, friendly_time
 from reportflow.ui.style import (
-    TEXT_MUTED,
     card_frame,
     connection_pill,
     stage_badge,
@@ -184,7 +180,7 @@ class MainWindow(QMainWindow):
         logo = QLabel()
         logo.setPixmap(logo_pixmap(24))
         title = QLabel(about.NAME)
-        title.setStyleSheet("font-size: 15px; font-weight: 700;")
+        title.setProperty("size", "title")
         header.addWidget(logo)
         header.addWidget(title)
         header.addSpacing(16)
@@ -195,11 +191,14 @@ class MainWindow(QMainWindow):
         for pill, _value in (self.card_jobs, self.card_active, self.card_failures):
             header.addWidget(pill)
         header.addStretch()
-        new_btn = QPushButton("+ New Job")
-        new_btn.setProperty("accent", True)
+        new_btn = Button("+ New Job", variant="primary")
         new_btn.clicked.connect(self._new_job)
-        refresh_btn = QPushButton("⟳")
-        refresh_btn.setToolTip("Refresh now — the dashboard auto-refreshes every 4 seconds.")
+        refresh_btn = IconButton(
+            asset_icon("refresh.svg"),
+            "Refresh now — the dashboard auto-refreshes every 4 seconds.",
+            variant="tool",
+            size=0,
+        )
         refresh_btn.clicked.connect(self.refresh)
         header.addWidget(new_btn)
         header.addWidget(refresh_btn)
@@ -211,9 +210,7 @@ class MainWindow(QMainWindow):
         # Warning banner shown when the service runs as LocalSystem (VSTO/PI add-ins can't
         # load there → reports come out #NAME?). Hidden until refresh() detects it.
         self.system_banner = QFrame()
-        self.system_banner.setStyleSheet(
-            "QFrame { background: #5a1e1e; border: 1px solid #a33; border-radius: 4px; }"
-        )
+        self.system_banner.setProperty("banner", "danger")
         banner_row = QHBoxLayout(self.system_banner)
         banner_row.setContentsMargins(10, 4, 10, 4)
         banner_label = QLabel(
@@ -221,8 +218,7 @@ class MainWindow(QMainWindow):
             "Set a Windows account to fix it."
         )
         banner_label.setWordWrap(True)
-        banner_fix = QPushButton("Set account…")
-        banner_fix.setProperty("accent", True)
+        banner_fix = Button("Set account…", variant="primary")
         banner_fix.clicked.connect(self._open_service_account)
         banner_row.addWidget(banner_label, 1)
         banner_row.addWidget(banner_fix)
@@ -236,9 +232,7 @@ class MainWindow(QMainWindow):
         self.jobs_layout.setSpacing(12)
         self.jobs_layout.addStretch()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.jobs_container)
+        scroll = ScrollArea(self.jobs_container)
         root.addWidget(scroll, 1)
 
         self.setCentralWidget(central)
@@ -251,9 +245,10 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(10, 3, 10, 3)
         lay.setSpacing(6)
         value_label = QLabel("0")
-        value_label.setStyleSheet("font-size: 14px; font-weight: 700;")
+        value_label.setProperty("size", "stat")
         word = QLabel(label)
-        word.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
+        word.setProperty("muted", True)
+        word.setProperty("size", "small")
         lay.addWidget(value_label)
         lay.addWidget(word)
         return pill, value_label
@@ -375,8 +370,7 @@ class MainWindow(QMainWindow):
         # a trailing spacer previously took all the width and made the name disappear.
         name_row.addWidget(name, 1)
         if job.get("last_email_failed"):
-            email_warn = QLabel("✉ failed")
-            email_warn.setStyleSheet("color: #e06c6c; font-size: 11px;")
+            email_warn = Tag("Email failed", kind="danger")
             email_warn.setToolTip(
                 job.get("last_email_note") or "The last run's report email failed to send."
             )
@@ -414,12 +408,21 @@ class MainWindow(QMainWindow):
         )
 
         def _btn(
-            label: str, tip: str, slot, *, accent: bool = False, active: bool = True
-        ) -> QPushButton:
-            b = QPushButton(label)
-            b.setToolTip(tip)
-            if accent and enabled:
-                b.setProperty("accent", True)
+            label: str,
+            tip: str,
+            slot,
+            *,
+            icon: str,
+            accent: bool = False,
+            active: bool = True,
+        ) -> Button:
+            primary = accent and enabled
+            b = Button(
+                label,
+                variant="primary" if primary else "secondary",
+                icon=asset_icon(icon, disabled="play-muted.svg" if icon == "play.svg" else None),
+                tooltip=tip,
+            )
             if not active:
                 b.setEnabled(False)
                 b.setToolTip("Already running — wait for it to finish.")
@@ -438,60 +441,71 @@ class MainWindow(QMainWindow):
         )
         lay.addWidget(
             _btn(
-                "▶ Run",
+                "Run",
                 run_tip,
                 lambda *_: self._trigger(job_name, mode="run"),
+                icon="play.svg" if enabled else "play-muted.svg",
                 accent=True,
                 active=not running,
             )
         )
         lay.addWidget(
             _btn(
-                "👁 Build only",
+                "Build only",
                 "Builds the report without emailing anyone. Enable Require PI DataLink in "
                 "Advanced to require add-in connection.",
                 lambda *_: self._trigger(job_name, mode="dry"),
+                icon="eye.svg",
                 active=not running,
             )
         )
         if not enabled:
             resume = _btn(
-                "▸ Resume",
+                "Resume",
                 "Re-enable scheduling for this job (one click).",
                 lambda *_: self._set_enabled(job_name, True),
+                icon="play.svg",
             )
-            resume.setProperty("accent", True)  # THE call-to-action on a paused card
+            resume.set_variant("primary")  # THE call-to-action on a paused card
             lay.addWidget(resume)
         elif testing:
             lay.addWidget(
                 _btn(
-                    "✓ Move to production",
+                    "Move to production",
                     "Promote this job: future runs (incl. scheduled) email the Production "
                     "recipients instead of the Test recipients.",
                     lambda *_: self._go_live(job),
+                    icon="promote.svg",
                 )
             )
 
-        more = QToolButton()
-        more.setText("⋯")
-        more.setToolTip("More actions")
-        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(more)
-        menu.setToolTipsVisible(True)
+        more = IconButton(asset_icon("more.svg"), "More actions", variant="tool", size=0)
+        more.setPopupMode(IconButton.ToolButtonPopupMode.InstantPopup)
+        menu = Menu(more)
         menu.addAction(
-            "📂 Open last report", lambda *_, j=job: self._open_last_report(j)
+            asset_icon("folder.svg"),
+            "Open last report",
+            lambda *_, j=job: self._open_last_report(j),
         ).setToolTip("Open the last report's folder (file selected).")
-        menu.addAction("✎ Edit", lambda *_: self._edit_job(job_name))
-        menu.addAction("Logs", lambda *_: self._view_logs(job_name))
-        menu.addAction("⧉ Duplicate", lambda *_: self._duplicate_job(job_name))
+        menu.addAction(asset_icon("edit.svg"), "Edit", lambda *_: self._edit_job(job_name))
+        menu.addAction(asset_icon("list.svg"), "Logs", lambda *_: self._view_logs(job_name))
+        menu.addAction(
+            asset_icon("copy.svg"), "Duplicate", lambda *_: self._duplicate_job(job_name)
+        )
         if testing and not enabled:
             # Promote is normally a visible button; on a paused card Resume takes that
             # slot, so keep Go live reachable here.
-            menu.addAction("✓ Move to production", lambda *_, j=job: self._go_live(j))
+            menu.addAction(
+                asset_icon("promote.svg"),
+                "Move to production",
+                lambda *_, j=job: self._go_live(j),
+            )
         if enabled:
-            menu.addAction("⏸ Pause", lambda *_: self._set_enabled(job_name, False))
+            menu.addAction(
+                asset_icon("pause.svg"), "Pause", lambda *_: self._set_enabled(job_name, False)
+            )
         menu.addSeparator()
-        menu.addAction("🗑 Delete", lambda *_: self._delete_job(job_name))
+        menu.addAction(asset_icon("trash.svg"), "Delete", lambda *_: self._delete_job(job_name))
         menu.aboutToHide.connect(self._on_card_menu_closed)
         more.setMenu(menu)
         card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

@@ -43,15 +43,39 @@ ACCENT = "#3b82f6"  # primary blue
 ACCENT_HOVER = "#60a5fa"
 LINK = "#60a5fa"
 ERROR = "#e06c6c"  # invalid field outline, field error text
+# Tones: bright text on a deep tinted surface (pills, banners, tags).
+SUCCESS = "#4ade80"
+SUCCESS_BG = "#14331f"
+WARNING = "#fbbf24"
+WARNING_BG = "#3a2c10"
+WARNING_BORDER = "#6b4f12"
+DANGER = "#f87171"
+DANGER_BG = "#3b1a1a"
+DANGER_BORDER = "#7f1d1d"
+INFO = "#9cc3f5"
+INFO_BG = "#172c48"
+INFO_BORDER = "#355d8c"
+NEUTRAL = "#c3c8d4"
+NEUTRAL_BG = "#2b2f3a"
+SELECTED_BG = "#1f3350"  # a selected row in any list
+RAISED_BG = "#262b36"  # toasts and popovers float above cards
 
 STATUS_COLORS: dict[str, tuple[str, str]] = {
     # status -> (foreground, background) — bright text on a deep tinted pill
-    "success": ("#4ade80", "#14331f"),
-    "failed": ("#f87171", "#3b1a1a"),
-    "timed_out": ("#f87171", "#3b1a1a"),
-    "crashed": ("#f87171", "#3b1a1a"),
-    "running": ("#fbbf24", "#3a2c10"),
-    "never": ("#c3c8d4", "#2b2f3a"),
+    "success": (SUCCESS, SUCCESS_BG),
+    "failed": (DANGER, DANGER_BG),
+    "timed_out": (DANGER, DANGER_BG),
+    "crashed": (DANGER, DANGER_BG),
+    "running": (WARNING, WARNING_BG),
+    "never": (NEUTRAL, NEUTRAL_BG),
+}
+# status -> the tone its pill uses (QLabel[badge="…"] in the QSS)
+_STATUS_TONES = {
+    "success": "success",
+    "failed": "danger",
+    "timed_out": "danger",
+    "crashed": "danger",
+    "running": "warning",
 }
 
 
@@ -109,17 +133,17 @@ QLabel[section="true"] {{
     padding-bottom: 4px;
 }}
 QLabel#scheduleOverview {{
-    background: #172c48;
-    border: 1px solid #355d8c;
+    background: {INFO_BG};
+    border: 1px solid {INFO_BORDER};
     border-radius: 6px;
     padding: 8px 12px;
     font-size: 14px;
     font-weight: 600;
 }}
 QLabel#scheduleOverview[state="warning"] {{
-    background: #3a2c10;
-    border-color: #6b4f12;
-    color: #fbbf24;
+    background: {WARNING_BG};
+    border-color: {WARNING_BORDER};
+    color: {WARNING};
 }}
 QFrame[timePill="true"] {{
     background: #172c48;
@@ -134,46 +158,7 @@ QLabel#timePillText {{
     color: #dbeafe;
     font-weight: 600;
 }}
-QToolButton#timePillRemove {{
-    background: transparent;
-    border: none;
-    border-radius: 10px;
-    color: #9cc3f5;
-    font-size: 14px;
-    padding: 0;
-}}
-QToolButton#timePillRemove:hover {{
-    background: #3b2326;
-    color: #f87171;
-}}
-QPushButton#addTime {{
-    background: transparent;
-    border: 1px dashed {BORDER_HOVER};
-    border-radius: 13px;
-    color: {ACCENT_HOVER};
-    padding: 2px 12px;
-    min-height: 20px;
-}}
-QPushButton#addTime:hover {{
-    border-color: {ACCENT};
-    background: rgba(59, 130, 246, 0.08);
-}}
-QPushButton#removeSchedule {{
-    background: transparent;
-    border-color: transparent;
-    color: {TEXT_MUTED};
-    padding: 4px 10px;
-}}
-QPushButton#removeSchedule:hover {{
-    color: #f87171;
-    border-color: #7f1d1d;
-}}
-QFrame#timePopover {{
-    background: {CARD_BG};
-    border: 1px solid {BORDER_HOVER};
-    border-radius: 8px;
-}}
-QLabel#timePopoverTitle {{
+QLabel#timePopoverTitle, QLabel[popoverTitle="true"] {{
     font-weight: 600;
 }}
 QFrame[recipientField="true"] {{
@@ -207,18 +192,6 @@ QFrame[recipientChip="true"] QLabel#chipText {{
 }}
 QFrame[groupChip="true"] QLabel#chipText {{
     color: #dbeafe;
-}}
-QFrame[recipientChip="true"] QToolButton#chipRemove {{
-    background: transparent;
-    border: none;
-    border-radius: 9px;
-    color: {TEXT_MUTED};
-    font-size: 14px;
-    padding: 0;
-}}
-QFrame[recipientChip="true"] QToolButton#chipRemove:hover {{
-    background: #3b2326;
-    color: #f87171;
 }}
 QGroupBox {{
     background: {CARD_BG};
@@ -260,19 +233,98 @@ QPushButton[segment="true"]:checked {{
     color: #ffffff;
     font-weight: 600;
 }}
-QPushButton[accent="true"] {{
+/* -- button variants (ui/kit/buttons.py) -- */
+QPushButton[variant="primary"] {{
     background: {ACCENT};
     border-color: {ACCENT};
     color: #ffffff;
     font-weight: 600;
 }}
-QPushButton[accent="true"]:hover {{
+QPushButton[variant="primary"]:hover {{
     background: {ACCENT_HOVER};
+    border-color: {ACCENT_HOVER};
+    color: #ffffff;
 }}
-QPushButton[accent="true"]:disabled {{
+QPushButton[variant="primary"]:pressed {{
+    background: #2563eb;
+}}
+QPushButton[variant="primary"]:disabled {{
     background: {CARD_BG};
     border-color: {BORDER};
     color: {TEXT_MUTED};
+}}
+QPushButton[variant="quiet"], QPushButton[variant="quiet-danger"] {{
+    background: transparent;
+    border-color: transparent;
+    color: {TEXT_MUTED};
+}}
+QPushButton[variant="quiet"]:hover {{
+    background: {FIELD_BG};
+    color: {TEXT};
+}}
+QPushButton[variant="quiet-danger"]:hover, QPushButton[variant="danger"]:hover {{
+    background: {DANGER_BG};
+    border-color: {DANGER_BORDER};
+    color: {DANGER};
+}}
+QPushButton[variant="dashed"] {{
+    background: transparent;
+    border: 1px dashed {BORDER_HOVER};
+    color: {ACCENT_HOVER};
+}}
+QPushButton[variant="dashed"]:hover {{
+    border-color: {ACCENT};
+    background: rgba(59, 130, 246, 0.08);
+}}
+QPushButton[small="true"] {{
+    padding: 3px 10px;
+    min-height: 16px;
+}}
+QPushButton[pill="true"] {{
+    border-radius: 13px;
+    padding: 2px 12px;
+    min-height: 20px;
+}}
+QToolButton[variant="icon"], QToolButton[variant="icon-danger"] {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0;
+    color: {TEXT_MUTED};
+}}
+QToolButton[variant="icon"]:hover, QToolButton[variant="icon-danger"]:hover {{
+    background: {FIELD_BG};
+    border-color: {BORDER_HOVER};
+    color: {TEXT};
+}}
+QToolButton[variant="icon-danger"]:hover {{
+    background: {DANGER_BG};
+    border-color: {DANGER_BORDER};
+    color: {DANGER};
+}}
+QToolButton[variant="icon"]:disabled {{
+    color: {BORDER_HOVER};
+}}
+QToolButton[variant="close"], QToolButton[variant="dismiss"] {{
+    background: transparent;
+    border: none;
+    border-radius: 9px;
+    color: {TEXT_MUTED};
+    font-size: 14px;
+    padding: 0;
+}}
+QToolButton[variant="close"]:hover {{
+    background: #3b2326;
+    color: {DANGER};
+}}
+QToolButton[variant="dismiss"]:hover {{
+    background: rgba(255, 255, 255, 0.08);
+    color: {TEXT};
+}}
+QToolButton[variant="tool"] {{
+    padding: 6px 10px;
+    min-height: 20px;
+    min-width: 16px;
 }}
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QTextBrowser, QListWidget,
 QTimeEdit, QTableWidget {{
@@ -350,39 +402,76 @@ QSpinBox::up-arrow, QTimeEdit::up-arrow {{
     width: 12px;
     height: 12px;
 }}
-QComboBox QAbstractItemView {{
+/* Dropdown lists drop BELOW the field (not over it) in a rounded panel; the rows are drawn
+   by kit.views.PopupItemDelegate. The popup window is translucent (kit.popups.round_popup),
+   so the radius here is the real shape. */
+QComboBox {{
+    combobox-popup: 0;
+}}
+QFrame#popupContainer {{
+    background: transparent;
+    border: none;
+}}
+QListView#popupList {{
     background: {CARD_BG};
     color: {TEXT};
-    border: 1px solid {BORDER};
-    selection-background-color: {ACCENT};
-    selection-color: #ffffff;
+    border: 1px solid {BORDER_HOVER};
+    border-radius: 8px;
+    padding: 4px;
+    outline: none;
+}}
+/* A completer's list is itself the popup window and paints its own panel (kit.PopupList). */
+QListView#completerPopup {{
+    background: transparent;
+    border: none;
+    padding: 0;
+    outline: none;
+}}
+/* -- lists and tables: inner padding keeps a selected row clear of the rounded frame -- */
+QListWidget {{
+    padding: 4px;
+    outline: none;
 }}
 QListWidget::item {{
     color: {TEXT};
-    padding: 2px;
+    padding: 4px 6px;
+    border-radius: 6px;
+}}
+QListWidget::item:hover {{
+    background: rgba(255, 255, 255, 0.04);
 }}
 QListWidget::item:selected {{
-    background: {ACCENT};
-    color: #ffffff;
+    background: {SELECTED_BG};
+    color: {TEXT};
 }}
 QTableWidget {{
     gridline-color: {BORDER};
+    padding: 4px;
+    outline: none;
 }}
 QTableWidget::item {{
+    color: {TEXT};
+}}
+QTableWidget::item:selected {{
+    background: {SELECTED_BG};
     color: {TEXT};
 }}
 QTableWidget::item:disabled {{
     color: {TEXT_MUTED};
 }}
+QHeaderView {{
+    background: transparent;
+}}
 QHeaderView::section {{
-    background: {CARD_BG};
+    background: transparent;
     color: {TEXT_MUTED};
     border: none;
     border-bottom: 1px solid {BORDER};
-    padding: 3px 6px;
+    padding: 6px 8px;
+    font-weight: 600;
 }}
 QTableCornerButton::section {{
-    background: {CARD_BG};
+    background: transparent;
     border: none;
 }}
 QCheckBox, QRadioButton {{
@@ -462,17 +551,34 @@ QMenuBar::item:selected {{
     background: {FIELD_BG};
     color: {ACCENT_HOVER};
 }}
+/* Menus and tooltips are translucent windows (kit.popups.round_popup / kit.chrome), so
+   these radii are their real shape. */
 QMenu {{
     background: {CARD_BG};
     color: {TEXT};
-    border: 1px solid {BORDER};
+    border: 1px solid {BORDER_HOVER};
+    border-radius: 8px;
+    padding: 4px;
 }}
 QMenu::item {{
-    padding: 5px 24px 5px 16px;
+    padding: 6px 28px 6px 12px;
+    border-radius: 6px;
+    background: transparent;
 }}
 QMenu::item:selected {{
-    background: {ACCENT};
-    color: #ffffff;
+    background: {SELECTED_BG};
+    color: {TEXT};
+}}
+QMenu::item:disabled {{
+    color: {TEXT_MUTED};
+}}
+QMenu::icon {{
+    padding-left: 8px;
+}}
+QMenu::separator {{
+    height: 1px;
+    background: {BORDER};
+    margin: 4px 8px;
 }}
 QStatusBar {{
     background: {CARD_BG};
@@ -480,46 +586,58 @@ QStatusBar {{
     color: {TEXT_MUTED};
 }}
 QToolTip {{
-    background: {FIELD_BG};
+    background: {RAISED_BG};
     color: {TEXT};
-    border: 1px solid {BORDER};
-    padding: 5px 8px;
+    border: 1px solid {BORDER_HOVER};
+    border-radius: 6px;
+    padding: 6px 10px;
 }}
 QScrollArea {{
     border: none;
     background: transparent;
 }}
+/* Slim, minimal scrollbars: no track, no arrows, a thin rounded thumb that brightens under
+   the pointer and turns accent while dragged. */
 QScrollBar:vertical {{
-    background: {BG};
-    width: 12px;
-    margin: 0;
-}}
-QScrollBar::handle:vertical {{
-    background: {BORDER};
-    border-radius: 5px;
-    min-height: 24px;
-    margin: 2px;
-}}
-QScrollBar::handle:vertical:hover {{
-    background: {TEXT_MUTED};
+    background: transparent;
+    width: 10px;
+    margin: 2px 0;
 }}
 QScrollBar:horizontal {{
-    background: {BG};
-    height: 12px;
-    margin: 0;
+    background: transparent;
+    height: 10px;
+    margin: 0 2px;
+}}
+QScrollBar::handle:vertical {{
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 3px;
+    min-height: 32px;
+    margin: 0 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {BORDER};
-    border-radius: 5px;
-    min-width: 24px;
-    margin: 2px;
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 3px;
+    min-width: 32px;
+    margin: 2px 0;
+}}
+QScrollBar::handle:hover {{
+    background: rgba(255, 255, 255, 0.32);
+}}
+QScrollBar::handle:pressed {{
+    background: rgba(96, 165, 250, 0.7);
 }}
 QScrollBar::add-line, QScrollBar::sub-line {{
     height: 0;
     width: 0;
+    border: none;
+    background: none;
 }}
 QScrollBar::add-page, QScrollBar::sub-page {{
     background: transparent;
+}}
+QAbstractScrollArea::corner {{
+    background: transparent;
+    border: none;
 }}
 QFrame[card="true"] {{
     background: {CARD_BG};
@@ -561,36 +679,106 @@ QToolButton:pressed {{
 QToolButton::menu-indicator {{
     image: none;
 }}
-QListView#completerPopup {{
+/* -- popovers (kit.popups.Popover): a translucent window around a rounded panel -- */
+QFrame[popover="true"] {{
+    background: transparent;
+    border: none;
+}}
+QFrame[popoverPanel="true"] {{
     background: {CARD_BG};
-    color: {TEXT};
     border: 1px solid {BORDER_HOVER};
+    border-radius: 10px;
+}}
+/* -- pills: status / stage badges and small tags (kit.labels.Tag) -- */
+QLabel[badge], QLabel[tag] {{
+    border-radius: 8px;
+    padding: 2px 10px;
+    font-weight: 600;
+}}
+QLabel[tag] {{
+    border-radius: 7px;
+    padding: 1px 8px;
+    font-size: 11px;
+}}
+QLabel[badge="success"], QLabel[tag="success"] {{
+    color: {SUCCESS};
+    background: {SUCCESS_BG};
+}}
+QLabel[badge="warning"], QLabel[tag="warning"] {{
+    color: {WARNING};
+    background: {WARNING_BG};
+}}
+QLabel[badge="danger"], QLabel[tag="danger"] {{
+    color: {DANGER};
+    background: {DANGER_BG};
+}}
+QLabel[badge="info"], QLabel[tag="info"] {{
+    color: {INFO};
+    background: {INFO_BG};
+}}
+QLabel[badge="neutral"], QLabel[tag="neutral"] {{
+    color: {NEUTRAL};
+    background: {NEUTRAL_BG};
+}}
+QLabel[badge="muted"] {{
+    color: {TEXT_MUTED};
+    background: {NEUTRAL_BG};
+}}
+/* -- text tones and sizes for plain labels -- */
+QLabel[tone="success"] {{
+    color: {SUCCESS};
+}}
+QLabel[tone="warning"] {{
+    color: {WARNING};
+}}
+QLabel[tone="danger"] {{
+    color: {ERROR};
+}}
+QLabel[size="title"] {{
+    font-size: 15px;
+    font-weight: 700;
+}}
+QLabel[size="stat"] {{
+    font-size: 14px;
+    font-weight: 700;
+}}
+QLabel[size="small"] {{
+    font-size: 12px;
+}}
+QLabel[size="tiny"] {{
+    font-size: 11px;
+}}
+/* -- banners: a tinted strip with a message (and maybe a button) -- */
+QFrame[banner="danger"] {{
+    background: {DANGER_BG};
+    border: 1px solid {DANGER_BORDER};
     border-radius: 6px;
-    padding: 4px;
-    outline: none;
 }}
-QListView#completerPopup::item {{
-    padding: 5px 8px;
-    border-radius: 4px;
+QFrame[banner="warning"] {{
+    background: {WARNING_BG};
+    border: 1px solid {WARNING_BORDER};
+    border-radius: 6px;
 }}
-QListView#completerPopup::item:hover {{
-    background: {FIELD_BG};
+QFrame[banner="danger"] QLabel {{
+    color: #fecaca;
 }}
-QListView#completerPopup::item:selected {{
-    background: {ACCENT};
-    color: #ffffff;
+QFrame[banner="warning"] QLabel {{
+    color: #fde68a;
+}}
+QLabel[banner="danger"] {{
+    background: {DANGER_BG};
+    color: #fca5a5;
+    border: 1px solid {DANGER_BORDER};
+    border-radius: 6px;
+    padding: 6px 10px;
 }}
 /* -- workbook list (ui/windows/workbook_panel.py) -- */
-QListWidget#workbookItems {{
-    padding: 4px;
-    outline: none;
-}}
 QListWidget#workbookItems::item {{
-    border-radius: 6px;
     margin: 1px 0;
+    padding: 0;
 }}
-QListWidget#workbookItems::item:selected {{
-    background: #1f3350;
+QListWidget#workbookItems::item:hover {{
+    background: transparent;
 }}
 QFrame#workbookRow {{
     background: transparent;
@@ -611,28 +799,10 @@ QLabel#workbookStatus {{
     color: {TEXT_MUTED};
 }}
 QLabel#workbookStatus[kind="warning"] {{
-    color: #fbbf24;
+    color: {WARNING};
 }}
 QLabel#workbookStatus[kind="busy"] {{
     color: {ACCENT_HOVER};
-}}
-QToolButton#workbookAction {{
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    padding: 0;
-    color: {TEXT_MUTED};
-}}
-QToolButton#workbookAction:hover {{
-    background: {FIELD_BG};
-    border-color: {BORDER_HOVER};
-}}
-QToolButton#workbookAction[danger="true"] {{
-    font-size: 16px;
-}}
-QToolButton#workbookAction[danger="true"]:hover {{
-    color: #f87171;
-    border-color: #7f1d1d;
 }}
 QLabel#dropHint {{
     font-size: 12px;
@@ -647,14 +817,6 @@ QLabel#workbookTitle {{
 }}
 QLabel#workbookPath {{
     font-size: 12px;
-}}
-QFrame#workbookBanner {{
-    background: #3a2c10;
-    border: 1px solid #6b4f12;
-    border-radius: 6px;
-}}
-QFrame#workbookBanner QLabel {{
-    color: #fde68a;
 }}
 /* -- segmented toggle (e.g. Preview as Testing | Production) -- */
 QPushButton[segment="true"][segmentPos="first"] {{
@@ -681,12 +843,13 @@ QSplitter::handle {{
 QSplitter::handle:hover {{
     background: {CARD_BG};
 }}
-QLabel#previewError {{
-    background: #3b1a1a;
-    color: #fca5a5;
-    border: 1px solid #7f1d1d;
+/* Emails are designed on white: the template preview is a deliberate light island. */
+QTextBrowser#emailPreview {{
+    background: #ffffff;
+    color: #1a1a1a;
+    border: 1px solid {BORDER};
     border-radius: 6px;
-    padding: 6px 10px;
+    padding: 8px;
 }}
 /* -- placeholder picker (ui/placeholder_picker.py) -- */
 QListWidget#placeholderList {{
@@ -721,17 +884,6 @@ QLabel#placeholderAbout {{
     color: {TEXT_MUTED};
     font-size: 12px;
 }}
-QPushButton#placeholderInsert {{
-    background: transparent;
-    border-color: {BORDER};
-    color: {TEXT_MUTED};
-    padding: 3px 12px;
-    min-height: 16px;
-}}
-QPushButton#placeholderInsert:hover {{
-    border-color: {ACCENT};
-    color: {ACCENT_HOVER};
-}}
 /* -- feedback (ui/feedback.py) -- */
 QLineEdit[invalid="true"], QComboBox[invalid="true"], QSpinBox[invalid="true"],
 QPlainTextEdit[invalid="true"], QTimeEdit[invalid="true"], QListWidget[invalid="true"] {{
@@ -746,42 +898,42 @@ QLabel#inlineNotice {{
     color: {TEXT_MUTED};
 }}
 QLabel#inlineNotice[kind="warning"] {{
-    color: #fbbf24;
+    color: {WARNING};
 }}
 QLabel#inlineNotice[kind="error"] {{
     color: {ERROR};
 }}
 QLabel#inlineNotice[kind="success"] {{
-    color: #4ade80;
+    color: {SUCCESS};
 }}
 QFrame#toast {{
-    background: #262b36;
+    background: {RAISED_BG};
     border: 1px solid #424a5a;
     border-radius: 8px;
 }}
 QLabel#toastText {{
     color: {TEXT};
 }}
-QPushButton#toastAction {{
-    background: transparent;
-    border: 1px solid #424a5a;
+QLabel#toastIcon {{
+    border-radius: 10px;
+    color: #10131a;
+    font-weight: 700;
+}}
+QLabel#toastIcon[kind="success"] {{
+    background: {SUCCESS};
+}}
+QLabel#toastIcon[kind="info"] {{
+    background: {ACCENT_HOVER};
+}}
+QLabel#toastIcon[kind="warning"] {{
+    background: {WARNING};
+}}
+QLabel#toastIcon[kind="error"] {{
+    background: {DANGER};
+}}
+QFrame#toast QPushButton {{
     color: {ACCENT_HOVER};
     font-weight: 600;
-    padding: 3px 10px;
-    min-height: 16px;
-}}
-QPushButton#toastAction:hover {{
-    border-color: {ACCENT};
-}}
-QToolButton#toastClose {{
-    background: transparent;
-    border: none;
-    color: {TEXT_MUTED};
-    font-size: 15px;
-    padding: 0 4px;
-}}
-QToolButton#toastClose:hover {{
-    color: {TEXT};
 }}
 """
 
@@ -822,6 +974,10 @@ def apply_theme(app: QApplication) -> None:
     app.setPalette(palette)
 
     app.setStyleSheet(APP_QSS)
+    # Round the menus and tooltips Qt makes itself, and smooth every scroll area.
+    from reportflow.ui.kit.chrome import install_chrome
+
+    install_chrome(app)
 
 
 # -- widget helpers -----------------------------------------------------------------
@@ -857,11 +1013,8 @@ def status_badge(status: str | None, suffix: str = "") -> QLabel:
     text = (status or "never run").replace("_", " ")
     if suffix:
         text = f"{text} {suffix}"
-    fg, bg = status_colors(status)
     label = QLabel(text)
-    label.setStyleSheet(
-        f"color: {fg}; background: {bg}; border-radius: 8px; padding: 2px 10px; font-weight: 600;"
-    )
+    label.setProperty("badge", _STATUS_TONES.get((status or "").lower(), "neutral"))
     return label
 
 
@@ -871,10 +1024,10 @@ def stage_badge(stage: str, *, muted: bool = False) -> QLabel:
     ``muted`` greys it out on a paused job's card, so the whole card reads as asleep.
     """
     live = stage == "live"
-    fg, bg = ("#4ade80", "#14331f") if live else ("#fbbf24", "#3a2c10")
-    if muted:
-        fg, bg = TEXT_MUTED, "#2b2f3a"
     label = QLabel(stage_label(stage))
+    # A property, not an inline stylesheet: an inline one also restyles the pill's tooltip
+    # (it used to show amber text on a square brown box).
+    label.setProperty("badge", "muted" if muted else "success" if live else "warning")
     label.setObjectName("jobStage")
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     label.setFixedWidth(96)
@@ -884,14 +1037,11 @@ def stage_badge(stage: str, *, muted: bool = False) -> QLabel:
         if live
         else "Runs email only the Test recipients until you click Move to production."
     )
-    label.setStyleSheet(
-        f"color: {fg}; background: {bg}; border-radius: 8px; padding: 2px 10px; font-weight: 600;"
-    )
     return label
 
 
 def connection_pill(connected: bool) -> str:
     """Rich-text for the header connection indicator."""
     if connected:
-        return '<span style="color:#4ade80;">●</span> Connected'
-    return '<span style="color:#f87171;">●</span> Service not reachable'
+        return f'<span style="color:{SUCCESS};">●</span> Connected'
+    return f'<span style="color:{DANGER};">●</span> Service not reachable'

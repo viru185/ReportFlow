@@ -34,11 +34,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QSplitter,
     QTextBrowser,
@@ -51,6 +48,7 @@ from reportflow import __about__ as about
 from reportflow.core.email.render import PLACEHOLDERS, render_email, sample_context
 from reportflow.core.output_names import OUTPUT_NAME_TOKENS, expand_output_name
 from reportflow.ui.feedback import restore_geometry, save_geometry
+from reportflow.ui.kit import ListWidget
 from reportflow.ui.style import ACCENT_HOVER, BORDER, CARD_BG, TEXT, TEXT_MUTED
 
 GUIDE_PATH = Path(__file__).resolve().parents[1] / "help" / "user_guide.md"
@@ -323,9 +321,8 @@ class HelpDialog(QDialog):
         self.matches.setProperty("muted", True)
         self.matches.setVisible(False)  # only while searching
         self.matches.setWordWrap(True)
-        self.toc = QListWidget()
+        self.toc = ListWidget()
         self.toc.setObjectName("helpToc")
-        self.toc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.toc.setTextElideMode(Qt.TextElideMode.ElideRight)
         for section in self.sections:
             item = QListWidgetItem(section.title)
@@ -355,18 +352,11 @@ class HelpDialog(QDialog):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([250, 850])
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.clicked.connect(lambda *_: self.accept())
-
+        # No Close button: the title bar has one, and Esc closes the guide too.
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
         layout.addWidget(splitter, 1)
-        bottom = QHBoxLayout()
-        bottom.addStretch(1)
-        bottom.addWidget(buttons)
-        layout.addLayout(bottom)
 
         scroll = self.browser.verticalScrollBar()
         if scroll is not None:

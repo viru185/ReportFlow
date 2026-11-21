@@ -106,7 +106,7 @@ KEPT_FACTS = [
     "0x80070005",
     "manually pasted values",
     "Dry run",
-    "✉ failed",
+    "Email failed",
     "description of the problem",
 ]
 

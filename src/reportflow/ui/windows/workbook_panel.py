@@ -2,9 +2,10 @@
 
 The list replaces the old tab strip, which elided names to "…" once a job had a few files.
 Each row shows the file's name and what the editor knows about it ("3 of 5 sheets", "Reading
-sheets…", "⚠ File not found"); the selected or hovered row offers Replace… and Remove. One
-"+ Add workbooks…" button sits under the list, and Excel files can be dropped anywhere on the
-General tab. A job without workbooks shows a large drop zone instead of an empty list.
+sheets…", "⚠ File not found") across the whole row width; Replace… and Remove sit beside the
+selected workbook's name in the editor, and on each row's right-click menu (Delete removes).
+One "+ Add workbooks…" button sits under the list, and Excel files can be dropped anywhere on
+the General tab. A job without workbooks shows a large drop zone instead of an empty list.
 
 The editor owns the state; this module only shows it (``RowView``) and reports what the user
 asked for through signals.
@@ -17,23 +18,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QListWidgetItem,
-    QMenu,
-    QPushButton,
-    QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from reportflow.ui.assets import asset_icon
 from reportflow.ui.feedback import flash
+from reportflow.ui.kit import Button, ElidedLabel, ListWidget, Menu
 from reportflow.ui.style import ACCENT_HOVER, BORDER_HOVER, CARD_BG, TEXT, TEXT_MUTED
 
 EXCEL_SUFFIXES = (".xlsx", ".xlsm")
@@ -50,57 +47,15 @@ class RowView:
     tooltip: str = ""
 
 
-class ElidedLabel(QLabel):
-    """A one-line label that shortens long text in the middle ("Utkal_PI…31_Oct.xlsx")."""
-
-    def __init__(
-        self,
-        text: str = "",
-        parent: QWidget | None = None,
-        *,
-        mode: Qt.TextElideMode = Qt.TextElideMode.ElideMiddle,
-    ) -> None:
-        super().__init__(parent)
-        self._full = text
-        self._mode = mode
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.setMinimumWidth(40)
-        super().setText(text)
-
-    def setText(self, text: str) -> None:  # noqa: N802
-        self._full = text
-        super().setText(text)
-        self.update()
-
-    def full_text(self) -> str:
-        return self._full
-
-    def sizeHint(self) -> QSize:  # noqa: N802
-        hint = super().sizeHint()
-        return QSize(min(hint.width(), 240), hint.height())
-
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
-        painter = QPainter(self)
-        painter.setPen(self.palette().color(self.foregroundRole()))
-        metrics = QFontMetrics(self.font())
-        shown = metrics.elidedText(self._full, self._mode, self.width())
-        painter.setFont(self.font())
-        painter.drawText(self.rect(), int(self.alignment() | Qt.AlignmentFlag.AlignVCenter), shown)
-
-
 class _Row(QFrame):
-    """One workbook: icon, name, status — and Replace / Remove on the hovered or selected row."""
-
-    replace_clicked = Signal()
-    remove_clicked = Signal()
+    """One workbook: icon, then its name and status over the whole row width."""
 
     def __init__(self, view: RowView) -> None:
         super().__init__()
         self.setObjectName("workbookRow")
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        self._selected = False
         row = QHBoxLayout(self)
-        row.setContentsMargins(10, 8, 6, 8)
+        row.setContentsMargins(10, 8, 10, 8)
         row.setSpacing(10)
         icon = QLabel()
         icon.setPixmap(asset_icon("workbook.svg").pixmap(20, 20))
@@ -115,33 +70,7 @@ class _Row(QFrame):
         text.addWidget(self.name)
         text.addWidget(self.status)
         row.addLayout(text, 1)
-        self.replace_button = self._tool("replace.svg", "Replace this workbook with another file…")
-        self.replace_button.clicked.connect(self.replace_clicked)
-        self.remove_button = self._tool(None, "Remove this workbook from the job")
-        self.remove_button.setText("×")
-        self.remove_button.setProperty("danger", True)
-        self.remove_button.clicked.connect(self.remove_clicked)
-        row.addWidget(self.replace_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(self.remove_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.update_view(view)
-        self._show_actions(False)
-
-    @staticmethod
-    def _tool(icon: str | None, tip: str) -> QToolButton:
-        button = QToolButton()
-        button.setObjectName("workbookAction")
-        if icon:
-            button.setIcon(asset_icon(icon))
-            button.setIconSize(QSize(16, 16))
-        button.setToolTip(tip)
-        button.setAccessibleName(tip)
-        button.setFixedSize(28, 28)
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        policy = button.sizePolicy()
-        policy.setRetainSizeWhenHidden(True)  # showing them never re-elides the name
-        button.setSizePolicy(policy)
-        return button
 
     def update_view(self, view: RowView) -> None:
         self.name.setText(view.name)
@@ -150,22 +79,6 @@ class _Row(QFrame):
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
         self.setToolTip(view.tooltip or view.path)
-
-    def set_selected(self, selected: bool) -> None:
-        self._selected = selected
-        self._show_actions(selected or self.underMouse())
-
-    def _show_actions(self, show: bool) -> None:
-        self.replace_button.setVisible(show)
-        self.remove_button.setVisible(show)
-
-    def enterEvent(self, event: QEvent) -> None:  # noqa: N802
-        self._show_actions(True)
-        super().enterEvent(event)  # type: ignore[arg-type]
-
-    def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
-        self._show_actions(self._selected)
-        super().leaveEvent(event)
 
 
 class WorkbookList(QFrame):
@@ -182,21 +95,19 @@ class WorkbookList(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        self.list = QListWidget()
+        self.list = ListWidget()
         self.list.setObjectName("workbookItems")
-        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._context_menu)
         self.list.currentRowChanged.connect(self._on_current)
         self.list.installEventFilter(self)
         layout.addWidget(self.list, 1)
-        self.add_button = QPushButton("+  Add workbooks…")
-        self.add_button.setObjectName("addWorkbooks")
-        self.add_button.setToolTip(
-            "Add Excel files to this job — pick several at once. Every workbook is built on "
-            "each run and all the files go out in one email."
+        self.add_button = Button(
+            "+  Add workbooks…",
+            tooltip="Add Excel files to this job — pick several at once. Every workbook is "
+            "built on each run and all the files go out in one email.",
         )
+        self.add_button.setObjectName("addWorkbooks")
         self.add_button.clicked.connect(self.add_requested)
         layout.addWidget(self.add_button)
         hint = QLabel("or drop Excel files here")
@@ -238,8 +149,6 @@ class WorkbookList(QFrame):
     def _append(self, view: RowView, index: int | None = None) -> None:
         item = QListWidgetItem()
         row = _Row(view)
-        row.replace_clicked.connect(lambda r=row: self.replace_requested.emit(self._index_of(r)))
-        row.remove_clicked.connect(lambda r=row: self.remove_requested.emit(self._index_of(r)))
         item.setSizeHint(QSize(0, row.sizeHint().height()))
         if index is None:
             self.list.addItem(item)
@@ -273,7 +182,6 @@ class WorkbookList(QFrame):
             self.list.setCurrentRow(index)
         finally:
             self.list.blockSignals(False)
-        self._mark_selected(index)
 
     def current(self) -> int:
         return self.list.currentRow()
@@ -288,21 +196,24 @@ class WorkbookList(QFrame):
     # -- behaviour --
 
     def _on_current(self, index: int) -> None:
-        self._mark_selected(index)
         self.current_changed.emit(index)
-
-    def _mark_selected(self, index: int) -> None:
-        for i, row in enumerate(self.rows()):
-            row.set_selected(i == index)
 
     def _context_menu(self, pos: QPoint) -> None:
         item = self.list.itemAt(pos)
         if item is None:
             return
         index = self.list.row(item)
-        menu = QMenu(self)
-        menu.addAction("Replace with another file…", lambda: self.replace_requested.emit(index))
-        menu.addAction("Remove from this job", lambda: self.remove_requested.emit(index))
+        menu = Menu(self)
+        menu.addAction(
+            asset_icon("replace.svg"),
+            "Replace with another file…",
+            lambda: self.replace_requested.emit(index),
+        )
+        menu.addAction(
+            asset_icon("trash.svg"),
+            "Remove from this job",
+            lambda: self.remove_requested.emit(index),
+        )
         viewport = self.list.viewport()
         if viewport is not None:
             menu.exec(viewport.mapToGlobal(pos))
@@ -340,13 +251,14 @@ class EmptyDropZone(QWidget):
         title = QLabel("Add the Excel workbooks for this report")
         title.setObjectName("dropTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setWordWrap(True)
         layout.addWidget(title)
         hint = QLabel("Drop .xlsx or .xlsm files here — several at once — or")
         hint.setProperty("muted", True)
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setWordWrap(True)
         layout.addWidget(hint)
-        button = QPushButton("+  Add workbooks…")
-        button.setProperty("accent", True)
+        button = Button("+  Add workbooks…", variant="primary")
         button.clicked.connect(self.add_requested)
         row = QHBoxLayout()
         row.addStretch(1)

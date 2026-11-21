@@ -10,23 +10,28 @@ expressions via the pure ``schedule_compile`` helpers.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTime, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTime, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
-    QPushButton,
-    QTimeEdit,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from reportflow.ui.feedback import flash
+from reportflow.ui.kit import (
+    Button,
+    ComboBox,
+    IconButton,
+    Popover,
+    SegmentButton,
+    TimeEdit,
+    segmented,
+)
 from reportflow.ui.schedule_compile import (
     WEEKDAYS,
     ScheduleRule,
@@ -82,58 +87,43 @@ class _TimePill(QFrame):
         label = QLabel(time)
         label.setObjectName("timePillText")
         row.addWidget(label)
-        remove = QToolButton()
+        remove = IconButton("×", f"Remove {time}", variant="close", size=20, focusable=False)
         remove.setObjectName("timePillRemove")
-        remove.setText("×")
-        remove.setFixedSize(20, 20)
-        remove.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        remove.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove.setToolTip(f"Remove {time}")
         remove.setAccessibleName(f"Remove run time {time}")
         remove.clicked.connect(lambda: self.remove_requested.emit(self.time))
         row.addWidget(remove)
         self.remove_button = remove
 
 
-class _TimePopover(QFrame):
+class _TimePopover(Popover):
     """The small picker "+ Add time" opens: choose a time, Add (or Enter), and it closes."""
 
     def __init__(self, row: _RuleRow) -> None:
-        super().__init__(row, Qt.WindowType.Popup)
-        self.setObjectName("timePopover")
+        super().__init__(row, name="timePopover")
         self._row = row
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
         title = QLabel("Add a run time")
         title.setObjectName("timePopoverTitle")
-        layout.addWidget(title)
+        self.body.addWidget(title)
         line = QHBoxLayout()
         line.setSpacing(8)
-        self.time_edit = QTimeEdit()
-        self.time_edit.setDisplayFormat("HH:mm")
+        self.time_edit = TimeEdit()
         self.time_edit.setFixedWidth(110)
         self.time_edit.timeChanged.connect(self._check)
         self.time_edit.installEventFilter(self)
-        self.add_button = QPushButton("Add")
-        self.add_button.setProperty("accent", True)
-        self.add_button.setAutoDefault(False)
+        self.add_button = Button("Add", variant="primary")
         self.add_button.clicked.connect(self.submit)
         line.addWidget(self.time_edit)
         line.addWidget(self.add_button)
-        layout.addLayout(line)
+        self.body.addLayout(line)
         self.error = QLabel("")
         self.error.setObjectName("fieldError")
         self.error.hide()
-        layout.addWidget(self.error)
+        self.body.addWidget(self.error)
 
-    def open_at(self, anchor: QWidget, time: QTime) -> None:
+    def open_for(self, anchor: QWidget, time: QTime) -> None:
         self.time_edit.setTime(time)
         self._check()
-        self.adjustSize()
-        self.move(anchor.mapToGlobal(QPoint(0, anchor.height() + 4)))
-        self.show()
-        self.time_edit.setFocus()
+        self.open_at(anchor, focus=self.time_edit)
         self.time_edit.selectAll()
 
     def _text(self) -> str:
@@ -182,16 +172,14 @@ class _RuleRow(QFrame):
 
         top = QHBoxLayout()
         top.setSpacing(8)
-        self.kind = QComboBox()
+        self.kind = ComboBox(min_chars=8)
         for label, key in _KINDS:
             self.kind.addItem(label, key)
         self.kind.setCurrentIndex(max(self.kind.findData(rule.kind), 0))
         self.kind.setFixedWidth(170)
         self.kind.currentIndexChanged.connect(self._on_kind_changed)
-        delete = QPushButton("Remove")
+        delete = Button("Remove", variant="quiet-danger", tooltip="Remove this schedule")
         delete.setObjectName("removeSchedule")
-        delete.setToolTip("Remove this schedule")
-        delete.setAutoDefault(False)
         delete.clicked.connect(lambda *_: self.remove_requested.emit(self))
         top.addWidget(self.kind)
         top.addStretch()
@@ -204,20 +192,15 @@ class _RuleRow(QFrame):
         wd_lay.setContentsMargins(0, 0, 0, 0)
         wd_lay.setSpacing(0)
         wd_lay.addWidget(_row_label("On"))
-        self.weekday_checks: dict[str, QPushButton] = {}
-        for i, day in enumerate(WEEKDAYS):
-            toggle = QPushButton(day.capitalize())
-            toggle.setCheckable(True)
+        self.weekday_checks: dict[str, SegmentButton] = {}
+        for day in WEEKDAYS:
+            toggle = SegmentButton(day.capitalize())
             toggle.setChecked(day in rule.weekdays)
-            toggle.setAutoDefault(False)
-            toggle.setProperty("segment", True)
-            toggle.setProperty(
-                "segmentPos", "first" if i == 0 else "last" if i == len(WEEKDAYS) - 1 else "mid"
-            )
             toggle.setFixedWidth(52)
             toggle.toggled.connect(lambda *_: self.changed.emit())
             self.weekday_checks[day] = toggle
             wd_lay.addWidget(toggle)
+        segmented(list(self.weekday_checks.values()))
         wd_lay.addStretch()
         lay.addWidget(self.weekday_row)
 
@@ -249,10 +232,10 @@ class _RuleRow(QFrame):
         self._flow.setContentsMargins(0, 0, 0, 0)
         self.no_times = QLabel("No run times yet")
         self.no_times.setProperty("muted", True)
-        self.add_time_button = QPushButton("+ Add time")
+        self.add_time_button = Button(
+            "+ Add time", variant="dashed", pill=True, tooltip="Add a time this schedule runs at"
+        )
         self.add_time_button.setObjectName("addTime")
-        self.add_time_button.setAutoDefault(False)
-        self.add_time_button.setToolTip("Add a time this schedule runs at")
         self.add_time_button.clicked.connect(self.open_time_picker)
         self._flow.addWidget(self.no_times)
         self._flow.addWidget(self.add_time_button)
@@ -302,7 +285,7 @@ class _RuleRow(QFrame):
     def open_time_picker(self) -> _TimePopover:
         if self.popover is None:
             self.popover = _TimePopover(self)
-        self.popover.open_at(self.add_time_button, self._next_free_time())
+        self.popover.open_for(self.add_time_button, self._next_free_time())
         return self.popover
 
     def add_time(self, t: str) -> bool:
@@ -398,8 +381,11 @@ class ScheduleWidget(QWidget):
         self._rules_lay.setSpacing(10)
         layout.addLayout(self._rules_lay)
 
-        add = QPushButton("+ Add schedule")
-        add.setToolTip("Add a daily, weekly, monthly or custom schedule to this job.")
+        add = Button(
+            "+ Add schedule",
+            variant="dashed",
+            tooltip="Add a daily, weekly, monthly or custom schedule to this job.",
+        )
         add.clicked.connect(lambda *_: self.add_rule(ScheduleRule(kind="daily")))
         add_row = QHBoxLayout()
         add_row.addWidget(add)

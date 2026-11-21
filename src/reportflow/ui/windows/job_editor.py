@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
-    QComboBox,
     QCompleter,
     QDialog,
     QDialogButtonBox,
@@ -38,11 +37,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
-    QPushButton,
-    QSpinBox,
     QSplitter,
     QStackedWidget,
-    QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
@@ -58,6 +54,7 @@ from reportflow.core.output_names import (
     overwrites_same_day,
 )
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.assets import asset_icon
 from reportflow.ui.feedback import (
     FormDialog,
     InlineNotice,
@@ -67,6 +64,17 @@ from reportflow.ui.feedback import (
     toast,
 )
 from reportflow.ui.fs_util import open_start_dir
+from reportflow.ui.kit import (
+    Button,
+    ComboBox,
+    ElidedLabel,
+    PathLabel,
+    SpinBox,
+    TableWidget,
+    breakable,
+    set_variant,
+    styled_completer,
+)
 from reportflow.ui.placeholder_picker import (
     PlaceholderButton,
     email_placeholders,
@@ -74,6 +82,7 @@ from reportflow.ui.placeholder_picker import (
 )
 from reportflow.ui.recipient_field import RecipientField, RecipientSet, header_recipients
 from reportflow.ui.sheet_loader import PoolExecutor, SheetLoader, SheetOutcome
+from reportflow.ui.style import WARNING
 from reportflow.ui.suggestions import concurrency_groups, email_groups, known_addresses
 from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
@@ -101,6 +110,7 @@ _UNSELECTED_MODES = [
 _UIDS = itertools.count(1)
 _REREAD_SECONDS = 5.0  # selecting a workbook or returning to the window re-reads at most this often
 _STACK_BELOW = 720  # px: narrower than this, the workbook list sits above the sheets
+_LIST_MIN = 220  # px: the workbook list is never narrower than this side by side
 
 
 def merge_sheets(rows: list[_SheetRow], names: list[str], *, tick_all: bool) -> list[_SheetRow]:
@@ -301,47 +311,67 @@ class JobEditorDialog(FormDialog):
         self.name.setAcceptDrops(False)  # a dropped file goes to the workbook list instead
         # The job's workbooks: a list on the left, the selected one's sheets on the right.
         self.wb_list = WorkbookList()
-        self.wb_list.setMinimumWidth(200)
+        self.wb_list.setMinimumWidth(_LIST_MIN)
         self.wb_list.current_changed.connect(self._on_workbook_selected)
         self.wb_list.add_requested.connect(self._pick_workbooks)
         self.wb_list.replace_requested.connect(self._replace_workbook)
         self.wb_list.remove_requested.connect(self._remove_workbook)
-        self.wb_title = QLabel()
+        # The selected workbook: its name with Replace / Remove beside it, and its folder.
+        # Both are shortened in the middle (full text on hover) — a long path or name never
+        # makes the page wider than the window.
+        self.wb_title = ElidedLabel(max_hint=480)
         self.wb_title.setObjectName("workbookTitle")
-        self.wb_title.setWordWrap(True)
-        self.wb_path = QLabel()
-        self.wb_path.setObjectName("workbookPath")
-        self.wb_path.setProperty("muted", True)
-        self.wb_path.setWordWrap(True)
-        self.wb_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.wb_path = PathLabel()
+        self.wb_path.label.setObjectName("workbookPath")
+        self.wb_replace = Button(
+            "Replace…",
+            icon=asset_icon("replace.svg"),
+            tooltip="Use another file for this workbook — its sheet choices are kept.",
+        )
+        self.wb_replace.clicked.connect(
+            lambda: self._replace_workbook(self._current_wb if self._current_wb is not None else -1)
+        )
+        self.wb_remove = Button(
+            "Remove",
+            variant="danger",
+            icon=asset_icon("trash.svg"),
+            tooltip="Remove this workbook from the job (Undo is offered).",
+        )
+        self.wb_remove.clicked.connect(
+            lambda: self._remove_workbook(self._current_wb if self._current_wb is not None else -1)
+        )
         # Why the sheets can't be shown fresh right now (file missing, unreadable, ...).
         self.wb_banner = QFrame()
         self.wb_banner.setObjectName("workbookBanner")
+        self.wb_banner.setProperty("banner", "warning")
         banner_row = QHBoxLayout(self.wb_banner)
         banner_row.setContentsMargins(12, 8, 8, 8)
         banner_row.setSpacing(8)
         self.wb_banner_text = QLabel()
         self.wb_banner_text.setWordWrap(True)
         banner_row.addWidget(self.wb_banner_text, 1)
-        self.wb_banner_replace = QPushButton("Replace…")
+        self.wb_banner_replace = Button("Replace…")
         self.wb_banner_replace.clicked.connect(
             lambda: self._replace_workbook(self._current_wb if self._current_wb is not None else -1)
         )
-        self.wb_banner_retry = QPushButton("Try again")
+        self.wb_banner_retry = Button("Try again")
         self.wb_banner_retry.clicked.connect(self._retry_current)
         banner_row.addWidget(self.wb_banner_replace)
         banner_row.addWidget(self.wb_banner_retry)
         self.wb_banner.hide()
-        self.sheets = QTableWidget(0, 5)
+        self.sheets = TableWidget(0, 5)
         self.sheets.setHorizontalHeaderLabels(
             ["Sheet", "Include", "Excel attachment", "PDF", "Hidden"]
         )
         self.sheets.verticalHeader().setVisible(False)
         self.sheets.verticalHeader().setDefaultSectionSize(34)
         self.sheets.setTabKeyNavigation(True)
+        # One line per sheet: a long name is shortened ("Monthly Energy Report — Sm…"), with
+        # the full name on hover, instead of wrapping into a cramped two-line row.
+        self.sheets.setWordWrap(False)
+        self.sheets.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.sheets.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.sheets.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.sheets.setShowGrid(False)
         header = self.sheets.horizontalHeader()
         header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         for col in (_COL_INCLUDE, _COL_EXCEL, _COL_PDF, _COL_HIDDEN):
@@ -364,7 +394,7 @@ class JobEditorDialog(FormDialog):
         sheets_hint.setWordWrap(True)
         # What the output copy does with the sheets you did NOT include. One choice covers
         # "keep or remove" and "if kept, hidden or visible".
-        self.nonselected_mode = QComboBox()
+        self.nonselected_mode = ComboBox()
         for label, key in _UNSELECTED_MODES:
             self.nonselected_mode.addItem(label, key)
         self.nonselected_mode.currentIndexChanged.connect(lambda *_: self._store_current())
@@ -387,7 +417,12 @@ class JobEditorDialog(FormDialog):
         details_col = QVBoxLayout(details)
         details_col.setContentsMargins(0, 0, 0, 0)
         details_col.setSpacing(8)
-        details_col.addWidget(self.wb_title)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        title_row.addWidget(self.wb_title, 1)
+        title_row.addWidget(self.wb_replace)
+        title_row.addWidget(self.wb_remove)
+        details_col.addLayout(title_row)
         details_col.addWidget(self.wb_path)
         details_col.addWidget(self.wb_banner)
         details_col.addSpacing(4)
@@ -432,7 +467,7 @@ class JobEditorDialog(FormDialog):
             "the input file."
         )
         self.output_dir.textChanged.connect(self._update_output_example)
-        browse_dir = QPushButton("Browse…")
+        browse_dir = Button("Browse…")
         browse_dir.clicked.connect(self._pick_output_dir)
         dir_row = QHBoxLayout()
         dir_row.addWidget(self.output_dir)
@@ -463,7 +498,7 @@ class JobEditorDialog(FormDialog):
             "recipients see the numbers without needing your data connections."
         )
         # Only meaningful with several workbooks (row hidden otherwise).
-        self.on_failure = QComboBox()
+        self.on_failure = ComboBox()
         self.on_failure.addItem("Fail the whole run — send nothing", "fail_run")
         self.on_failure.addItem("Send the workbooks that worked (with a warning)", "send_partial")
         self.on_failure.setToolTip(
@@ -502,7 +537,7 @@ class JobEditorDialog(FormDialog):
         # Lifecycle stage. New jobs always start in Testing (the combo is locked on create —
         # promotion happens from the job card's "Go live" after a verified run); editing a
         # job exposes it so a live job can be moved back to Testing.
-        self.stage = QComboBox()
+        self.stage = ComboBox()
         self.stage.addItem("Testing — every run emails the Test recipients", "testing")
         self.stage.addItem("Production — runs email the Production recipients", "live")
         self.stage.setToolTip(
@@ -539,7 +574,7 @@ class JobEditorDialog(FormDialog):
             addresses=self._known_addresses,
             notice=self.test_notice,
         )
-        edit_template = QPushButton("Edit email template…")
+        edit_template = Button("Edit email template…")
         edit_template.setToolTip(
             "Author the email body in-app (simple text or HTML) with a live preview."
         )
@@ -573,7 +608,7 @@ class JobEditorDialog(FormDialog):
         # The two run-time knobs carry an always-visible one-line explanation: users hit a
         # 20+ minute PI report timing out and never found the tooltip that said what to do.
         default_minutes = self._default_timeout_minutes()
-        self.timeout = QSpinBox()
+        self.timeout = SpinBox()
         self.timeout.setRange(0, 24 * 60)
         self.timeout.setSuffix(" min")
         self.timeout.setSpecialValueText(
@@ -598,8 +633,9 @@ class JobEditorDialog(FormDialog):
         group_completer = QCompleter(concurrency_groups(self._config), self.group)
         group_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         group_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        styled_completer(group_completer)
         self.group.setCompleter(group_completer)
-        self.post_refresh_wait = QSpinBox()
+        self.post_refresh_wait = SpinBox()
         self.post_refresh_wait.setRange(0, 3600)
         self.post_refresh_wait.setPrefix("up to ")
         self.post_refresh_wait.setSuffix(" s")
@@ -685,7 +721,7 @@ class JobEditorDialog(FormDialog):
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         self._save_button_widget = buttons.button(QDialogButtonBox.StandardButton.Save)
-        self._save_button_widget.setProperty("accent", True)
+        set_variant(self._save_button_widget, "primary")
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
         outer.addWidget(self.tabs)
@@ -804,8 +840,8 @@ class JobEditorDialog(FormDialog):
         if self.wb_list.current() != index:
             self.wb_list.set_current(index)
         self.wb_title.setText(wb.label)
-        self.wb_path.setText(wb.path)
-        self.wb_path.setToolTip(wb.path)
+        self.wb_title.setToolTip(wb.label)
+        self.wb_path.set_path(wb.path)
         self._syncing = True
         try:
             self.combine_pdf.setChecked(wb.pdf_mode == "combined")
@@ -839,7 +875,7 @@ class JobEditorDialog(FormDialog):
         else:
             self.wb_banner.hide()
             return
-        self.wb_banner_text.setText(text)
+        self.wb_banner_text.setText(breakable(text))
         self.wb_banner_retry.setVisible(retry)
         self.wb_banner_replace.setVisible(wb.read != "offline")
         self.wb_banner.show()
@@ -973,7 +1009,7 @@ class JobEditorDialog(FormDialog):
         if self.wb_split.orientation() != orientation:
             self.wb_split.setOrientation(orientation)
             self.wb_list.setMaximumHeight(220 if narrow else 16777215)
-            self.wb_list.setMinimumWidth(0 if narrow else 200)
+            self.wb_list.setMinimumWidth(0 if narrow else _LIST_MIN)
             # Stacked: the list part is only as tall as it needs; the sheets get the rest.
             self.wb_split.setSizes([220, 2000] if narrow else [300, 600])
 
@@ -1080,8 +1116,9 @@ class JobEditorDialog(FormDialog):
                 name.setData(Qt.ItemDataRole.UserRole, row.name)
                 name.setData(Qt.ItemDataRole.UserRole + 1, row.missing)
                 name.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                name.setToolTip(row.name)  # a long name is shortened in its one-line cell
                 if row.missing:
-                    name.setForeground(QColor("#fbbf24"))
+                    name.setForeground(QColor(WARNING))
                     name.setToolTip(
                         "The job includes this sheet, but the workbook doesn't have it any more. "
                         "Untick it, or replace the file."

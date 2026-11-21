@@ -17,13 +17,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QProgressBar,
-    QPushButton,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
 from reportflow import __about__ as about
+from reportflow.ui.kit import Button
 from reportflow.ui.updater import UpdateInfo
 from reportflow.ui.widgets import space_layout
 
@@ -87,14 +87,13 @@ class UpdateDialog(QDialog):
         layout.addWidget(self.status)
 
         buttons = QHBoxLayout()
-        self.update_btn = QPushButton("Update now")
-        self.update_btn.setProperty("accent", True)
+        self.update_btn = Button("Update now", variant="primary")
         self.update_btn.setToolTip(
             "Download the installer and upgrade automatically. The app closes and reopens "
             "when the update finishes; your jobs, settings, and logs are preserved."
         )
         self.update_btn.clicked.connect(self._start)
-        later = QPushButton("Later")
+        later = Button("Later")
         later.clicked.connect(self.reject)
         buttons.addStretch()
         buttons.addWidget(later)

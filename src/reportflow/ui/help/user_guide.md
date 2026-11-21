@@ -459,7 +459,7 @@ delivery. The result and any warnings show in the run history.
 
 If a run builds fine but the email can't be sent (wrong SMTP settings, server unreachable), the run
 history shows a **warning banner** for that run — it never fails silently, and no pop-up interrupts
-you while a run is live. The job card also shows a small **✉ failed** marker, and the run history's
+you while a run is live. The job card also shows a small red **Email failed** tag, and the run history's
 `email:` line gives the reason. Fix the SMTP settings under File → Settings and run it again.
 
 ### Sending logs to the developer {#exportlogs}

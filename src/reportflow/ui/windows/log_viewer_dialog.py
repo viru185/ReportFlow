@@ -8,21 +8,19 @@ from __future__ import annotations
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
-    QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.assets import asset_icon
+from reportflow.ui.kit import ComboBox, IconButton, SegmentButton, SpinBox, segmented
 from reportflow.ui.log_format import LogHighlighter, filter_log_text
-from reportflow.ui.style import ACCENT
 
 _PROCESSES = ("service", "worker", "ui")
 _PROCESS_LABELS = {"service": "Service", "worker": "Worker", "ui": "UI"}
@@ -48,21 +46,23 @@ class LogViewerDialog(QDialog):
         proc_label.setProperty("muted", True)
         proc_row.addWidget(proc_label)
         proc_row.addSpacing(6)
+        segments = QHBoxLayout()
+        segments.setSpacing(0)
+        buttons: list[SegmentButton] = []
         for name in _PROCESSES:
-            btn = QPushButton(_PROCESS_LABELS[name])
-            btn.setCheckable(True)
-            btn.setChecked(name == self._process)
-            btn.setToolTip(f"Show the {_PROCESS_LABELS[name]} log.")
-            btn.setStyleSheet(
-                f"QPushButton:checked {{ background: {ACCENT}; color: #ffffff; "
-                f"border-color: {ACCENT}; }}"
+            btn = SegmentButton(
+                _PROCESS_LABELS[name], tooltip=f"Show the {_PROCESS_LABELS[name]} log."
             )
+            btn.setChecked(name == self._process)
             btn.clicked.connect(lambda _=False, n=name: self._switch_process(n))
             self._proc_group.addButton(btn)
-            proc_row.addWidget(btn)
+            segments.addWidget(btn)
+            buttons.append(btn)
+        segmented(buttons)
+        proc_row.addLayout(segments)
         proc_row.addStretch()
 
-        self.level = QComboBox()
+        self.level = ComboBox(min_chars=7)
         self.level.addItems(_LEVELS)
         self.level.setToolTip("Only show lines at or above this level.")
         self.level.currentIndexChanged.connect(lambda *_: self._render())
@@ -73,13 +73,13 @@ class LogViewerDialog(QDialog):
         self.search.setToolTip("Filter to matching lines and highlight the text.")
         self.search.textChanged.connect(lambda *_: self._render())
 
-        self.tail = QSpinBox()
+        self.tail = SpinBox()
         self.tail.setRange(50, 5000)
         self.tail.setValue(500)
         self.tail.setSingleStep(100)
         self.tail.setToolTip("How many of the most recent log lines to fetch.")
 
-        refresh = QPushButton("Refresh")
+        refresh = IconButton(asset_icon("refresh.svg"), "Fetch the latest log lines")
         refresh.clicked.connect(self.reload)
 
         filters = QHBoxLayout()

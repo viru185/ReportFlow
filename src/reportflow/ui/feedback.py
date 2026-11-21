@@ -45,17 +45,19 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QTabWidget,
-    QToolButton,
     QWidget,
 )
 
-ERROR_COLOR = "#f87171"
+from reportflow.ui.kit.buttons import Button, IconButton
+from reportflow.ui.style import ACCENT_HOVER, DANGER, SUCCESS, WARNING
+
+ERROR_COLOR = DANGER
 
 # kind -> (glyph, accent colour)
 _KINDS: dict[str, tuple[str, str]] = {
-    "success": ("✓", "#4ade80"),
-    "info": ("i", "#60a5fa"),
-    "warning": ("!", "#fbbf24"),
+    "success": ("✓", SUCCESS),
+    "info": ("i", ACCENT_HOVER),
+    "warning": ("!", WARNING),
     "error": ("✕", ERROR_COLOR),
 }
 _TOAST_MS = {"success": 3500, "info": 3500, "warning": 6000, "error": 7000}
@@ -103,18 +105,16 @@ class Toast(QFrame):
         self.setObjectName("toast")
         self.setProperty("kind", self.kind)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        glyph, color = _KINDS[self.kind]
+        glyph, _color = _KINDS[self.kind]
 
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 10, 8, 10)
         row.setSpacing(10)
         icon = QLabel(glyph)
         icon.setObjectName("toastIcon")
+        icon.setProperty("kind", self.kind)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setFixedSize(20, 20)
-        icon.setStyleSheet(
-            f"background: {color}; color: #10131a; border-radius: 10px; font-weight: 700;"
-        )
         row.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         label = QLabel(text)
         label.setObjectName("toastText")
@@ -129,10 +129,7 @@ class Toast(QFrame):
         self.action_button: QPushButton | None = None
         if action is not None:
             caption, callback = action
-            button = QPushButton(caption)
-            button.setObjectName("toastAction")
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setAutoDefault(False)
+            button = Button(caption, small=True)
 
             def run() -> None:
                 self.dismiss()
@@ -141,12 +138,7 @@ class Toast(QFrame):
             button.clicked.connect(run)
             row.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
             self.action_button = button
-        close = QToolButton()
-        close.setObjectName("toastClose")
-        close.setText("×")
-        close.setAccessibleName("Dismiss")
-        close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close = IconButton("×", "Dismiss", variant="dismiss", size=20, focusable=False)
         close.clicked.connect(self.dismiss)
         row.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
 

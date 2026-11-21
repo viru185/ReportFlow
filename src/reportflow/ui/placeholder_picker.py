@@ -24,10 +24,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
-    QPushButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -36,6 +34,7 @@ from PySide6.QtWidgets import (
 from reportflow.core.email.render import PLACEHOLDERS, render_subject, sample_context
 from reportflow.core.output_names import OUTPUT_NAME_TOKENS, expand_output_name
 from reportflow.ui.feedback import InlineNotice
+from reportflow.ui.kit import Button, ListWidget
 
 Target = QLineEdit | QPlainTextEdit | QTextEdit
 # A field, or a function returning the field to use now (e.g. the current editor tab).
@@ -139,11 +138,10 @@ class _Row(QFrame):
         about.setWordWrap(True)
         text.addWidget(about)
         row.addLayout(text, 1)
-        self.insert_button = QPushButton("Insert")
+        self.insert_button = Button(
+            "Insert", small=True, tooltip=f"Insert {item.token} at the cursor"
+        )
         self.insert_button.setObjectName("placeholderInsert")
-        self.insert_button.setAutoDefault(False)
-        self.insert_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.insert_button.setToolTip(f"Insert {item.token} at the cursor")
         self.insert_button.clicked.connect(lambda: on_insert(item))
         row.addWidget(self.insert_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -180,13 +178,11 @@ class PlaceholderPicker(QDialog):
         self.search.installEventFilter(self)
         layout.addWidget(self.search)
 
-        self.list = QListWidget()
+        # Rows follow the list's width (descriptions wrap) — never a sideways scroll.
+        self.list = ListWidget()
         self.list.setObjectName("placeholderList")
         self.list.setSpacing(0)
-        self.list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
-        # Rows follow the list's width (descriptions wrap) — never a sideways scroll.
-        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.list.setResizeMode(ListWidget.ResizeMode.Adjust)
         self.list.itemDoubleClicked.connect(self._insert_item)
         self.list.itemActivated.connect(self._insert_item)
         layout.addWidget(self.list, 1)
@@ -194,8 +190,7 @@ class PlaceholderPicker(QDialog):
         self.notice = InlineNotice()
         footer = QHBoxLayout()
         footer.addWidget(self.notice, 1)
-        done = QPushButton("Done")
-        done.setAutoDefault(False)
+        done = Button("Done")
         done.clicked.connect(self.close)
         footer.addWidget(done)
         layout.addLayout(footer)
@@ -334,7 +329,7 @@ class PlaceholderPicker(QDialog):
         self.move(point)
 
 
-class PlaceholderButton(QPushButton):
+class PlaceholderButton(Button):
     """ "{ } Insert placeholder" next to a field; opens (or re-shows) its picker."""
 
     def __init__(
@@ -346,10 +341,12 @@ class PlaceholderButton(QPushButton):
         parent: QWidget | None = None,
         read_only_message: str = "This field can't be edited right now.",
     ) -> None:
-        super().__init__("{ }  Insert placeholder", parent)
+        super().__init__(
+            "{ }  Insert placeholder",
+            parent,
+            tooltip=f"Pick a placeholder to insert into the {field_name.lower()}",
+        )
         self.setObjectName("placeholderButton")
-        self.setAutoDefault(False)
-        self.setToolTip(f"Pick a placeholder to insert into the {field_name.lower()}")
         self._target = target
         self._items = items
         self._field_name = field_name

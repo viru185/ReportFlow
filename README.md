@@ -345,7 +345,7 @@ Location); reports still generate because the service opens files via automation
 — use it to confirm PI data before relying on scheduled delivery.
 
 **Email failures no longer pass silently:** when a run builds but the email cannot be sent,
-the run history shows a warning banner for that run, the card shows a **✉ failed** marker, and the run history's
+the run history shows a warning banner for that run, the card shows a red **Email failed** tag, and the run history's
 **email:** line gives the reason. When SMTP is down and you need to hand logs to support,
 use **File → Export logs to zip…** to save the diagnostic bundle locally.
 
