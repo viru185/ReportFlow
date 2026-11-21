@@ -15,7 +15,7 @@ from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QKeySequence, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -39,6 +39,7 @@ from reportflow import __about__ as about
 from reportflow.core import paths
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import logo_pixmap
+from reportflow.ui.feedback import restore_geometry, save_geometry
 from reportflow.ui.fs_util import save_start_path
 from reportflow.ui.schedule_compile import ago_text, describe, friendly_time
 from reportflow.ui.style import (
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
         self.resize(920, 620)
         self._build_menu()
         self._build()
+        restore_geometry(self, "main_window")
 
         self._timer = QTimer(self)
         self._timer.setInterval(4000)
@@ -165,7 +167,8 @@ class MainWindow(QMainWindow):
         logs_menu.addAction("Open data folder", self._open_data_folder)
 
         help_menu = bar.addMenu("&Help")
-        help_menu.addAction("Help guide", self._open_help)
+        help_guide = help_menu.addAction("Help guide", self._open_help)
+        help_guide.setShortcut(QKeySequence(Qt.Key.Key_F1))
         help_menu.addAction("Check for updates…", self._manual_update_check)
         help_menu.addAction(f"About {about.NAME}", self._open_about)
 
@@ -795,6 +798,10 @@ class MainWindow(QMainWindow):
 
     def _open_help(self) -> None:
         HelpDialog(self).exec()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        save_geometry(self, "main_window")  # reopen where the user left it
+        super().closeEvent(event)
 
     def _open_about(self) -> None:
         AboutDialog(self, api_base_url=self._api.base_url, connected=self._connected).exec()

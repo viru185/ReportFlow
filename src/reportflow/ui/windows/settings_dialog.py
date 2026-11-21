@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Iterable
@@ -10,7 +11,6 @@ from typing import Any
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
-    QDialog,
     QDialogButtonBox,
     QFormLayout,
     QGroupBox,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.feedback import FormDialog
 from reportflow.ui.recipient_field import RecipientField
 from reportflow.ui.suggestions import jobs_using_group, known_addresses
 from reportflow.ui.widgets import scroll_page, space_layout
@@ -52,7 +53,7 @@ def _split_csv(text: str) -> list[str]:
     return [p.strip() for p in text.replace(";", ",").split(",") if p.strip()]
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(FormDialog):
     def __init__(
         self,
         api: ApiClient,
@@ -60,7 +61,7 @@ class SettingsDialog(QDialog):
         *,
         focus_service_account: bool = False,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(parent, settings_key="settings")
         self._api = api
         self.setWindowTitle("Settings")
         self.setMinimumWidth(620)
@@ -70,6 +71,7 @@ class SettingsDialog(QDialog):
         if focus_service_account:
             self.settings_tabs.setCurrentIndex(2)
             self.account_user.setFocus()
+        self.finish_form(self._save_button_widget)
 
     # -- construction ------------------------------------------------------------
 
@@ -268,7 +270,8 @@ class SettingsDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("accent", True)
+        self._save_button_widget = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self._save_button_widget.setProperty("accent", True)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
 
@@ -637,9 +640,12 @@ class SettingsDialog(QDialog):
 
         def poll() -> None:
             try:
-                running = str(self._api.system_status().get("service_account") or "")
+                status = self._api.system_status(quiet=True)  # down while it restarts
+                running = str(status.get("service_account") or "")
             except ApiError:
                 running = ""  # down while Windows restarts it — keep waiting
+            except Exception:  # noqa: BLE001 — the wait must always end at its deadline
+                running = ""
             if running and _user_part(running) == want:
                 outcome["ok"] = True
                 loop.quit()
@@ -661,7 +667,46 @@ class SettingsDialog(QDialog):
             self.settings_tabs.setCurrentIndex(self.settings_tabs.count() - 1)
             QMessageBox.warning(self, "Email groups", group_problem)
             return
-        sections: dict[str, Any] = {
+        sections = self._sections()
+        try:
+            self._api.update_settings(sections)
+            if self._groups_changed:
+                self._api.put_email_groups(self._email_groups_payload())
+            password = self.smtp_password.text()
+            if password:
+                self._api.set_smtp_password(password)
+        except ApiError as e:
+            QMessageBox.warning(self, "Save failed", str(e))
+            return
+        self.accept()
+
+    # -- form behaviour (FormDialog) --
+    _HELP_FOR_TAB = ("settings", "settings", "pidatalink", "groups")
+
+    def help_anchor(self) -> str | None:
+        index = self.settings_tabs.currentIndex()
+        return self._HELP_FOR_TAB[index] if 0 <= index < len(self._HELP_FOR_TAB) else None
+
+    def save_form(self) -> None:
+        self._save()
+
+    def dirty_key(self) -> str:
+        """What Save would store. Of the SMTP password only WHETHER one was typed counts —
+        a password never goes into the snapshot. The service-account fields are applied by
+        their own button, so they are not part of Save."""
+        return json.dumps(
+            {
+                "sections": self._sections(),
+                "groups": self._email_groups_payload(),
+                "typed_member": self.group_members.edit.text().strip(),
+                "password_typed": bool(self.smtp_password.text()),
+            },
+            sort_keys=True,
+            default=str,
+        )
+
+    def _sections(self) -> dict[str, Any]:
+        return {
             "smtp": self._smtp_form_values(),
             "test": {
                 "recipients": _split_csv(self.test_recipients.text()),
@@ -679,17 +724,6 @@ class SettingsDialog(QDialog):
                 "check_updates_on_startup": self.check_updates.isChecked(),
             },
         }
-        try:
-            self._api.update_settings(sections)
-            if self._groups_changed:
-                self._api.put_email_groups(self._email_groups_payload())
-            password = self.smtp_password.text()
-            if password:
-                self._api.set_smtp_password(password)
-        except ApiError as e:
-            QMessageBox.warning(self, "Save failed", str(e))
-            return
-        self.accept()
 
     def _toggle_password_visible(self, show: bool) -> None:
         self.smtp_password.setEchoMode(

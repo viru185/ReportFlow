@@ -35,11 +35,15 @@ class ApiClient:
     def close(self) -> None:
         self._client.close()
 
-    def _request(self, method: str, path: str, **kw: Any) -> Any:
+    def _request(self, method: str, path: str, *, quiet: bool = False, **kw: Any) -> Any:
+        """``quiet``: the caller expects the service may be down (e.g. while it restarts),
+        so an unreachable service is logged at DEBUG, not as a warning."""
         try:
             resp = self._client.request(method, f"{self.base_url}{path}", **kw)
         except httpx.HTTPError as e:
-            logger.warning("API {} {} unreachable: {}", method, path, e)
+            (logger.debug if quiet else logger.warning)(
+                "API {} {} unreachable: {}", method, path, e
+            )
             raise ApiError(f"service not reachable at {self.base_url}: {e}") from e
         if resp.status_code >= 400:
             detail = _safe_detail(resp)
@@ -54,8 +58,8 @@ class ApiClient:
     def health(self) -> dict:
         return self._request("GET", "/health")
 
-    def system_status(self) -> dict:
-        return self._request("GET", "/system/status")
+    def system_status(self, *, quiet: bool = False) -> dict:
+        return self._request("GET", "/system/status", quiet=quiet)
 
     def get_config(self) -> dict:
         return self._request("GET", "/config")

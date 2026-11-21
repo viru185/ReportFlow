@@ -8,6 +8,7 @@ is built visually; the email body is authored in-app via EmailTemplateDialog.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -49,6 +50,7 @@ from reportflow.core.output_names import (
     overwrites_same_day,
 )
 from reportflow.ui.api_client import ApiClient, ApiError
+from reportflow.ui.feedback import FormDialog
 from reportflow.ui.fs_util import open_start_dir
 from reportflow.ui.recipient_field import (
     RecipientField,
@@ -107,7 +109,7 @@ class _WorkbookState:
         return Path(self.path).name if self.path else "New workbook"
 
 
-class JobEditorDialog(QDialog):
+class JobEditorDialog(FormDialog):
     def __init__(
         self,
         api: ApiClient,
@@ -123,7 +125,7 @@ class JobEditorDialog(QDialog):
         Testing). ``prefill_template`` is the source job's email template content — the copy
         gets its own file with the same content; ``prefill_template_link`` instead means the
         source is linked to a file of the user's, and the copy links to the same file."""
-        super().__init__(parent)
+        super().__init__(parent, settings_key="job_editor")
         self._api = api
         self._editing = job is not None
         self._template_html: str | None = None  # authored in-app; caller saves it after job save
@@ -149,6 +151,7 @@ class JobEditorDialog(QDialog):
                 prefill.get("name", ""), prefill_template, prefill_template_link
             )
         self._update_output_example()
+        self.finish_form(self._save_button_widget)
 
     def _apply_duplicate_mode(
         self, source: str, template: str | None, template_link: str | None = None
@@ -518,7 +521,8 @@ class JobEditorDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("accent", True)
+        self._save_button_widget = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self._save_button_widget.setProperty("accent", True)
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
         outer.addWidget(self.tabs)
@@ -1001,6 +1005,38 @@ class JobEditorDialog(QDialog):
             QMessageBox.warning(self, "Schedule", str(e))
             return
         self.accept()
+
+    # -- form behaviour (FormDialog) --------------------------------------------
+    _HELP_FOR_TAB = ("jobs", "output", "schedule", "email", "advanced")
+
+    def help_anchor(self) -> str | None:
+        index = self.tabs.currentIndex()
+        return self._HELP_FOR_TAB[index] if 0 <= index < len(self._HELP_FOR_TAB) else None
+
+    def save_form(self) -> None:
+        self._on_save()
+
+    def _recipient_boxes(self) -> list[RecipientField]:
+        return [
+            self.prod_to,
+            self.prod_cc,
+            self.prod_bcc,
+            self.test_to,
+            self.test_cc,
+            self.test_bcc,
+        ]
+
+    def dirty_key(self) -> str:
+        """What Save would store, so Cancel only asks when something real changed.
+
+        Sheets compare by name: reading a workbook may reorder or add (unticked) rows,
+        which is not an edit."""
+        data = self.payload()
+        for wb in data["workbooks"]:
+            wb["sheets"] = sorted(wb["sheets"], key=lambda s: s["name"])
+        data["_template"] = [self._template_html, self._template_link]
+        data["_typed"] = [box.edit.text().strip() for box in self._recipient_boxes()]
+        return json.dumps(data, sort_keys=True, default=str)
 
     # -- payload -----------------------------------------------------------------
     def payload(self) -> dict[str, Any]:

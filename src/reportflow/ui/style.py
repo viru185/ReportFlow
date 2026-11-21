@@ -36,11 +36,13 @@ BG = "#16181d"  # window background
 CARD_BG = "#1f2229"  # cards, menus, bars
 FIELD_BG = "#262a33"  # inputs / editors / lists
 BORDER = "#363b47"
+BORDER_HOVER = "#4a5263"  # a field the pointer is over
 TEXT = "#e6e9f0"
 TEXT_MUTED = "#9aa1b0"
 ACCENT = "#3b82f6"  # primary blue
 ACCENT_HOVER = "#60a5fa"
 LINK = "#60a5fa"
+ERROR = "#e06c6c"  # invalid field outline, field error text
 
 STATUS_COLORS: dict[str, tuple[str, str]] = {
     # status -> (foreground, background) — bright text on a deep tinted pill
@@ -233,40 +235,39 @@ QLineEdit::placeholder {{
 QPushButton:focus, QToolButton:focus {{
     border-color: {ACCENT_HOVER};
 }}
+QComboBox:hover, QSpinBox:hover, QTimeEdit:hover {{
+    border-color: {BORDER_HOVER};
+}}
+QComboBox:focus, QSpinBox:focus, QTimeEdit:focus {{
+    border-color: {ACCENT};
+}}
+/* The arrow area sits INSIDE the rounded border and has no fill or separator of its own,
+   so no square corner can poke through the field's radius (Fluent-style chevron). */
 QComboBox::drop-down {{
-    background: {CARD_BG};
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 28px;
     border: none;
-    border-left: 1px solid {BORDER};
-    width: 24px;
+    background: transparent;
 }}
 QSpinBox, QTimeEdit {{
     min-height: 24px;
-    padding-right: 28px;
+    padding-right: 26px;
+}}
+QSpinBox::up-button, QTimeEdit::up-button,
+QSpinBox::down-button, QTimeEdit::down-button {{
+    subcontrol-origin: padding;
+    width: 22px;
+    border: none;
+    background: transparent;
 }}
 QSpinBox::up-button, QTimeEdit::up-button {{
-    subcontrol-origin: border;
     subcontrol-position: top right;
-    background: {CARD_BG};
-    border: none;
-    border-left: 1px solid {BORDER};
-    border-right: 1px solid {BORDER};
-    border-top: 1px solid {BORDER};
-    border-top-right-radius: 6px;
-    width: 24px;
-    height: 16px;
+    border-top-right-radius: 5px;
 }}
 QSpinBox::down-button, QTimeEdit::down-button {{
-    subcontrol-origin: border;
     subcontrol-position: bottom right;
-    background: {CARD_BG};
-    border: none;
-    border-left: 1px solid {BORDER};
-    border-top: 1px solid {BORDER};
-    border-right: 1px solid {BORDER};
-    border-bottom: 1px solid {BORDER};
-    border-bottom-right-radius: 6px;
-    width: 24px;
-    height: 16px;
+    border-bottom-right-radius: 5px;
 }}
 QSpinBox::up-button:hover, QSpinBox::down-button:hover,
 QTimeEdit::up-button:hover, QTimeEdit::down-button:hover {{
@@ -492,6 +493,57 @@ QToolButton:pressed {{
 }}
 QToolButton::menu-indicator {{
     image: none;
+}}
+/* -- feedback (ui/feedback.py) -- */
+QLineEdit[invalid="true"], QComboBox[invalid="true"], QSpinBox[invalid="true"],
+QPlainTextEdit[invalid="true"], QTimeEdit[invalid="true"], QListWidget[invalid="true"] {{
+    border-color: {ERROR};
+}}
+QLabel#fieldError {{
+    color: {ERROR};
+    font-size: 12px;
+}}
+QLabel#inlineNotice {{
+    font-size: 12px;
+    color: {TEXT_MUTED};
+}}
+QLabel#inlineNotice[kind="warning"] {{
+    color: #fbbf24;
+}}
+QLabel#inlineNotice[kind="error"] {{
+    color: {ERROR};
+}}
+QLabel#inlineNotice[kind="success"] {{
+    color: #4ade80;
+}}
+QFrame#toast {{
+    background: #262b36;
+    border: 1px solid #424a5a;
+    border-radius: 8px;
+}}
+QLabel#toastText {{
+    color: {TEXT};
+}}
+QPushButton#toastAction {{
+    background: transparent;
+    border: 1px solid #424a5a;
+    color: {ACCENT_HOVER};
+    font-weight: 600;
+    padding: 3px 10px;
+    min-height: 16px;
+}}
+QPushButton#toastAction:hover {{
+    border-color: {ACCENT};
+}}
+QToolButton#toastClose {{
+    background: transparent;
+    border: none;
+    color: {TEXT_MUTED};
+    font-size: 15px;
+    padding: 0 4px;
+}}
+QToolButton#toastClose:hover {{
+    color: {TEXT};
 }}
 """
 

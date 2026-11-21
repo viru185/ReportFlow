@@ -29,7 +29,7 @@ class FakeApi:
 
     config_error = None
 
-    def system_status(self):
+    def system_status(self, *, quiet=False):
         self._check()
         return {
             "version": "0.2.0",
@@ -1525,7 +1525,7 @@ def test_settings_service_account_waits_for_the_restart(qtbot, monkeypatch, come
     qtbot.addWidget(dlg)
     polls = []
 
-    def status():
+    def status(**_kw):
         polls.append(1)
         if len(polls) == 1:
             raise ApiError("service not reachable")  # down while Windows restarts it
