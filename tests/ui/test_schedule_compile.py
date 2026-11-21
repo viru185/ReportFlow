@@ -62,14 +62,14 @@ def test_daily_plus_sunday_at_another_time():
 
 def test_overlapping_rules_rejected():
     """Each cron is its own trigger — the same moment twice would run (and email) twice."""
-    with pytest.raises(ValueError, match="already in the daily schedule"):
+    with pytest.raises(ValueError, match=r"Sun 06:00 is already in the schedule above"):
         compile_rules(
             [
                 ScheduleRule(kind="daily", times=["06:00"]),
                 ScheduleRule(kind="weekly", times=["06:00"], weekdays=["SUN"]),
             ]
         )
-    with pytest.raises(ValueError, match="in two schedules"):
+    with pytest.raises(ValueError, match=r"Sun 06:00 is already in the schedule above"):
         compile_rules(
             [
                 ScheduleRule(kind="weekly", times=["06:00"], weekdays=["MON", "SUN"]),
@@ -146,3 +146,60 @@ def test_ago_text_phrases():
     assert ago_text("2026-07-16T09:00:00", now) is None  # future -> skip the segment
     # Aware timestamps don't blow up.
     assert ago_text("2026-07-15T11:00:00+05:30", now) == "1h ago"
+
+
+# -- conflicts shown on the card (0.14: two identical Daily cards were merged silently) ---
+
+
+def test_two_identical_daily_schedules_are_a_conflict_not_merged():
+    from reportflow.ui.schedule_compile import find_conflicts
+
+    rules = [
+        ScheduleRule(kind="daily", times=["05:00"]),
+        ScheduleRule(kind="weekly", times=["09:00"], weekdays=["SAT", "SUN"]),
+        ScheduleRule(kind="daily", times=["05:00"]),
+    ]
+    [conflict] = find_conflicts(rules)
+    assert (conflict.rule, conflict.other) == (2, 0)
+    assert conflict.message == "Same as the schedule above (Daily at 05:00) — remove one."
+    with pytest.raises(ValueError, match="Same as the schedule above"):
+        compile_rules(rules)
+
+
+def test_each_kind_of_clash_names_the_moment():
+    from reportflow.ui.schedule_compile import find_conflicts
+
+    def first(*rules):
+        found = find_conflicts(list(rules))
+        return found[0].message if found else ""
+
+    daily = ScheduleRule(kind="daily", times=["06:00", "18:00"])
+    assert first(daily, ScheduleRule(kind="daily", times=["18:00"])).startswith(
+        "18:00 is already in the schedule above (Daily at 06:00, 18:00)"
+    )
+    assert first(daily, ScheduleRule(kind="monthly", times=["06:00"], month_days=[1])).startswith(
+        "day 1 at 06:00"
+    )
+    assert first(
+        ScheduleRule(kind="monthly", times=["07:00"], month_days=[1, 15]),
+        ScheduleRule(kind="monthly", times=["07:00"], month_days=[15]),
+    ).startswith("day 15 at 07:00")
+    assert first(
+        ScheduleRule(kind="cron", crons=["0 6 * * MON-FRI"]),
+        ScheduleRule(kind="cron", crons=["0  6 * * MON-FRI"]),
+    ).startswith("Same as the schedule above")
+    # Different times, or weekly vs monthly days that only sometimes meet: fine.
+    assert first(daily, ScheduleRule(kind="weekly", times=["07:00"], weekdays=["MON"])) == ""
+    assert (
+        first(
+            ScheduleRule(kind="weekly", times=["06:00"], weekdays=["MON"]),
+            ScheduleRule(kind="monthly", times=["06:00"], month_days=[1]),
+        )
+        == ""
+    )
+
+
+def test_a_repeated_day_in_one_monthly_card_is_not_a_clash():
+    from reportflow.ui.schedule_compile import find_conflicts
+
+    assert find_conflicts([ScheduleRule(kind="monthly", times=["06:00"], month_days=[1, 1])]) == []

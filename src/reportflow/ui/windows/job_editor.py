@@ -15,7 +15,6 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +49,6 @@ from reportflow.core.email.render import explain_template_error, template_error
 from reportflow.core.output_names import (
     DEFAULT_OUTPUT_STEM,
     OUTPUT_NAME_TOKENS,
-    expand_output_name,
-    overwrites_same_day,
 )
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import asset_icon
@@ -87,6 +84,7 @@ from reportflow.ui.style import WARNING
 from reportflow.ui.suggestions import concurrency_groups, email_groups, known_addresses
 from reportflow.ui.widgets import CenteredCheckDelegate, scroll_page, section_title, space_layout
 from reportflow.ui.windows.email_template_dialog import EmailTemplateDialog
+from reportflow.ui.windows.output_preview import OutputPreview, plan_outputs
 from reportflow.ui.windows.schedule_widget import ScheduleWidget
 from reportflow.ui.windows.workbook_panel import (
     DropOverlay,
@@ -492,9 +490,9 @@ class JobEditorDialog(FormDialog):
         output_name_row.addWidget(self.output_name, 1)
         output_name_row.addWidget(self.output_placeholders)
         self.output_name.textChanged.connect(self._update_output_example)
-        self.output_example = QLabel("")
-        self.output_example.setProperty("muted", True)
-        self.output_example.setWordWrap(True)
+        # "Each run creates": every file a run makes, where it goes, and what is emailed.
+        self.output_example = OutputPreview()
+        self.output_example.workbook_changed.connect(lambda *_: self._update_output_example())
         self.freeze = QCheckBox("Freeze formulas to values")
         self.freeze.setChecked(True)
         self.freeze.setToolTip(
@@ -512,9 +510,9 @@ class JobEditorDialog(FormDialog):
         )
         output_form.addRow("Output folder", dir_row)
         output_form.addRow("Filename (optional)", output_name_row)
-        output_form.addRow("", self.output_example)
         output_form.addRow("", self.freeze)
         output_form.addRow("If a workbook fails", self.on_failure)
+        output_form.addRow(self.output_example)
         # ---- Schedule tab ----
         schedule_tab = QWidget()
         schedule_lay = QVBoxLayout(schedule_tab)
@@ -869,6 +867,8 @@ class JobEditorDialog(FormDialog):
             self._update_output_example()
             return
         self._current_wb = index
+        # The Output tab's card follows the workbook chosen here.
+        self.output_example.set_workbooks([w.label for w in self._workbooks], index)
         self.wb_stack.setCurrentWidget(self.wb_split)
         wb = self._workbooks[index]
         if self.wb_list.current() != index:
@@ -1269,30 +1269,36 @@ class JobEditorDialog(FormDialog):
             self.output_dir.setText(path)
 
     def _update_output_example(self) -> None:
-        pattern = self.output_name.text().strip() or DEFAULT_OUTPUT_STEM
-        multi = len(self._workbooks) > 1
-        if multi and "{workbook}" not in pattern:
-            pattern += "_{workbook}"  # mirrors the launcher: several outputs need distinct names
-        shown = self._current()
-        current = shown.path if shown is not None else ""
-        stem = expand_output_name(
-            pattern,
-            job_name=self.name.text().strip() or "job",
-            run_id="a1b2c3",
-            now=datetime.now(),
-            workbook=Path(current).stem if current else "workbook",
+        """Refresh the "Each run creates" card for the workbook it shows (the one selected
+        on the General tab, unless another was picked on the card)."""
+        card = self.output_example
+        labels = [wb.label for wb in self._workbooks]
+        index = card.selected()
+        if not 0 <= index < len(labels):
+            index = self._current_wb if self._current_wb is not None else 0
+        card.set_workbooks(labels, index)
+        wb = self._workbooks[index] if 0 <= index < len(self._workbooks) else None
+        rows = (
+            self._rows()
+            if wb is not None and index == self._current_wb
+            else (wb.rows if wb is not None else [])
         )
-        folder = self.output_dir.text().strip() or "(input file's folder)"
-        example = f"→ {folder}\\{stem}.xlsx"
-        if any(row.include and row.excel for row in self._rows()):
-            example += f" · email: {stem}_email.xlsx"
-        if any(row.include and row.pdf for row in self._rows()):
-            example += f", {stem}.pdf" if self.combine_pdf.isChecked() else f", {stem}_<sheet>.pdf"
-        if multi:
-            example += f" — one per workbook ({len(self._workbooks)})"
-        if overwrites_same_day(pattern):
-            example += "\n⚠ A second run on the same day overwrites the first — add {time}."
-        self.output_example.setText(example)
+        combined = (
+            self.combine_pdf.isChecked()
+            if index == self._current_wb
+            else (wb is not None and wb.pdf_mode == "combined")
+        )
+        card.show_plan(
+            plan_outputs(
+                pattern=self.output_name.text(),
+                job_name=self.name.text(),
+                output_dir=self.output_dir.text(),
+                workbook_path=wb.path if wb is not None else "",
+                included=[(r.name, r.excel, r.pdf) for r in rows if r.include and not r.missing],
+                combined_pdf=combined,
+                workbook_count=len(self._workbooks),
+            )
+        )
 
     def _test_email_sender(self) -> Callable[[dict], object] | None:
         make = getattr(self._api, "test_email_sender", None)
@@ -1446,6 +1452,8 @@ class JobEditorDialog(FormDialog):
                 self._show_workbook(first.workbook)
             if first.widget is not None:
                 first.widget.setFocus()
+            elif first.tab == _TAB_SCHEDULE:
+                self.schedule.reveal_problem()  # the clashing card is outlined; show it
 
     def _recheck_soon(self, *_: object) -> None:
         if self._showing_problems:

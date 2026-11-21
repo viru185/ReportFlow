@@ -18,11 +18,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from reportflow.ui.feedback import flash
+from reportflow.ui.feedback import flash, repolish
 from reportflow.ui.kit import (
     Button,
     ComboBox,
@@ -37,6 +38,7 @@ from reportflow.ui.schedule_compile import (
     ScheduleRule,
     compile_rules,
     describe,
+    find_conflicts,
     parse_crons,
 )
 from reportflow.ui.widgets import FlowLayout
@@ -251,6 +253,13 @@ class _RuleRow(QFrame):
         self.cron_edit.textChanged.connect(self.changed)
         lay.addWidget(self.cron_edit)
 
+        # Shown when this schedule clashes with one above it (see find_conflicts).
+        self.conflict = QLabel("")
+        self.conflict.setObjectName("fieldError")
+        self.conflict.setWordWrap(True)
+        self.conflict.hide()
+        lay.addWidget(self.conflict)
+
         for t in self._times:
             self._add_pill(t)
         self._sync_empty()
@@ -326,6 +335,15 @@ class _RuleRow(QFrame):
     def _sync_empty(self) -> None:
         self.no_times.setVisible(not self._times)
         self._flow.invalidate()
+
+    def set_conflict(self, message: str) -> None:
+        """Outline the card in red with ``message`` inside it ("" clears)."""
+        if self.conflict.text() == message:
+            return
+        self.conflict.setText(message)
+        self.conflict.setVisible(bool(message))
+        self.setProperty("invalid", bool(message))
+        repolish(self)
 
     def to_rule(self) -> ScheduleRule:
         kind = self.kind.currentData()
@@ -414,7 +432,15 @@ class ScheduleWidget(QWidget):
 
     def _update_summary(self) -> None:
         self.manual_hint.setVisible(not self._rows)
+        clashes = self._show_conflicts()
         self.changed.emit()
+        if clashes:
+            self.summary.setText(
+                "Two schedules would run the job at the same moment — fix the one outlined "
+                "in red below."
+            )
+            self._set_summary_state("warning")
+            return
         try:
             crons = self.to_crons()
         except ValueError as e:
@@ -423,6 +449,37 @@ class ScheduleWidget(QWidget):
             return
         self._set_summary_state("")
         self.summary.setText(describe(crons) if crons else "Manual only — no scheduled runs")
+
+    def _show_conflicts(self) -> int:
+        """Mark each schedule that clashes with one above it; returns how many do."""
+        rules: list[ScheduleRule] = []
+        rows: list[_RuleRow] = []
+        for row in self._rows:
+            try:
+                rules.append(row.to_rule())
+                rows.append(row)
+            except ValueError:
+                row.set_conflict("")  # its own problem is reported by the summary
+        found = {c.rule: c.message for c in find_conflicts(rules)}
+        for i, row in enumerate(rows):
+            row.set_conflict(found.get(i, ""))
+        return len(found)
+
+    def problem_row(self) -> _RuleRow | None:
+        """The first schedule outlined as a clash, if any."""
+        return next((row for row in self._rows if row.conflict.text()), None)
+
+    def reveal_problem(self) -> None:
+        """Scroll the first clashing schedule into view and focus its kind."""
+        row = self.problem_row()
+        if row is None:
+            return
+        parent = self.parentWidget()
+        while parent is not None and not isinstance(parent, QScrollArea):
+            parent = parent.parentWidget()
+        if isinstance(parent, QScrollArea):
+            parent.ensureWidgetVisible(row, 0, 24)
+        row.kind.setFocus()
 
     def _set_summary_state(self, state: str) -> None:
         self.summary.setProperty("state", state)

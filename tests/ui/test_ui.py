@@ -392,9 +392,10 @@ def test_schedule_widget_combines_rules_and_deletes_in_one_click(qtbot):
     remove.click()
     assert w.to_crons() == ["0 6 * * *"]
 
-    # An overlap is explained right under the rules, and blocks saving.
+    # An overlap is explained on the clashing card (and flagged above), and blocks saving.
     clash = w.add_rule(ScheduleRule(kind="weekly", weekdays=["SUN"], times=["06:00"]))
-    assert "already in the daily schedule" in w.summary.text()
+    assert "Sun 06:00 is already in the schedule above" in clash.conflict.text()
+    assert "outlined in red" in w.summary.text()
     clash.remove_requested.emit(clash)
     assert w.summary.text() == "Daily at 06:00"
 

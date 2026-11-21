@@ -72,30 +72,89 @@ def compile_rule(rule: ScheduleRule) -> list[str]:
     return crons
 
 
-def _check_overlaps(rules: list[ScheduleRule]) -> None:
-    """Refuse rules that fire at the same moment: each cron is its own trigger, so an
-    overlap would start the job twice (two runs, two emails)."""
-    daily = {t for r in rules if r.kind == "daily" for t in _validate_times(r.times)}
-    seen: dict[tuple[str, str], str] = {}
-    for rule in rules:
-        if rule.kind in ("daily", "cron"):
-            continue
-        days = (
-            [d.upper() for d in rule.weekdays]
-            if rule.kind == "weekly"
-            else [str(d) for d in rule.month_days]
-        )
-        for t in _validate_times(rule.times):
-            if t in daily:
-                raise ValueError(
-                    f"{t} is already in the daily schedule — the {rule.kind} one would run "
-                    "the job a second time at the same moment"
+@dataclass(frozen=True)
+class Conflict:
+    """Schedule ``rule`` (0-based, the later card) clashes with schedule ``other``."""
+
+    rule: int
+    other: int
+    message: str
+
+
+def _moments(rule: ScheduleRule) -> set[tuple[str, str]]:
+    """When a rule fires, as (day, time) — ``("*", t)`` daily, ``("MON", t)`` weekly,
+    ``("d1", t)`` monthly, ``("cron", expr)`` custom. Empty for an incomplete rule."""
+    if rule.kind == "cron":
+        return {("cron", " ".join(c.split())) for c in rule.crons if c.strip()}
+    try:
+        times = _validate_times(rule.times)
+    except ValueError:
+        return set()
+    if rule.kind == "daily":
+        days = ["*"]
+    elif rule.kind == "weekly":
+        days = [d for d in WEEKDAYS if d in {w.upper() for w in rule.weekdays}]
+    else:
+        days = [f"d{d}" for d in sorted({d for d in rule.month_days if 1 <= d <= 31})]
+    return {(day, t) for day in days for t in times}
+
+
+def _clashes(mine: set[tuple[str, str]], theirs: set[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The moments of ``mine`` that ``theirs`` also fires at (sorted)."""
+    daily = {t for day, t in theirs if day == "*"}
+    dated = {t for day, t in theirs if day not in ("*", "cron")}
+    hits = []
+    for day, t in mine:
+        if day == "cron":
+            hit = (day, t) in theirs  # the very same expression
+        elif day == "*":
+            hit = t in daily or t in dated  # every day includes their days
+        else:
+            hit = (day, t) in theirs or t in daily
+        if hit:
+            hits.append((day, t))
+    return sorted(hits)
+
+
+def _when(moment: tuple[str, str]) -> str:
+    day, t = moment
+    if day == "cron":
+        return t
+    if day == "*":
+        return t
+    if day.startswith("d"):
+        return f"day {day[1:]} at {t}"
+    return f"{day.capitalize()} {t}"
+
+
+def find_conflicts(rules: list[ScheduleRule]) -> list[Conflict]:
+    """Schedules that would start the job twice at the same moment — each trigger is its
+    own run (two runs, two emails), so the editor refuses them instead of silently merging
+    them. One conflict per schedule, reported on the later one. Weekly-vs-monthly dates
+    that only sometimes coincide aren't flagged; the service skips such a second start."""
+    moments = [_moments(rule) for rule in rules]
+    found: list[Conflict] = []
+    for j, mine in enumerate(moments):
+        for i in range(j):
+            theirs = moments[i]
+            if not mine or not theirs:
+                continue
+            name = describe_rule(rules[i])
+            if mine == theirs and rules[i].kind == rules[j].kind:
+                found.append(Conflict(j, i, f"Same as the schedule above ({name}) — remove one."))
+                break
+            clash = _clashes(mine, theirs)
+            if clash:
+                found.append(
+                    Conflict(
+                        j,
+                        i,
+                        f"{_when(clash[0])} is already in the schedule above ({name}) — the job "
+                        "would run twice at the same moment.",
+                    )
                 )
-            for day in days:
-                key = (f"{rule.kind}:{day}", t)
-                if key in seen:
-                    raise ValueError(f"{day.capitalize()} {t} is in two schedules")
-                seen[key] = t
+                break
+    return found
 
 
 def compile_rules(rules: list[ScheduleRule]) -> list[str]:
@@ -108,7 +167,9 @@ def compile_rules(rules: list[ScheduleRule]) -> list[str]:
         for cron in compile_rule(rule):
             if cron not in crons:
                 crons.append(cron)
-    _check_overlaps(rules)
+    conflicts = find_conflicts(rules)
+    if conflicts:
+        raise ValueError(conflicts[0].message)
     return crons
 
 

@@ -6,7 +6,9 @@ starting or other jobs from being scheduled.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
+from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -26,6 +28,9 @@ class SchedulerService:
         self.launcher = launcher
         self.scheduler = BackgroundScheduler()
         self._maintenance = maintenance
+        # Job name -> the minute its schedule last started it (see _fire).
+        self._last_fired: dict[str, str] = {}
+        self._fire_lock = threading.Lock()
 
     def start(self) -> None:
         if not self.scheduler.running:
@@ -97,6 +102,20 @@ class SchedulerService:
         )
 
     def _fire(self, name: str) -> None:
+        # Two of a job's triggers can meet — e.g. weekly Monday 06:00 and monthly day 1 at
+        # 06:00 on a Monday the 1st, or two custom crons. The editor refuses the clashes it
+        # can see; this catches the rest: one scheduled start per job per minute.
+        minute = datetime.now().strftime("%Y-%m-%d %H:%M")
+        with self._fire_lock:
+            if self._last_fired.get(name) == minute:
+                logger.info(
+                    "Job {!r} was already started by its schedule at {} — skipping the second "
+                    "trigger for the same moment.",
+                    name,
+                    minute,
+                )
+                return
+            self._last_fired[name] = minute
         # Recipients resolve from the job's CURRENT stage at fire time (testing -> test
         # recipients, live -> production), so promoting a job needs no re-scheduling.
         try:

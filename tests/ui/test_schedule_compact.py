@@ -67,3 +67,29 @@ def test_weekdays_are_a_one_row_toggle(qtbot):
         "Sat",
         "Sun",
     ]
+
+
+def test_a_duplicate_schedule_is_outlined_live_and_blocks_save(qtbot):
+    from reportflow.ui.feedback import tabs_with_errors
+    from reportflow.ui.schedule_compile import ScheduleRule
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    from .test_ui import FakeApi, _sample_job_dict
+
+    dlg = JobEditorDialog(FakeApi(), _sample_job_dict())
+    qtbot.addWidget(dlg)
+    schedule = dlg.schedule
+    schedule.load(["0 5 * * *"])
+    copy = schedule.add_rule(ScheduleRule(kind="daily", times=["05:00"]))
+    # Shown as soon as it exists, on the card itself — not merged away on Save.
+    assert copy.property("invalid") is True
+    assert copy.conflict.text() == "Same as the schedule above (Daily at 05:00) — remove one."
+    assert schedule.summary.property("state") == "warning"
+    assert schedule.rows()[0].property("invalid") in (None, False)
+    dlg._on_save()
+    assert dlg.result() == 0 and dlg.tabs.currentIndex() == 2
+    assert 2 in tabs_with_errors(dlg.tabs)
+    # Changing the time clears it.
+    copy.remove_time("05:00")
+    copy.add_time("07:00")
+    assert not copy.conflict.text() and copy.property("invalid") is False

@@ -652,6 +652,9 @@ QFrame[card="true"] {{
     border: 1px solid {BORDER};
     border-radius: 8px;
 }}
+QFrame[card="true"][invalid="true"] {{
+    border-color: {ERROR};
+}}
 QFrame[card="true"]:focus {{
     border-color: {ACCENT_HOVER};
 }}

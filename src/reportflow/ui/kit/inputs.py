@@ -14,8 +14,18 @@ Shared behaviour:
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, QTime
-from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QComboBox, QCompleter, QListView, QSpinBox, QTimeEdit, QWidget
+from PySide6.QtGui import QPaintEvent, QWheelEvent
+from PySide6.QtWidgets import (
+    QComboBox,
+    QCompleter,
+    QListView,
+    QSpinBox,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
+    QTimeEdit,
+    QWidget,
+)
 
 from reportflow.ui.kit.popups import round_popup
 from reportflow.ui.kit.views import PopupItemDelegate, PopupList, smooth_scroll
@@ -49,6 +59,24 @@ class ComboBox(QComboBox):
             event.ignore()  # the page under it scrolls instead
             return
         super().wheelEvent(event)
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        """Like Qt's, but a long choice is shortened in the middle ("Aditya_PI…Oct.xlsx")
+        instead of being cut off at the field's edge."""
+        painter = QStylePainter(self)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        field = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxEditField,
+            self,
+        )
+        option.currentText = self.fontMetrics().elidedText(
+            option.currentText, Qt.TextElideMode.ElideMiddle, max(field.width() - 4, 0)
+        )
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
 
     def showPopup(self) -> None:  # noqa: N802
         view = self.view()
