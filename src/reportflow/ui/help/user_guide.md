@@ -13,9 +13,9 @@ a clean copy and emails it to the right people, on a schedule or with one click.
 3. **Say who gets it** — on the **Email** tab, type the people (or an email group) for **Test**
    and for **Production**.
 4. **Pick when** — on the **Schedule** tab, add a daily or weekly time. No schedule means it only
-   runs when you click **▶ Run**.
-5. **Save, then ▶ Run** — the first emails go to your *Test* recipients only. When the report
-   looks right, click **✓ Move to production** on the job's card.
+   runs when you click **Run**.
+5. **Save, then Run** — the first emails go to your *Test* recipients only. When the report
+   looks right, click **Move to production** on the job's card.
 
 ## How ReportFlow works {#start}
 
@@ -31,12 +31,14 @@ reachable*, start the **ReportFlow** Windows service and click Refresh.
 ### Creating a job
 
 - Click **New Job** and give it a unique **name** — it is also used in the output file names.
-- You can rename a job later in **✎ Edit**. Its run history and email template move with it
+- You can rename a job later in **Edit**. Its run history and email template move with it
   (but not while one of its runs is in progress).
 - Fill in the other tabs (Output, Schedule, Email, Advanced — see below), then **Save**.
 
 > 💡 **Tip:** **Enter** never closes the editor by accident. Press **Ctrl+S** to save, or **Esc**
-> to cancel — if you changed something, ReportFlow asks before throwing it away.
+> to cancel — if you changed something, ReportFlow asks before throwing it away. If something
+> stops Save, it is shown on the field itself with a red dot on its tab; **Learn more** under the
+> message opens the matching part of this guide.
 
 ### Adding workbooks
 
@@ -72,8 +74,9 @@ a job's workbook arrive unticked. For each sheet choose:
 
 ### Replacing or removing a workbook
 
-- Hover over a workbook (or select it) for its two buttons: **⇄ Replace** points it at another
-  file — handy for next month's file — and keeps all its sheet choices; **×** removes it.
+- Select a workbook; **⇄ Replace…** and **Remove** sit beside its name. **Replace…** points it at
+  another file — handy for next month's file — and keeps all its sheet choices. Right-click a
+  workbook for the same two, or press **Delete** to remove the selected one.
 - Removing is instant, with an **Undo** button in the notice that appears.
 - If the service can't find a file (it moved, or it's on a drive the service can't see), the
   workbook says *⚠ File not found* and offers **Replace…** and **Try again**. Its sheet choices are
@@ -129,10 +132,13 @@ output Excel. **Your input files are never modified.**
 - Each run writes `<filename>.xlsx` per workbook, plus one `<filename>_<sheet>.pdf` per sheet with
   PDF ticked. With several workbooks, `_{workbook}` is added to the name automatically so their
   files never overwrite each other.
+- The **Each run creates** card at the bottom of the tab lists every file a run makes — where it is
+  saved, the full copy (*kept on disk*), the Excel attachment and the PDFs (*emailed*) — with real
+  names. With several workbooks, pick which one to show; each gets its own set.
 
 ## Schedules {#schedule}
 
-A job with no schedule is **manual** — it only runs when you click **▶ Run**. Click
+A job with no schedule is **manual** — it only runs when you click **Run**. Click
 **+ Add schedule** to run it automatically, and add **more than one** to combine them — for
 example *Daily at 06:00* plus *Weekly on Sunday at 10:00*. Each schedule is one of:
 
@@ -151,8 +157,9 @@ remove that time, and **Remove** to delete a whole schedule.
 - The overview at the top sums up every run in plain words, and turns amber when a schedule needs
   fixing.
 - Times use the ReportFlow server's local time (24-hour clock).
-- Two schedules may not fire at the same moment (e.g. Daily 06:00 and Sunday 06:00) — that would
-  run the job twice, so the editor refuses it and says why.
+- Two schedules may not fire at the same moment (e.g. Daily 06:00 and Sunday 06:00, or the same
+  schedule added twice) — that would run the job twice. The later one is outlined in red with the
+  reason, the Schedule tab gets a red dot, and Save waits until you fix it.
 
 ## Email: recipients and Testing → Production {#email}
 
@@ -160,8 +167,10 @@ Each job has two recipient lists: **Production** and **Test**. *To* is required;
 are optional.
 
 - Each box holds addresses and [email groups](#groups) as chips. Start typing to see suggestions
-  — every group and every address the app already knows — and press **Enter**, **Tab**, a comma
-  or a semicolon to add it. A pasted list is split into chips.
+  — every group and every address the app already knows, with what you typed in bold. The first
+  suggestion is highlighted: **Enter** or **Tab** adds it, or use the arrow keys to pick another.
+  With no suggestions, **Enter**, **Tab**, a comma or a semicolon adds what you typed. A pasted
+  list is split into chips.
 - Only a chip's **×** removes it. **Backspace** in an empty box removes the last chip.
 - Text that is neither a group nor an address stays in the box, outlined in red, until you fix it.
 - Suggestions only offer people who aren't in the list yet.
@@ -178,7 +187,7 @@ are optional.
   scheduled, emails only the *Test* recipients, and the subject starts with `[TEST]`. Check the
   report as long as you need.
 - **Production** (green pill) — runs email the *Production* recipients. Promote a job with the
-  card's **✓ Move to production** button; the confirmation shows exactly who will receive future
+  card's **Move to production** button; the confirmation shows exactly who will receive future
   reports. A job in Production can be moved back to Testing on the editor's Email tab.
 - Failures never send email — check the logs instead.
 - Emails attach the output Excel and the PDFs, and show how long the run took.
@@ -191,6 +200,9 @@ In **File → Settings → Email groups**, give a list of addresses a name (say 
 then use that name in any job's To, Cc or Bcc instead of typing each address.
 
 - Change a group's members once and every job that uses it follows.
+- **Double-click a group's chip** in a job to edit the group right there — its name and members.
+  The window says which other jobs use it, because the change applies to all of them as soon as
+  you click Save.
 - Renaming a group keeps those jobs pointing at it.
 - A group a job still uses can't be deleted — remove it from those jobs first, so no report
   silently loses its recipients.
@@ -209,6 +221,9 @@ press.
   [Email placeholders](#placeholders).
 - A mistake in a placeholder shows above the preview, in plain words and with its line number;
   the last good preview stays visible.
+- **Send test…** emails the template as it is now — no need to save first — to one address you
+  type: sample values, `[TEST]` in the subject, a note on top and no attachments. The address is
+  remembered for next time.
 
 **Using an .html file you made elsewhere:** click **Load from file…** in the template editor. By
 default a *copy* is saved with the job — later edits to the file are ignored. Tick **Keep linked
@@ -225,7 +240,8 @@ automatically.
 A placeholder is a name in double curly braces — like `{{ today }}` — that ReportFlow replaces
 with the real value when it sends the email. They work in the **email body** and in the job's
 **Subject**: click **{ } Insert placeholder** next to either one to pick from this list, with an
-example of each. Dates are the date the run *started*.
+example of each. The list opens under the button and stays open while you insert several; **Esc**
+or a click anywhere else closes it. Dates are the date the run *started*.
 
 <!-- placeholders -->
 
@@ -241,9 +257,9 @@ example of each. Dates are the date the run *started*.
 
 Each job card has two run buttons; the job's stage decides who gets the email:
 
-- **▶ Run** — builds the report and emails it: to the Test recipients while the job is in
+- **Run** — builds the report and emails it: to the Test recipients while the job is in
   **Testing**, to the Production recipients once it's in **Production**.
-- **👁 Build only** — builds and checks the report (for example that PI DataLink produced real
+- **Build only** — builds and checks the report (for example that PI DataLink produced real
   values) but **sends no email at all**.
 
 While a run is in flight the card counts the elapsed time and the run buttons lock, so a job
@@ -256,15 +272,15 @@ outcome ("last: success 2h ago") and the sheet count.
 
 Everything occasional is behind the card's **⋯** menu, so daily actions stay one click:
 
-- **📂 Open last report** — Explorer opens with the last successful report selected.
-- **✎ Edit** / **Logs** — the job editor and that job's run history.
-- **⧉ Duplicate** — a new job with *everything* copied: workbooks, sheet choices, output,
+- **Open last report** — Explorer opens with the last successful report selected.
+- **Edit** / **Logs** — the job editor and that job's run history.
+- **Duplicate** — a new job with *everything* copied: workbooks, sheet choices, output,
   schedules, recipients, advanced options and the email template. Only two things differ: you give
   it a new name, and it starts in Testing.
-- **⏸ Pause** — pauses the schedule. A paused job's whole card is dimmed (muted name, grey stage
-  pill and edge) and a one-click **▸ Resume** button appears. Manual runs still work while paused
+- **Pause** — pauses the schedule. A paused job's whole card is dimmed (muted name, grey stage
+  pill and edge) and a one-click **Resume** button appears. Manual runs still work while paused
   (the edge turns amber while one runs).
-- **🗑 Delete** — removes the job (it asks first).
+- **Delete** — removes the job (it asks first).
 
 Jobs run in parallel, each in its own Excel. Failed runs are never retried automatically — they
 stay visible in the history.
@@ -361,7 +377,7 @@ stay visible in the history.
 | **F1** | opens this guide at the part you're looking at |
 | **Ctrl+S** | saves the job editor, Settings or the template editor |
 | **Esc** | cancels — and asks first if you changed something |
-| **Enter** | adds what you typed in a recipient box; it never closes a window |
+| **Enter** | adds the highlighted suggestion (or what you typed) in a recipient box; it never closes a window |
 | **Delete** | removes the selected workbook (with Undo) |
 
 - Windows reopen at the size you left them.
@@ -406,7 +422,7 @@ for this account** to record the same trust for the service account (only for th
 administrator installed). PI usually installs one PI DataLink for 64-bit Excel and one for 32-bit
 Excel, so both are listed. A run whose PI DataLink isn't trusted says so in its warnings.
 
-After applying the account, click **👁 Build only** on the job to check. The worker log should show
+After applying the account, click **Build only** on the job to check. The worker log should show
 `Executing as DOMAIN\your_pi_user` (no trailing `$`) and
 `COM add-in 'PI DataLink': connected=True`, with real values instead of `#NAME?`.
 
@@ -449,7 +465,7 @@ worker.
 
 ### Build only — test without emailing {#dryrun}
 
-Each job card has a **👁 Build only** button (it used to be called "Dry run"). It builds the full
+Each job card has a **Build only** button (it used to be called "Dry run"). It builds the full
 output workbook and runs the same checks as a real run, but **never sends any email** — use it to
 confirm that PI DataLink (or any data source) produces real values before you rely on scheduled
 delivery. The result and any warnings show in the run history.

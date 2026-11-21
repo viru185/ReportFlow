@@ -206,13 +206,39 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   and the dialog's minimum size, check them (8/12/16 spacing, no clipping or sideways scroll,
   no overlapping corners, colours only from `style.py` tokens), fix, and only then move on.
   When there are several reasonable designs, ask; suggest extra UX improvements for the owner
-  to decide rather than slipping them in.
+  to decide rather than slipping them in. Use REALISTIC data (8+ long-named workbooks, a long or
+  UNC path, 15 sheets, long addresses) and also render at 150% (`QT_SCALE_FACTOR=1.5`, the
+  owner's laptop) — 0.13 passed QC on `C:/a.xlsx` fixtures and broke on real names. Grab the
+  popups too (menus, tooltips, dropdown / completer lists, popovers).
 
-## UI building blocks (0.13)
+## UI building blocks (0.13, kit in 0.14)
+
+- **Build UI from `ui/kit`, never raw widgets.** `Button(variant=primary|secondary|quiet|danger|
+  quiet-danger|dashed)`, `SegmentButton`+`segmented`, `IconButton(variant=icon|icon-danger|close|
+  dismiss|tool)`, `ComboBox` (rounded drop-below list, middle-elided text, wheel only when
+  focused), `SpinBox`/`TimeEdit`, `ListWidget`/`TableWidget`/`ScrollArea` (pixel + smooth
+  scroll, never sideways), `Menu`, `Popover` (frameless Qt.Popup panel under its anchor: Esc or
+  a click outside closes it — the app's replacement for small dialogs), `ElidedLabel`,
+  `PathLabel`, `Tag`, `breakable()`. The look stays in `style.py`, keyed by the `variant` /
+  `tag` / `badge` / `tone` / `banner` properties — colours only from its tokens.
+  `tests/ui/test_kit_usage.py` fails on raw `QPushButton(`, `QComboBox(`, `QMenu(`… or
+  `setStyleSheet(` outside `kit/` and `style.py` (an inline stylesheet also restyles that
+  widget's tooltip — the 0.13 amber square tooltip).
+- **Rounded popups need translucent windows, set BEFORE the first show** (`kit.popups.
+  round_popup`); `kit.chrome.install_chrome` (run by `apply_theme`) does it for Qt's own menus
+  and tooltips at Polish time. A translucent top-level QAbstractScrollArea paints NO stylesheet
+  background — so a QCompleter gets `kit.views.PopupList`, which paints its own panel
+  (`styled_completer`). QCompleter.setPopup replaces the item delegate: set yours after it.
+- **Never let QCompleter handle Enter in a field that rebuilds its model on change.** It
+  forwards Return to the line edit (editingFinished) and then completes a remembered row number
+  — after the first add rebuilt the list, the next address had moved into that row (0.13: one
+  Enter added two people). `RecipientField` filters the popup's Return/Enter/Tab itself (picks
+  the highlighted row, or row 0), and commits typed text on FocusOut, not editingFinished.
 
 - **Feedback, `ui/feedback.py`.** Information and success → `toast()` (fades, stacks, optional
-  Undo action). Validation → `set_field_error()` under the field + `mark_tab_errors()` dots; the
-  dialog switches to the first bad tab. Decisions (delete / discard / move to production) and
+  Undo action). Validation → `set_field_error(widget, message, help_anchor)` under the field
+  (with a "Learn more" link to that Help section) + `mark_tab_errors()` dots; the dialog switches
+  to the first bad tab. `field_error()` returns the plain message. Decisions (delete / discard / move to production) and
   errors with long details stay `QMessageBox`. Don't add OK pop-ups for good news.
 - **`FormDialog`** (job editor, Settings, template editor): Enter is swallowed (it never closes
   a form — the owner's bug report), Ctrl+S saves, F1 opens Help at `help_anchor()`, Esc / Cancel
@@ -223,7 +249,10 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   `vet()` refuses duplicates and addresses a group in the set already covers, a new group
   removes the chips it covers (with Undo) but never demotes from a higher field, and the
   completers leave out everything already included. `set_value()` NEVER applies these rules —
-  loading a job must not change it (or fire the unsaved-changes prompt).
+  loading a job must not change it (or fire the unsaved-changes prompt). Double-clicking a group
+  chip opens `ui/group_editor.py::EmailGroupDialog` (saves to Settings at once; the editor renames
+  its chips); `group_name_problem` is the one name rule, shared with Settings. There is no global
+  test-recipient fallback (removed 0.14; `TestSettings` drops an old `recipients` key on load).
 - **Workbooks.** `_WorkbookState` is the single source of truth: table edits write straight
   into the current workbook's state (no commit-on-switch — a background result merged into the
   visible workbook would be overwritten). Sheets are read by `ui/sheet_loader.py`: `PoolExecutor`
@@ -233,6 +262,16 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   missing, other errors = unreadable, no response = offline (a stopped service must never mark
   files missing). `merge_sheets` keeps included sheets that vanished as `missing` rows and only
   auto-ticks a fresh workbook. Tests use `InlineExecutor` / `ManualExecutor`.
+- **Output card** (`ui/windows/output_preview.py`): `plan_outputs()` mirrors the service's
+  naming (the `_{workbook}` suffix, `_email.xlsx`, `_<sheet>.pdf` or one combined `.pdf`) for the
+  workbook chosen on the card — change both together.
+- **Schedules:** `schedule_compile.find_conflicts()` is the one clash rule (same rule twice,
+  daily vs any dated rule at that time, same weekday/day-of-month, identical crons); the card
+  shows it and Save refuses. Weekly-vs-monthly dates that only sometimes meet are allowed — the
+  service's `SchedulerService._fire` starts a job at most once per minute.
+- **Send test email:** `POST /email/send-test` → `core.email.sender.send_template_test` (sample
+  context like the preview, `[TEST]` subject, no attachments). The UI sends on a parentless
+  QThread kept in a module set (closing the editor must not destroy a running thread).
 - **Placeholders** come from `core/email/render.py::PLACEHOLDERS` and
   `core/output_names.py::OUTPUT_NAME_TOKENS`; the picker (`ui/placeholder_picker.py`), the Help
   tables and the tooltips all read them — add a placeholder there, nowhere else.

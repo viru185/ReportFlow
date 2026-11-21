@@ -90,11 +90,19 @@ well on GitHub. Every field has a tooltip.
   changes* / *Keep editing*. Opening and closing without editing asks nothing.
 - **Problems are shown where they are.** When Save finds a problem, the field gets a red outline
   with the reason underneath and its tab gets a red dot; the editor jumps to the first one. The
-  mark clears as soon as it's fixed — no OK pop-ups.
+  mark clears as soon as it's fixed — no OK pop-ups. **Learn more** under the reason opens the
+  matching Help section (it can stay open while you fix the field).
+- **One look everywhere.** Menus, tooltips, dropdown lists and popovers are rounded; scrollbars
+  are slim; the mouse wheel scrolls smoothly, and only changes a dropdown or number once you have
+  clicked into it. Long names and paths are shortened in the middle (hover for the full text)
+  and pages never scroll sideways.
 - **Short messages fade on their own** ("Saved", "Logs sent", "Removed X — Undo") at the top of
   the window; hover keeps one visible. Real decisions (delete? discard? move to production?) still
   ask.
 - Dialogs **reopen at the size you left them**.
+- **Help → About** shows what is running and where: the service's status, version (warning when
+  it differs from the app's), account, schedule and PI DataLink trust; the data, logs and program
+  folders (copy / open); and **Copy details for support** for an email to support.
 
 ### Create a job
 
@@ -109,9 +117,10 @@ Click **+ New Job**. The editor is organized in sections:
   and drop them anywhere on the General tab. A file already in the job is skipped (its row
   flashes and a notice says which); folders, lock files and non-Excel files are refused with one
   notice. Each row shows its status — *3 of 5 sheets*, *Reading sheets…*, *⚠ File not found*,
-  *⚠ Can't open*, or *Service not reachable* — and, on hover or selection, **Replace…** (keeps the
-  sheet choices) and **Remove** (with **Undo**; the **Delete** key works too). Every run builds
-  all the workbooks and sends **one** email with every file attached.
+  *⚠ Can't open*, or *Service not reachable*. **Replace…** (keeps the sheet choices) and
+  **Remove** (with **Undo**) sit beside the selected workbook's name, with its path (copy / open
+  in Explorer) underneath; right-click and the **Delete** key work too. Every run builds all the
+  workbooks and sends **one** email with every file attached.
 - **Sheets are read automatically** — when the editor opens, when a file is added or replaced,
   when you select a workbook and when you come back to the window — so the list is always
   current; there is no Browse or Discover button. A new workbook has every sheet ticked; sheets
@@ -133,9 +142,12 @@ Click **+ New Job**. The editor is organized in sections:
   so a job that runs twice in one day never overwrites its earlier report. Placeholders
   (**{ } Insert placeholder** beside the field lists them with examples):
   `{job}`, `{date}`, `{time}`, `{datetime}`, `{run_id}`, `{workbook}`. With several workbooks
-  `_{workbook}` is added automatically. A live example shows the resulting names (and warns
-  when a custom name has no time). Each run writes `<name>.xlsx` per workbook plus one
+  `_{workbook}` is added automatically. Each run writes `<name>.xlsx` per workbook plus one
   `<name>_<sheet>.pdf` per sheet with PDF ticked.
+- **Each run creates** — a card listing every file a run makes with its real name: where it is
+  saved, the full copy (*kept on disk*), the Excel attachment and the PDFs (*emailed*); with
+  several workbooks, pick which one to show ("one set per workbook"). It warns when a custom name
+  has no time.
 - **Freeze formulas to values**.
 - **If a workbook fails** (several workbooks only) — fail the whole run and send nothing
   (default), or send the workbooks that worked with a warning naming the failed one.
@@ -147,8 +159,11 @@ with its own ×; **+ Add time** opens a small picker — press **Add** (or Enter
 appears as a pill straight away, so every time shown is a time that will run (a time already in
 the rule is refused in the picker). Weekly rules pick days with **Mon … Sun** toggles. Each card
 has a quiet **Remove**. The summary above the cards says when the job runs, and turns amber with
-the reason when a rule can't be used — e.g. two rules that would fire at the same moment (the
-job would run twice).
+the reason when a rule can't be used. Two rules that would start the job at the same moment
+(the same rule twice, or Daily 06:00 and Sunday 06:00) are caught as you edit: the later card is
+outlined in red with the reason and Save waits — nothing is merged away silently. The service
+also never starts a job twice in the same minute (e.g. weekly Monday + monthly day 1 on a Monday
+the 1st).
 
 **Email** — subject (placeholders work here too, e.g. `Daily report — {{ today }}`; **{ }
 Insert placeholder** beside it), recipients, and the template editor (next section).
@@ -167,7 +182,7 @@ optional can be left blank.
 
 Every job starts in **Testing**: every run — manual **and scheduled** — emails only the
 **Test** recipients (subject prefixed `[TEST]`), so the report is verified internally first.
-When you're happy with it, click **✓ Move to production** on the job card (the confirmation
+When you're happy with it, click **Move to production** on the job card (the confirmation
 names the production recipients); from then on runs email the **client**. A job in Production
 can be moved back to Testing from the job editor's Email tab. The card shows an amber
 **Testing** / green **Production** pill so the state is always visible. (The config file still
@@ -178,13 +193,16 @@ stores the promoted stage as `stage = "live"`.)
 Each job has two recipient sets — **production** and **test** — each with **To** (required),
 **Cc** (optional), and **Bcc** (optional). Each box holds addresses and **email groups** as
 chips: type to search the groups and every address the app already knows (all jobs, group
-members, Settings addresses); Enter, Tab, `,` or `;` adds it, and a pasted list is split. Only a
-chip's **×** removes it; Backspace in an empty box removes the last chip. Suggestions leave out
-whoever is already in the set (directly or through a group).
+members, the support address); what you typed shows in bold and the first suggestion is
+highlighted — **Enter** or **Tab** adds it (arrows pick another). Without suggestions, Enter,
+Tab, `,` or `;` adds what you typed, and a pasted list is split. Only a chip's **×** removes it;
+Backspace in an empty box removes the last chip. Suggestions leave out whoever is already in the
+set (directly or through a group).
 
 - **Email groups** (File → Settings → Email groups) — name a list of addresses once and use the
-  name in any job. Renaming a group keeps its jobs pointing at it; a group a job still uses
-  can't be deleted.
+  name in any job. **Double-click a group's chip** in a job to edit the group there (it says
+  which other jobs use it; Save applies to all of them). Renaming a group keeps its jobs pointing
+  at it; a group a job still uses can't be deleted.
 - **Each person is added once.** Adding an address or group that is already in the set — or an
   address a group in the set already covers — is refused, the existing chip flashes, and a note
   under the boxes says where it already is (no pop-up). Adding a group removes the chips it now
@@ -203,12 +221,15 @@ editor opens large (and remembers its size) with your message on the left — **
 no Preview button. **Show the email as Testing | Production** switches the preview between the
 emails each stage sends — subject (with `[TEST]` on Testing), To/Cc and body — for this job. A
 mistake in a placeholder shows above the preview in plain words, with its line number, while the
-last good preview stays visible. The template is stored per job; leave it untouched to use the
-built-in default.
+last good preview stays visible. **Send test…** emails the template as it is now (no need to
+save) to one address you type — sample values, `[TEST]` in the subject, no attachments — and
+remembers the address. The template is stored per job; leave it untouched to use the built-in
+default.
 
 - **Placeholders** — **{ } Insert placeholder** (in the template editor, beside the Subject and
-  beside the output file name) opens a searchable list with an example of each; double-click,
-  Enter or **Insert** puts one at the cursor and the list stays open for the next. Dates
+  beside the output file name) opens a searchable popover with an example of each; double-click,
+  Enter or **Insert** puts one at the cursor and it stays open for the next — Esc or a click
+  elsewhere closes it. Dates
   (`{{ today }}`, `{{ yesterday }}`, `{{ now }}`, `{{ weekday }}`,
   `{{ month }}`, `{{ previous_month }}`, `{{ week_number }}`, or any format via
   `{{ run_date.strftime('%d/%m/%Y') }}`), run facts (job, status, stage, timings, warnings) and
@@ -223,9 +244,9 @@ built-in default.
 
 Two single-click actions on each job card — the job's stage answers "who gets the email":
 
-- **▶ Run** — builds the report and emails per the stage (testers while Testing, the client
+- **Run** — builds the report and emails per the stage (testers while Testing, the client
   once in Production).
-- **👁 Build only** — builds and verifies the report (checks the data) but emails no one.
+- **Build only** — builds and verifies the report (checks the data) but emails no one.
 - **Schedule** — the service runs enabled jobs on their configured times automatically; each
   configured time registers its own trigger, honouring the job's stage. Scheduled cards show
   **when the next run fires** ("next: tomorrow 06:00").
@@ -321,7 +342,7 @@ and PI access):
   credentials before continuing — enter the PI-enabled user there.
 - **Admin PowerShell (alternative):** `scripts\set-service-account.ps1 -User "DOMAIN\your_pi_user"`.
 - **Verify:** **File → Settings → Service account** shows the current account (and warns in red
-  if it is LocalSystem); the dashboard shows a warning banner too. Then click **👁 Build only**
+  if it is LocalSystem); the dashboard shows a warning banner too. Then click **Build only**
   on the job — the worker log should read `Executing as DOMAIN\your_pi_user` (no trailing `$`)
   and `COM add-in 'PI DataLink': connected=True`, with real values.
 
@@ -341,7 +362,7 @@ references stay intact, and the file always opens. If the *input* file won't ope
 Mark-of-the-Web: right-click → Properties → **Unblock** (or add its folder as a Trusted
 Location); reports still generate because the service opens files via automation.
 
-**Build only** (👁 on each job card) builds the full report and runs the checks but never emails
+**Build only** (on each job card) builds the full report and runs the checks but never emails
 — use it to confirm PI data before relying on scheduled delivery.
 
 **Email failures no longer pass silently:** when a run builds but the email cannot be sent,
@@ -564,7 +585,9 @@ src/reportflow/
   worker/          xlwings automation (the only xlwings importer)
   service/         FastAPI app, launcher, scheduler, bootstrap, workbook discovery
   ui/              PySide6 app: api_client + windows
-    feedback.py    toasts, field errors + tab dots, FormDialog (Enter/Ctrl+S/F1/Esc, sizes)
+    kit/           the widgets every window is built from (buttons, dropdowns, lists, menus,
+                   popovers, labels) + chrome.py (rounded Qt popups, smooth scrolling)
+    feedback.py    toasts, field errors (+ Learn more) + tab dots, FormDialog (Enter/Ctrl+S/F1/Esc, sizes)
     sheet_loader.py  background sheet reading for the workbook list
     help/user_guide.md  the in-app user guide (Markdown, bundled with the UI)
   build.py         reportflow-build: the exes + installer (dev tool, never frozen)
