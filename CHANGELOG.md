@@ -1,6 +1,53 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
+## [0.14.0] - 2026-11-21
+
+### Bug Fixes
+- Restart the service after an in-app account change
+- Label the 32- and 64-bit PI DataLink copies by Excel
+- One Enter adds one suggestion; edit a group from its chip
+- Tab panel corners are drawn whole; no empty pill on "Saved in"
+
+### Build
+- One uv command for local exe and installer builds
+- Run the build as the reportflow-build console script
+- Bundle every icon in assets/, not a hand-kept list
+
+### Chores
+- Prepare 0.12.0-beta
+- 0.13.0-beta
+- 0.14.0-beta
+- Prepare 0.14.0
+
+### Documentation
+- Email groups, Production stage, PI trust and 0.12 changes
+- The 0.13 UI round in the README and the project guide
+- The 0.14 UI round in the README, the user guide and the project guide
+
+### Features
+- Trust PI DataLink for the service account from Settings
+- Email groups, recipient autocomplete and concurrency-group suggestions
+- Call the promoted stage "Production" and dim paused job cards
+- Preview the template as the Testing or the Production email
+- Add several workbooks in one go and warn about duplicates
+- Forms never close on Enter, ask before discarding edits, and fix dropdown corners
+- Recipient chips with their own x, one person per list, focused suggestions
+- Insert placeholder picker for the subject and the output file name
+- A large template editor with a live, side-by-side preview
+- Workbook list with automatic sheets, drag-and-drop, Replace and Remove
+- Compact cards; + Add time opens a picker, so every time shown runs
+- Problems shown on their fields, fading notices instead of OK popups
+- A Markdown user guide with sections, search and callouts
+- One component kit for every window
+- A useful About page, and tabs that join their page
+- Placeholder popover and Send test from the template editor
+- An "Each run creates" card, and schedule clashes on the card
+- "Learn more" on field errors opens the matching Help section
+
+### Tests
+- Put the repo root on pytest's path so CI collects the suite again
+
 ## [0.11.4] - 2026-11-16
 
 ### Bug Fixes
