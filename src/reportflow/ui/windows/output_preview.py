@@ -113,8 +113,9 @@ class _FileRow:
         self.name.setToolTip(tip or name)
         self.tag.setText(tag)
         self.tag.set_kind("info" if tag == "emailed" else "neutral")
-        self.tag.setVisible(bool(tag))
         self.set_visible(True)
+        # After set_visible: an empty tag showed as a small empty pill ("Saved in" has none).
+        self.tag.setVisible(bool(tag))
 
     def set_visible(self, visible: bool) -> None:
         for widget in (self.icon, self.what, self.name, self.tag):

@@ -133,6 +133,14 @@ class ScrollArea(QScrollArea):
         if content is not None:
             self.setWidget(content)
 
+    def setWidget(self, widget: QWidget) -> None:  # noqa: N802
+        super().setWidget(widget)
+        # QScrollArea.setWidget turns the page's autoFillBackground ON. That square fill
+        # painted over the rounded corners of the frame around the page — the tab panel's
+        # corner arcs went missing (owner's screenshots, 0.14). The page shows what is
+        # behind it instead; the frame already paints the same background.
+        widget.setAutoFillBackground(False)
+
 
 class ListWidget(QListWidget):
     """A list with pixel scrolling, no sideways scrolling and no dotted focus rectangle."""

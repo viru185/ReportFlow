@@ -184,3 +184,26 @@ def test_path_label_copies_the_full_path(qtbot):
     label.copy_button.click()
     clipboard = QGuiApplication.clipboard()
     assert clipboard is not None and clipboard.text() == path
+
+
+def test_a_scrolling_page_never_paints_over_its_frames_rounded_corners(qtbot, themed):
+    """QScrollArea.setWidget turns the page's background fill on; that square fill hid the
+    tab panel's corner arcs (owner's screenshots, 0.14)."""
+    from PySide6.QtWidgets import QTabWidget
+
+    from reportflow.ui.style import BG
+
+    inner = QWidget()
+    QVBoxLayout(inner).addWidget(QLabel("content"))
+    page = ScrollArea(inner)
+    assert not inner.autoFillBackground()
+    tabs = QTabWidget()
+    qtbot.addWidget(tabs)
+    tabs.addTab(page, "General")
+    tabs.resize(400, 240)
+    tabs.show()
+    qtbot.waitExposed(tabs)
+    image = tabs.grab().toImage()
+    h = image.height()
+    corner = [image.pixelColor(i, h - 1 - i).name() for i in range(1, 4)]
+    assert any(color != BG for color in corner), corner  # the border's curve is visible

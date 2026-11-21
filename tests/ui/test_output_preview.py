@@ -82,3 +82,13 @@ def test_the_card_shows_the_chosen_workbooks_own_choices(qtbot):
     assert dlg._current_wb == 0  # picking on the card doesn't change the General tab
     dlg._show_workbook(1)  # the General tab's choice moves the card along
     assert card.selected() == 1
+
+
+def test_a_row_without_a_tag_shows_no_empty_pill(qtbot):
+    from reportflow.ui.windows.output_preview import OutputPreview
+
+    card = OutputPreview()
+    qtbot.addWidget(card)
+    card.show_plan(_plan(output_dir=r"C:\Reports\out"))
+    assert card.folder.tag.isHidden()  # "Saved in" has no tag
+    assert not card.rows[0].tag.isHidden() and card.rows[0].tag.text() == "kept on disk"
