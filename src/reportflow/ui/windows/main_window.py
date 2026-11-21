@@ -830,7 +830,12 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _open_about(self) -> None:
-        AboutDialog(self, api_base_url=self._api.base_url, connected=self._connected).exec()
+        AboutDialog(
+            self,
+            api=self._api,
+            on_help=self._open_help,
+            on_check_updates=self._manual_update_check,
+        ).exec()
 
     # -- updates ---------------------------------------------------------------------
 

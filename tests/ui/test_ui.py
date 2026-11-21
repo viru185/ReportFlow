@@ -1186,8 +1186,9 @@ def test_about_dialog_shows_metadata(qtbot):
     from reportflow import __about__ as about
     from reportflow.ui.windows.about_dialog import AboutDialog
 
-    dlg = AboutDialog(api_base_url="http://127.0.0.1:8787", connected=True)
+    dlg = AboutDialog(api=FakeApi())
     qtbot.addWidget(dlg)
+    qtbot.waitUntil(lambda: dlg.service_state.text().startswith("● Connected"))
     assert about.AUTHOR == "Viren Hirpara"
     assert "viru185/ReportFlow" in about.REPO_URL
     visible_text = "\n".join(label.text() for label in dlg.findChildren(QLabel))

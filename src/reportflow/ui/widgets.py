@@ -41,6 +41,9 @@ def space_layout(layout: QLayout | None, *, margin: int = 16) -> None:
 def section_title(text: str) -> QLabel:
     label = QLabel(text)
     label.setProperty("section", True)
+    # A label with stylesheet padding counts as framed, and Qt then indents its text by
+    # half an "x" — the title sat ~6 px right of the fields under it.
+    label.setIndent(0)
     return label
 
 

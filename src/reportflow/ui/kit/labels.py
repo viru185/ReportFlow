@@ -157,6 +157,7 @@ class Tag(QLabel):
     def __init__(self, text: str, parent: QWidget | None = None, *, kind: str = "neutral") -> None:
         super().__init__(text, parent)
         self.setProperty("tag", kind)
+        self.setIndent(0)  # padded labels count as framed; no automatic text indent
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 

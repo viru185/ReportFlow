@@ -363,6 +363,9 @@ class JobEditorDialog(FormDialog):
         self.sheets.setHorizontalHeaderLabels(
             ["Sheet", "Include", "Excel attachment", "PDF", "Hidden"]
         )
+        name_header = self.sheets.horizontalHeaderItem(_COL_NAME)
+        if name_header is not None:  # over the names it heads, not centred in the gap
+            name_header.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.sheets.verticalHeader().setVisible(False)
         self.sheets.verticalHeader().setDefaultSectionSize(34)
         self.sheets.setTabKeyNavigation(True)

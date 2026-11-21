@@ -518,24 +518,32 @@ QRadioButton::indicator:checked {{
     background: {ACCENT};
     border-color: {ACCENT};
 }}
+/* The selected tab is the page's own colour and covers the panel's top line, so it reads
+   as part of the page; the panel's top-left corner is square because the first tab sits
+   right on it (a rounded one poked out under the tab). */
 QTabWidget::pane {{
     border: 1px solid {BORDER};
     border-radius: 6px;
-    background: {FIELD_BG};
+    border-top-left-radius: 0;
+    background: {BG};
+    top: -1px;
 }}
 QTabBar::tab {{
     background: {CARD_BG};
     color: {TEXT_MUTED};
     border: 1px solid {BORDER};
-    border-bottom: none;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
     padding: 5px 16px;
     margin-right: 2px;
 }}
-QTabBar::tab:selected {{
-    background: {FIELD_BG};
+QTabBar::tab:hover:!selected {{
     color: {TEXT};
+}}
+QTabBar::tab:selected {{
+    background: {BG};
+    color: {TEXT};
+    border-bottom-color: {BG};
 }}
 QMenuBar {{
     background: {CARD_BG};
