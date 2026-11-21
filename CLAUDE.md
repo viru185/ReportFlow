@@ -54,7 +54,11 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
 5. **Every address is emailed once.** Email groups are expanded in exactly one place,
    `core/email/recipients.py::resolve` (To > Cc > Bcc, case-insensitive). The sender and the
    template preview follow that rule; the editor additionally refuses overlaps as they are
-   typed (`RecipientSet`, below), with `resolve` as the safety net for old jobs. Likewise the
+   typed (`RecipientSet`, below), with `resolve` as the safety net for old jobs. **Order is
+   kept** (0.15): `Recipients.to/cc/bcc` are ONE ordered list each — an address is a string, a
+   group `{group = "..."}` (`GroupRef`) — and the email lists people in that order, a group's
+   members at its place. Pre-0.15 `to_groups`/`cc_groups`/`bcc_groups` fold in after the
+   addresses (`Recipients._fold_legacy_groups`), which is how they were sent. Likewise the
    subject (`[TEST] ` prefix included) comes only from `core/email/render.py::final_subject`,
    which the sender and the template preview share — don't build a subject anywhere else.
 
@@ -219,7 +223,7 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   focused), `SpinBox`/`TimeEdit`, `ListWidget`/`TableWidget`/`ScrollArea` (pixel + smooth
   scroll, never sideways), `Menu`, `Popover` (frameless Qt.Popup panel under its anchor: Esc or
   a click outside closes it — the app's replacement for small dialogs), `ElidedLabel`,
-  `PathLabel`, `Tag`, `breakable()`. The look stays in `style.py`, keyed by the `variant` /
+  `PathLabel`, `Tag`, `breakable()`, `Reorder` (0.15, below). The look stays in `style.py`, keyed by the `variant` /
   `tag` / `badge` / `tone` / `banner` properties — colours only from its tokens.
   `tests/ui/test_kit_usage.py` fails on raw `QPushButton(`, `QComboBox(`, `QMenu(`… or
   `setStyleSheet(` outside `kit/` and `style.py` (an inline stylesheet also restyles that
@@ -247,9 +251,14 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   the discard prompt so qtbot teardown never blocks.
 - **Recipients, `ui/recipient_field.py::RecipientSet`.** One coordinator per To/Cc/Bcc set:
   `vet()` refuses duplicates and addresses a group in the set already covers, a new group
-  removes the chips it covers (with Undo) but never demotes from a higher field, and the
-  completers leave out everything already included. `set_value()` NEVER applies these rules —
-  loading a job must not change it (or fire the unsaved-changes prompt). Double-clicking a group
+  removes the chips it covers (with Undo, back in place) but never demotes from a higher field,
+  and the completers leave out everything already included. `set_entries()` NEVER applies these
+  rules — loading a job must not change it (or fire the unsaved-changes prompt). Chips (0.15):
+  drag within / between boxes of one set, double-click or F2 edits an address in place, a
+  right-click menu, ←/→/Alt+←/→/Delete. A move or an edit goes through `vet(..., ignore=chip)`;
+  chips are rebuilt only AFTER `QDrag.exec` / `Menu.exec` return (never inside the nested
+  loop). The in-place editor's QSS `min-height` must keep it at the chip's 24 px — a min above
+  its fixed height broke the box's height-for-width (rows clipped). Double-clicking a group
   chip opens `ui/group_editor.py::EmailGroupDialog` (saves to Settings at once; the editor renames
   its chips); `group_name_problem` is the one name rule, shared with Settings. There is no global
   test-recipient fallback (removed 0.14; `TestSettings` drops an old `recipients` key on load).
@@ -265,6 +274,14 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
 - **Output card** (`ui/windows/output_preview.py`): `plan_outputs()` mirrors the service's
   naming (the `_{workbook}` suffix, `_email.xlsx`, `_<sheet>.pdf` or one combined `.pdf`) for the
   workbook chosen on the card — change both together.
+- **Reordering lists, `ui/kit/reorder.py::Reorder`** (0.15: workbooks, schedules, job cards):
+  the host gives `rows()` and handles `moved(from, to)`; `attach(row, inset=…)` puts the grip
+  in the row's left margin (rows keep a 16 px left margin for it), `keys()` adds Alt+↑/↓.
+  `moved` is emitted on the next loop turn, so a host may rebuild the rows (and their
+  shortcuts) safely; while `dragging`, don't rebuild (the dashboard defers its refresh). Show
+  shortcut keys in menus as text after a tab (`"Move up	Alt+↑"`), never `setShortcut` — the
+  same key on every card's menu is ambiguous and Qt then runs none of them. The dashboard order
+  is saved by `POST /jobs/reorder` (all names once, else 409 → reload).
 - **Schedules:** `schedule_compile.find_conflicts()` is the one clash rule (same rule twice,
   daily vs any dated rule at that time, same weekday/day-of-month, identical crons); the card
   shows it and Save refuses. Weekly-vs-monthly dates that only sometimes meet are allowed — the
