@@ -82,6 +82,9 @@ disable_error_code = ["operator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The repo root on sys.path, so tests can share helpers as ``tests.core.test_email`` under
+# plain ``pytest`` too (CI) — not only ``python -m pytest``, which adds the cwd itself.
+pythonpath = ["."]
 # Only collect classes ending in "Tests"; keeps pytest from trying to collect domain
 # models like TestSettings as test classes.
 python_classes = ["*Tests"]
