@@ -52,8 +52,9 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
 4. **Non-mandatory settings stay optional.** `To` is required (an address or an email group);
    `Cc`/`Bcc` optional. Don't make a new setting mandatory without asking.
 5. **Every address is emailed once.** Email groups are expanded in exactly one place,
-   `core/email/recipients.py::resolve` (To > Cc > Bcc, case-insensitive). The sender, the
-   editor's unique count and the template preview all follow that rule. Likewise the
+   `core/email/recipients.py::resolve` (To > Cc > Bcc, case-insensitive). The sender and the
+   template preview follow that rule; the editor additionally refuses overlaps as they are
+   typed (`RecipientSet`, below), with `resolve` as the safety net for old jobs. Likewise the
    subject (`[TEST] ` prefix included) comes only from `core/email/render.py::final_subject`,
    which the sender and the template preview share — don't build a subject anywhere else.
 
@@ -199,6 +200,46 @@ Repo: `github.com/viru185/ReportFlow` · Inno AppId `{7F3C6A20-9B4E-4E2A-9C1D-RE
   menu; only daily actions (Run, Build only, Move to production/Resume) stay as visible
   buttons. Don't
   "fix" that back to a button row — 9+ visible buttons per card was the problem.
+- **The owner is very sensitive to unpolished UI.** After ANY UI change: run the full gate,
+  then render the changed screens (offscreen `QWidget.grab()` with the real Windows fonts) in
+  their empty / typical / many-items / error states at the editor default 900×680, 1280×800
+  and the dialog's minimum size, check them (8/12/16 spacing, no clipping or sideways scroll,
+  no overlapping corners, colours only from `style.py` tokens), fix, and only then move on.
+  When there are several reasonable designs, ask; suggest extra UX improvements for the owner
+  to decide rather than slipping them in.
+
+## UI building blocks (0.13)
+
+- **Feedback, `ui/feedback.py`.** Information and success → `toast()` (fades, stacks, optional
+  Undo action). Validation → `set_field_error()` under the field + `mark_tab_errors()` dots; the
+  dialog switches to the first bad tab. Decisions (delete / discard / move to production) and
+  errors with long details stay `QMessageBox`. Don't add OK pop-ups for good news.
+- **`FormDialog`** (job editor, Settings, template editor): Enter is swallowed (it never closes
+  a form — the owner's bug report), Ctrl+S saves, F1 opens Help at `help_anchor()`, Esc / Cancel
+  / × go through `confirm_discard` when the canonical `_dirty_key()` changed, and geometry is
+  remembered (QSettings, IniFormat). `tests/ui/conftest.py` isolates QSettings and auto-answers
+  the discard prompt so qtbot teardown never blocks.
+- **Recipients, `ui/recipient_field.py::RecipientSet`.** One coordinator per To/Cc/Bcc set:
+  `vet()` refuses duplicates and addresses a group in the set already covers, a new group
+  removes the chips it covers (with Undo) but never demotes from a higher field, and the
+  completers leave out everything already included. `set_value()` NEVER applies these rules —
+  loading a job must not change it (or fire the unsaved-changes prompt).
+- **Workbooks.** `_WorkbookState` is the single source of truth: table edits write straight
+  into the current workbook's state (no commit-on-switch — a background result merged into the
+  visible workbook would be overwritten). Sheets are read by `ui/sheet_loader.py`: `PoolExecutor`
+  (2 threads, one short-lived `ApiClient` per read, results via an app-lifetime bridge — never a
+  QThread per request: destroying a running QThread aborts the process); the newest request per
+  workbook wins; mark "reading" BEFORE requesting (an inline result can arrive first). 404 =
+  missing, other errors = unreadable, no response = offline (a stopped service must never mark
+  files missing). `merge_sheets` keeps included sheets that vanished as `missing` rows and only
+  auto-ticks a fresh workbook. Tests use `InlineExecutor` / `ManualExecutor`.
+- **Placeholders** come from `core/email/render.py::PLACEHOLDERS` and
+  `core/output_names.py::OUTPUT_NAME_TOKENS`; the picker (`ui/placeholder_picker.py`), the Help
+  tables and the tooltips all read them — add a placeholder there, nowhere else.
+- **Help** is `ui/help/user_guide.md` (bundled via `ui.spec` datas). Headings carry ids
+  (`## Schedules {#schedule}`) used by F1 and `#links`; `<!-- placeholders -->`,
+  `<!-- recipes -->`, `<!-- output-tokens -->` are filled at load. `tests/ui/test_help.py`
+  guards every anchor and a list of facts the old guide taught — keep both when editing it.
 
 
 ## Attachment and PI activation invariants (0.11.1 beta)

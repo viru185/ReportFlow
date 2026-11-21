@@ -10,7 +10,7 @@ stay isolated at runtime:
 
 | Executable | Role |
 |---|---|
-| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs, discover sheets, run, move to production, view logs. |
+| **UI** (`reportflow-ui`) | Local desktop app (PySide6): manage jobs and their workbooks, run, move to production, view logs. |
 | **Service** (`reportflow-service`) | Background control plane: localhost API + scheduler; launches workers. Runs as a Windows service (via NSSM). |
 | **Excel Worker** (`reportflow-worker`) | Short-lived process that does the Excel automation for one run, then exits. |
 
@@ -24,11 +24,15 @@ report layout in code.
 - [User guide](#user-guide)
   - [Install](#install)
   - [First run](#first-run)
+  - [Working in the app](#working-in-the-app)
   - [Create a job](#create-a-job)
+  - [Job lifecycle: Testing → Production](#job-lifecycle-testing--production)
   - [Recipients & email template](#recipients--email-template)
-  - [Run, test, and schedule](#run-test-and-schedule)
+  - [Run and schedule](#run-and-schedule)
   - [Logs & diagnostics](#logs--diagnostics)
-  - [SMTP settings](#smtp-settings)
+  - [Settings (SMTP, support email, application)](#settings-smtp-support-email-application)
+  - [Import, export & updates](#import-export--updates)
+  - [Workbooks using PI DataLink](#workbooks-using-pi-datalink-or-other-excel-add-ins)
   - [Where data lives](#where-data-lives)
 - [Developer guide](#developer-guide)
   - [Prerequisites](#prerequisites)
@@ -72,8 +76,25 @@ your configuration, logs, and run history**, and restarts the service.
    runs, recent failures) and one card per job with Run / Test / Edit / Logs buttons.
 
 The service creates a default configuration and email template on first start — you don't need
-to hand-create anything. An in-app **Help guide** (menu → Help) walks through everything below,
-and every field has a tooltip.
+to hand-create anything. The in-app **user guide** (**F1**, or Help → Help guide) walks through
+everything below for everyday users, with a section list and search; **F1** in a dialog opens it
+at the part for the current tab. Its source is
+[`src/reportflow/ui/help/user_guide.md`](src/reportflow/ui/help/user_guide.md), so it also reads
+well on GitHub. Every field has a tooltip.
+
+### Working in the app
+
+- **Enter never closes a window.** In a recipient box it adds what you typed; elsewhere it does
+  nothing. **Ctrl+S** saves the job editor, Settings and the template editor; **Esc** cancels.
+- **Unsaved changes are never lost by accident** — closing an edited window asks *Discard
+  changes* / *Keep editing*. Opening and closing without editing asks nothing.
+- **Problems are shown where they are.** When Save finds a problem, the field gets a red outline
+  with the reason underneath and its tab gets a red dot; the editor jumps to the first one. The
+  mark clears as soon as it's fixed — no OK pop-ups.
+- **Short messages fade on their own** ("Saved", "Logs sent", "Removed X — Undo") at the top of
+  the window; hover keeps one visible. Real decisions (delete? discard? move to production?) still
+  ask.
+- Dialogs **reopen at the size you left them**.
 
 ### Create a job
 
@@ -82,11 +103,22 @@ Click **+ New Job**. The editor is organized in sections:
 **General**
 - **Job name** — unique; also used in output filenames. You can **rename** a job later — its
   run history and email template follow the new name.
-- **Workbooks** — one tab per input Excel file; **+ Add workbook…** adds others (pick several
-  at once; a file already in the job is skipped with a warning). Every run builds all of them
-  and sends **one** email with every file attached.
-- **Input Excel file** — browse to the `.xlsx`/`.xlsm`. The app **discovers the sheet names**
-  automatically. (Stored by *name*, so reordering sheets is safe.)
+- **Workbooks** — the job's Excel files are listed on the left; the selected one's details and
+  sheets are on the right (below 720 px of width the list sits above the details). **+ Add
+  workbooks…** picks one or several `.xlsx`/`.xlsm` files at once, or **drag them from Explorer**
+  and drop them anywhere on the General tab. A file already in the job is skipped (its row
+  flashes and a notice says which); folders, lock files and non-Excel files are refused with one
+  notice. Each row shows its status — *3 of 5 sheets*, *Reading sheets…*, *⚠ File not found*,
+  *⚠ Can't open*, or *Service not reachable* — and, on hover or selection, **Replace…** (keeps the
+  sheet choices) and **Remove** (with **Undo**; the **Delete** key works too). Every run builds
+  all the workbooks and sends **one** email with every file attached.
+- **Sheets are read automatically** — when the editor opens, when a file is added or replaced,
+  when you select a workbook and when you come back to the window — so the list is always
+  current; there is no Browse or Discover button. A new workbook has every sheet ticked; sheets
+  that appear later in a job's workbook arrive unticked. An included sheet that is **no longer in
+  the file** stays in its place marked *⚠ not in the file any more*, and the job can't be saved
+  until it is unticked or the file replaced (it used to fail every run). A missing or unreadable
+  file never blocks Save. (Sheets are stored by *name*, so reordering sheets is safe.)
 - **Sheets** — one row per sheet: **Include** (refresh, check and freeze it), **PDF** (also
   export it as its own PDF) and **Hidden** (keep it in the Excel file but hidden — recipients
   can unhide it; it can still get a PDF). At least one included sheet must stay visible. Click
@@ -98,7 +130,8 @@ Click **+ New Job**. The editor is organized in sections:
 - **Output folder** — browse to where results are saved, or leave empty to save **next to the
   input file**.
 - **Filename** — optional stem; empty means `{job}_{datetime}` (e.g. `Sales_20261007_061500`),
-  so a job that runs twice in one day never overwrites its earlier report. Placeholders:
+  so a job that runs twice in one day never overwrites its earlier report. Placeholders
+  (**{ } Insert placeholder** beside the field lists them with examples):
   `{job}`, `{date}`, `{time}`, `{datetime}`, `{run_id}`, `{workbook}`. With several workbooks
   `_{workbook}` is added automatically. A live example shows the resulting names (and warns
   when a custom name has no time). Each run writes `<name>.xlsx` per workbook plus one
@@ -107,13 +140,18 @@ Click **+ New Job**. The editor is organized in sections:
 - **If a workbook fails** (several workbooks only) — fail the whole run and send nothing
   (default), or send the workbooks that worked with a warning naming the failed one.
 
-**Schedule** — no schedule = manual. **+ Add schedule** adds a **Daily**, **Weekly**,
-**Monthly** or **Custom (cron)** rule; add several to combine them — e.g. daily at 06:00
-*and* every Sunday at 10:00. Each run time is a chip with its own ✕, each rule its own
-Delete. Rules that would fire at the same moment are refused (the job would run twice).
+**Schedule** — no schedule = manual. **+ Add schedule** adds a compact card for a **Daily**,
+**Weekly**, **Monthly** or **Custom (cron)** rule; add several to combine them — e.g. daily at
+06:00 *and* every Sunday at 10:00. A card's **Runs at** row shows each time as a small pill
+with its own ×; **+ Add time** opens a small picker — press **Add** (or Enter) and the time
+appears as a pill straight away, so every time shown is a time that will run (a time already in
+the rule is refused in the picker). Weekly rules pick days with **Mon … Sun** toggles. Each card
+has a quiet **Remove**. The summary above the cards says when the job runs, and turns amber with
+the reason when a rule can't be used — e.g. two rules that would fire at the same moment (the
+job would run twice).
 
-**Email** — subject (placeholders work here too, e.g. `Daily report — {{ today }}`),
-recipients, and the template editor (next section).
+**Email** — subject (placeholders work here too, e.g. `Daily report — {{ today }}`; **{ }
+Insert placeholder** beside it), recipients, and the template editor (next section).
 
 **Advanced** — **Time limit** (minutes; the run is stopped and marked *Timed out* after
 this — raise it for big PI reports that need 20+ minutes), **Wait for add-in data** (keep
@@ -122,7 +160,7 @@ changing), **Concurrency group** (groups other jobs use are suggested as you typ
 empty/error-cell checks, **Blank out values**, notes.
 Each setting has a one-line explanation right under it.
 
-Only the input file, at least one sheet, and the **To** addresses are required. Everything
+Only a workbook, at least one sheet, and the **To** addresses are required. Everything
 optional can be left blank.
 
 ### Job lifecycle: Testing → Production
@@ -140,27 +178,38 @@ stores the promoted stage as `stage = "live"`.)
 Each job has two recipient sets — **production** and **test** — each with **To** (required),
 **Cc** (optional), and **Bcc** (optional). Each box holds addresses and **email groups** as
 chips: type to search the groups and every address the app already knows (all jobs, group
-members, Settings addresses); Enter, Tab, `,` or `;` adds it, and a pasted list is split.
+members, Settings addresses); Enter, Tab, `,` or `;` adds it, and a pasted list is split. Only a
+chip's **×** removes it; Backspace in an empty box removes the last chip. Suggestions leave out
+whoever is already in the set (directly or through a group).
 
 - **Email groups** (File → Settings → Email groups) — name a list of addresses once and use the
   name in any job. Renaming a group keeps its jobs pointing at it; a group a job still uses
   can't be deleted.
-- **Each address is emailed once** — an address in two groups, or in To and a Cc group, goes
-  out once (To before Cc before Bcc). The editor shows the unique count per recipient set.
+- **Each person is added once.** Adding an address or group that is already in the set — or an
+  address a group in the set already covers — is refused, the existing chip flashes, and a note
+  under the boxes says where it already is (no pop-up). Adding a group removes the chips it now
+  covers, with **Undo**, but never moves anyone down from To to Cc or Bcc.
+- **Each address is emailed once** — if a set still names someone twice (an older job, or an
+  address in two groups), they go out once (To before Cc before Bcc).
 - **Testing-stage** runs email the **test** recipients only — they can never reach production.
 - **Production** runs email the **production** recipients. Failures never send an automatic
   email.
 - Report emails attach the **output Excel** plus **all per-sheet PDFs**, and show the run's
   real **duration**.
 
-The email **body** is authored in-app: click **Edit email template…** in the job editor and
-write it in **Simple** mode (plain text) or **HTML** mode, with a live **Preview**. **Preview
-as: Testing | Production** shows the email each stage sends — subject (with `[TEST]` on
-Testing), To/Cc and body — for this job. The template is stored per job; leave it untouched to
-use the built-in default.
+The email **body** is authored in-app: click **Edit email template…** in the job editor. The
+editor opens large (and remembers its size) with your message on the left — **Simple** mode
+(plain text) or **HTML** mode — and the **preview** on the right, updated as you type; there is
+no Preview button. **Show the email as Testing | Production** switches the preview between the
+emails each stage sends — subject (with `[TEST]` on Testing), To/Cc and body — for this job. A
+mistake in a placeholder shows above the preview in plain words, with its line number, while the
+last good preview stays visible. The template is stored per job; leave it untouched to use the
+built-in default.
 
-- **Placeholders** — a list beside the editor shows every placeholder with today's value; one
-  click inserts it. Dates (`{{ today }}`, `{{ yesterday }}`, `{{ now }}`, `{{ weekday }}`,
+- **Placeholders** — **{ } Insert placeholder** (in the template editor, beside the Subject and
+  beside the output file name) opens a searchable list with an example of each; double-click,
+  Enter or **Insert** puts one at the cursor and the list stays open for the next. Dates
+  (`{{ today }}`, `{{ yesterday }}`, `{{ now }}`, `{{ weekday }}`,
   `{{ month }}`, `{{ previous_month }}`, `{{ week_number }}`, or any format via
   `{{ run_date.strftime('%d/%m/%Y') }}`), run facts (job, status, stage, timings, warnings) and
   files (attachments, workbooks, sheets). They work in the **Subject** too. **Help → Email
@@ -296,7 +345,7 @@ Location); reports still generate because the service opens files via automation
 — use it to confirm PI data before relying on scheduled delivery.
 
 **Email failures no longer pass silently:** when a run builds but the email cannot be sent,
-the app pops a warning, the card shows a **✉ failed** marker, and the run history's
+the run history shows a warning banner for that run, the card shows a **✉ failed** marker, and the run history's
 **email:** line gives the reason. When SMTP is down and you need to hand logs to support,
 use **File → Export logs to zip…** to save the diagnostic bundle locally.
 
@@ -514,6 +563,9 @@ src/reportflow/
   worker/          xlwings automation (the only xlwings importer)
   service/         FastAPI app, launcher, scheduler, bootstrap, workbook discovery
   ui/              PySide6 app: api_client + windows
+    feedback.py    toasts, field errors + tab dots, FormDialog (Enter/Ctrl+S/F1/Esc, sizes)
+    sheet_loader.py  background sheet reading for the workbook list
+    help/user_guide.md  the in-app user guide (Markdown, bundled with the UI)
   build.py         reportflow-build: the exes + installer (dev tool, never frozen)
 packaging/         PyInstaller specs, Inno Setup, NSSM
 scripts/           sample workbook generator + dev worker runner
@@ -617,7 +669,7 @@ Bound to `127.0.0.1` only.
 | `POST /system/purge-logs` | Delete old (or all) run folders, logs, bundles. |
 | `GET/PUT /jobs/{name}/email-template` | Read / write the job's per-job email template. |
 | `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs. |
-| `POST /workbook/sheets` | Discover sheet names (openpyxl, no COM). |
+| `POST /workbook/sheets` | Read sheet names (openpyxl, no COM); 404 when the service can't find the file. |
 | `POST /email/preview` | Render the email template with sample data. |
 | `POST /email/template-check` | Can the service read + render a template file (for linked templates)? |
 | `POST /system/send-dev-logs` | Email the redacted diagnostic bundle. |
@@ -638,6 +690,9 @@ Bound to `127.0.0.1` only.
 - **Config vs. state** are physically separate: TOML for configuration, SQLite for run history.
 - **Secrets** use machine-scope DPAPI so the LocalSystem service can read what the interactive
   user wrote.
+- **The UI never waits on a workbook.** Sheet lists are read through the service on a small
+  thread pool (`ui/sheet_loader.py`); the newest read of a workbook wins and a stopped service
+  shows as *not reachable*, never as *file not found*.
 
 ### CI/CD & releases
 
