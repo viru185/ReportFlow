@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -133,6 +134,11 @@ class ApiClient:
 
     def get_run(self, run_id: str) -> dict:
         return self._request("GET", f"/runs/{run_id}")
+
+    def stop_run(self, run_id: str) -> dict:
+        """Stop a waiting or running run (its Excel is closed; nothing is emailed)."""
+        user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}".strip("\\")
+        return self._request("POST", f"/runs/{run_id}/stop", json={"by": user or "someone"})
 
     def get_run_log(self, run_id: str) -> dict:
         return self._request("GET", f"/runs/{run_id}/log")

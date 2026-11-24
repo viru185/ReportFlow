@@ -58,6 +58,14 @@ class FakeApi:
     def get_run_log(self, run_id):
         return {"log": "line\n" * 200}
 
+    def get_run(self, run_id):
+        run = next((r for r in self._runs if r.get("run_id") == run_id), {})
+        return {**run, "live": getattr(self, "live", None)}
+
+    def stop_run(self, run_id):
+        self.stopped = getattr(self, "stopped", []) + [run_id]
+        return {"run_id": run_id, "status": "stopping"}
+
     def export_logs(self, note=""):
         self.exported = True
         self.export_note = note
@@ -678,17 +686,25 @@ def test_main_window_running_card_locks_run_buttons(qtbot):
 
     from reportflow.ui.windows.main_window import MainWindow
 
+    now = datetime.now().isoformat(timespec="seconds")
     running = dict(
         _sample_job_dict(),
         last_status="running",
-        last_run_at=datetime.now().isoformat(timespec="seconds"),
+        last_run_at=now,
+        active={
+            "run_id": "r9",
+            "phase": "running",
+            "step": "Refreshing data",
+            "step_since": now,
+            "worker_started_at": now,
+        },
     )
     win = MainWindow(FakeApi(jobs=[running]))
     qtbot.addWidget(win)
 
     by_text = {b.text(): b for b in win.jobs_container.findChildren(QPushButton)}
     assert not by_text["Run"].isEnabled()
-    assert not by_text["Build only"].isEnabled()
+    assert "Build only" not in by_text and by_text["Stop"].isEnabled()  # Stop takes its place
     # Occasional actions in ⋯ stay usable while a run is in flight.
     edit = next(a for a in _card_menu(win).actions() if "Edit" in a.text())
     assert edit.isEnabled()
@@ -2097,3 +2113,140 @@ def test_browse_refuses_a_workbook_another_tab_has(qtbot):
     dlg.replace_workbook(1, "C:/data/Other_Nov.xlsx")
     assert dlg._workbooks[1].path == "C:/data/Other_Nov.xlsx"
     assert dlg._checked_sheet_names() == ["Summary"]
+
+
+# -- 0.16: Stop and what a run is doing -------------------------------------------------
+
+
+def _live_job(phase="running", **live):
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    started = (now - timedelta(minutes=4, seconds=12)).isoformat(timespec="seconds")
+    step_since = (now - timedelta(minutes=3, seconds=40)).isoformat(timespec="seconds")
+    active = {
+        "run_id": "r9",
+        "phase": phase,
+        "waiting_for": None,
+        "step": "Freezing values on 'Problem Points'",
+        "step_since": step_since,
+        "worker_started_at": started,
+        "stop_requested_by": None,
+        **live,
+    }
+    return dict(_sample_job_dict(), last_status="running", last_run_at=started, active=active)
+
+
+def _card_texts(win):
+    from PySide6.QtWidgets import QLabel
+
+    return [w.text() for w in win.jobs_container.findChildren(QLabel)]
+
+
+def test_a_running_card_shows_its_step_and_a_stop_button(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox, QPushButton
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    api = FakeApi(jobs=[_live_job()])
+    win = MainWindow(api)
+    qtbot.addWidget(win)
+    texts = _card_texts(win)
+    assert "Freezing values on 'Problem Points' · 3m 40s" in texts
+    assert any(t.startswith("running · 4m") for t in texts)
+    stop = next(b for b in win.jobs_container.findChildren(QPushButton) if b.text() == "Stop")
+    assert stop.property("variant") == "stop"
+    assert any(a.text() == "Stop run" for a in _card_menu(win).actions())
+    # Stop asks first; Cancel changes nothing, "Stop run" stops it.
+    answers = iter(["cancel", "stop"])
+
+    def fake_exec(box):
+        wanted = next(answers)
+        for button in box.buttons():
+            if (wanted == "stop") == (button.text() == "Stop run"):
+                box._clicked = button
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda box: box._clicked)
+    stop.click()
+    assert getattr(api, "stopped", []) == []
+    win._stop_run(_live_job())
+    assert api.stopped == ["r9"]
+
+
+def test_a_waiting_run_says_why(qtbot):
+    from reportflow.ui.windows.main_window import MainWindow
+
+    job = _live_job(
+        "queued",
+        step=None,
+        worker_started_at=None,
+        waiting_for="same workbook as 'Daily KPI' (Plant.xlsx)",
+    )
+    win = MainWindow(FakeApi(jobs=[job]))
+    qtbot.addWidget(win)
+    texts = _card_texts(win)
+    assert "Waiting — same workbook as 'Daily KPI' (Plant.xlsx)" in texts
+    assert any(t.startswith("waiting ·") for t in texts)
+
+
+def test_a_stopping_run_cannot_be_stopped_twice(qtbot):
+    from PySide6.QtWidgets import QPushButton
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    win = MainWindow(FakeApi(jobs=[_live_job(stop_requested_by="CORP\\me")]))
+    qtbot.addWidget(win)
+    stop = next(b for b in win.jobs_container.findChildren(QPushButton) if "Stop" in b.text())
+    assert stop.text() == "Stopping…" and not stop.isEnabled()
+    assert not any(a.text() == "Stop run" for a in _card_menu(win).actions())
+    assert any(t.startswith("Stopping — Freezing values") for t in _card_texts(win))
+
+
+def test_a_running_row_with_no_run_behind_it_does_not_lock_the_card(qtbot):
+    from PySide6.QtWidgets import QPushButton
+
+    from reportflow.ui.windows.main_window import MainWindow
+
+    stale = dict(_sample_job_dict(), last_status="running", active=None)
+    win = MainWindow(FakeApi(jobs=[stale]))
+    qtbot.addWidget(win)
+    by_text = {b.text(): b for b in win.jobs_container.findChildren(QPushButton)}
+    assert by_text["Run"].isEnabled() and by_text["Build only"].isEnabled()
+    assert _card_frames(win)[0].property("edge") == "muted"
+
+
+def test_the_run_history_can_stop_a_live_run(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from reportflow.ui.windows.log_view import RunHistoryDialog
+
+    runs = [
+        {
+            "run_id": "r9",
+            "job_name": "daily",
+            "status": "running",
+            "trigger": "manual",
+            "started_at": "2026-11-24T12:26:18",
+        }
+    ]
+    api = FakeApi(runs=runs)
+    api.live = {
+        "run_id": "r9",
+        "phase": "running",
+        "step": "Saving out.xlsx",
+        "step_since": "2026-11-24T12:30:00",
+        "stop_requested_by": None,
+    }
+    dlg = RunHistoryDialog(api, "daily")
+    qtbot.addWidget(dlg)
+    dlg.runs.setCurrentRow(0)
+    dlg._show_selected()
+    assert dlg.stop_button.isVisibleTo(dlg) and "now:" in dlg.details.text()
+    assert "Saving out.xlsx" in dlg.details.text()
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    dlg.stop_button.click()
+    assert api.stopped == ["r9"]

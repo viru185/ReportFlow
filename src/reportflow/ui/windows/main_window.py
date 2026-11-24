@@ -79,6 +79,20 @@ def _elapsed_text(started_at: str | None) -> str:
     return f"{seconds // 60}m {seconds % 60}s"
 
 
+def _live_line(active: dict[str, Any]) -> str:
+    """The running card's detail line: what the run is doing, and for how long."""
+    if active.get("phase") == "queued":
+        why = active.get("waiting_for") or "for a free slot"
+        return f"Waiting — {why}"
+    step = active.get("step")
+    if active.get("stop_requested_by") or active.get("phase") == "stopping":
+        return f"Stopping — {step}" if step else "Stopping…"
+    if not step:
+        return "Starting…"
+    since = active.get("step_since")
+    return f"{step} · {_elapsed_text(since)}" if since else str(step)
+
+
 class _UpdateCheckThread(QThread):
     found = Signal(object)  # UpdateInfo
 
@@ -384,7 +398,13 @@ class MainWindow(QMainWindow):
 
     def _job_card(self, job: dict[str, Any], *, index: int = 0, count: int = 1) -> QFrame:
         enabled = bool(job.get("enabled", True))
-        running = (job.get("last_status") or "") == "running"
+        # 0.16: "in flight" comes from the service's live run (waiting, running, stopping),
+        # not from the last row's status — a row a crash left "running" no longer locks the
+        # card forever.
+        active: dict[str, Any] | None = job.get("active") or None
+        running = active is not None
+        phase = (active or {}).get("phase")
+        stopping = bool(active and (active.get("stop_requested_by") or phase == "stopping"))
 
         # Scheduling and run status are independent: paused jobs can still run manually.
         # A paused card is dimmed as a whole — muted text, stage pill and grey edge — with no
@@ -393,9 +413,14 @@ class MainWindow(QMainWindow):
         card = _JobCard()
         card.setProperty("card", True)
         card.setProperty("paused", paused)
-        card.setProperty(
-            "edge", "muted" if paused and not running else status_edge(job.get("last_status"))
-        )
+        last = job.get("last_status")
+        if running:
+            edge = "running"
+        elif paused or last == "running":  # a "running" row with no run behind it
+            edge = "muted"
+        else:
+            edge = status_edge(last)
+        card.setProperty("edge", edge)
         card.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         card.setAccessibleName(f"Job {job.get('name', '')}")
         card.setProperty("jobName", str(job.get("name", "")))
@@ -433,13 +458,17 @@ class MainWindow(QMainWindow):
         info.addLayout(name_row)
 
         parts: list[str] = []
-        if enabled:
+        if running:
+            parts.append(_live_line(active or {}))
+        elif enabled:
             next_at = friendly_time(job.get("next_run_at"))
             parts.append(
                 f"next: {next_at}" if next_at else describe(job.get("schedule_crons") or [])
             )
         last_status = job.get("last_status")
-        if last_status:
+        if running:
+            pass  # the live line above says what it's doing
+        elif last_status:
             ago = ago_text(job.get("last_run_at"))
             status_text = str(last_status).replace("_", " ")
             parts.append(f"last: {status_text} {ago}" if ago else f"last: {status_text}")
@@ -447,7 +476,8 @@ class MainWindow(QMainWindow):
             parts.append("no runs yet")
         sheets = f"{job.get('sheet_count') or 0} sheet(s)"
         workbooks = int(job.get("workbook_count") or 1)
-        parts.append(f"{workbooks} files · {sheets}" if workbooks > 1 else sheets)
+        if not running:
+            parts.append(f"{workbooks} files · {sheets}" if workbooks > 1 else sheets)
         detail = QLabel(" · ".join(parts))
         detail.setWordWrap(True)
         detail.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -456,7 +486,9 @@ class MainWindow(QMainWindow):
         lay.addLayout(info, 1)
         if running:
             # Elapsed time rides the dashboard's existing refresh timer.
-            badge = status_badge("running", f"· {_elapsed_text(job.get('last_run_at'))}")
+            word = "stopping" if stopping else "waiting" if phase == "queued" else "running"
+            since = (active or {}).get("worker_started_at") or job.get("last_run_at")
+            badge = status_badge(word, f"· {_elapsed_text(since)}")
             lay.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addWidget(
             stage_badge(job.get("stage", "testing"), muted=paused), 0, Qt.AlignmentFlag.AlignVCenter
@@ -480,7 +512,7 @@ class MainWindow(QMainWindow):
             )
             if not active:
                 b.setEnabled(False)
-                b.setToolTip("Already running — wait for it to finish.")
+                b.setToolTip("Already running — stop it, or wait for it to finish.")
             b.clicked.connect(slot)
             return b
 
@@ -504,16 +536,27 @@ class MainWindow(QMainWindow):
                 active=not running,
             )
         )
-        lay.addWidget(
-            _btn(
-                "Build only",
-                "Builds the report without emailing anyone. Enable Require PI DataLink in "
-                "Advanced to require add-in connection.",
-                lambda *_: self._trigger(job_name, mode="dry"),
-                icon="eye.svg",
-                active=not running,
+        if running:
+            # Stop takes Build only's place while the job runs (owner's choice, 0.16).
+            stop = Button(
+                "Stopping…" if stopping else "Stop",
+                variant="stop",
+                icon=asset_icon("stop.svg"),
+                tooltip="Stop this run: its Excel is closed and nothing is emailed.",
             )
-        )
+            stop.setEnabled(not stopping)
+            stop.clicked.connect(lambda *_, j=job: self._stop_run(j))
+            lay.addWidget(stop)
+        else:
+            lay.addWidget(
+                _btn(
+                    "Build only",
+                    "Builds the report without emailing anyone. Enable Require PI DataLink in "
+                    "Advanced to require add-in connection.",
+                    lambda *_: self._trigger(job_name, mode="dry"),
+                    icon="eye.svg",
+                )
+            )
         if not enabled:
             resume = _btn(
                 "Resume",
@@ -537,6 +580,9 @@ class MainWindow(QMainWindow):
         more = IconButton(asset_icon("more.svg"), "More actions", variant="tool", size=0)
         more.setPopupMode(IconButton.ToolButtonPopupMode.InstantPopup)
         menu = Menu(more)
+        if running and not stopping:
+            menu.addAction(asset_icon("stop.svg"), "Stop run", lambda *_, j=job: self._stop_run(j))
+            menu.addSeparator()
         menu.addAction(
             asset_icon("folder.svg"),
             "Open last report",
@@ -651,6 +697,36 @@ class MainWindow(QMainWindow):
             toast(self, f"Couldn't delete {name}: {e}", "error")
             return
         toast(self, f"Deleted {name}.", "success")
+        self.refresh()
+
+    def _stop_run(self, job: dict[str, Any]) -> None:
+        """Ask, then stop the job's in-flight run (waiting or running)."""
+        name = str(job.get("name", ""))
+        run_id = (job.get("active") or {}).get("run_id")
+        if not run_id:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Stop run")
+        box.setText(f"Stop '{name}'?")
+        box.setInformativeText(
+            "Excel is closed, nothing is emailed, and the run is recorded as Stopped. "
+            "You can run it again whenever you like."
+        )
+        stop = box.addButton("Stop run", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.exec()
+        if box.clickedButton() is not stop:
+            return
+        try:
+            self._api.stop_run(run_id)
+        except ApiError as e:
+            toast(self, f"Couldn't stop {name}: {e}", "error")
+            return
+        logger.info("Stop requested for {!r} (run {})", name, run_id)
+        toast(self, f"Stopping {name}…", "info")
+        self._cards_signature = None
         self.refresh()
 
     def _trigger(self, name: str, *, mode: str = "run") -> None:

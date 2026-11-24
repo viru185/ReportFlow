@@ -6,6 +6,8 @@ Log colouring/filtering is shared with the application-log viewer via ``log_form
 
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QSplitter,
     QVBoxLayout,
@@ -23,12 +26,26 @@ from PySide6.QtWidgets import (
 from reportflow.core.ipc.contract import FINAL_STATUSES
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import asset_icon
-from reportflow.ui.kit import ComboBox, IconButton, ListWidget
+from reportflow.ui.feedback import toast
+from reportflow.ui.kit import Button, ComboBox, IconButton, ListWidget
 from reportflow.ui.log_format import LogHighlighter, filter_log_text
 from reportflow.ui.style import WARNING, status_badge
 
 _TERMINAL_STATUSES = FINAL_STATUSES
 _LEVELS = ("All", "Debug", "Info", "Success", "Warning", "Error")
+
+
+def _live_text(live: dict) -> str:
+    """What an in-flight run is doing, for the history header."""
+    if not live:
+        return ""
+    if live.get("phase") == "queued":
+        return f"waiting — {live.get('waiting_for') or 'for a free slot'}"
+    if live.get("stop_requested_by"):
+        return f"stopping (asked by {live['stop_requested_by']})"
+    step = live.get("step")
+    since = live.get("step_since")
+    return f"{step} (since {since[11:]})" if step and since else str(step or "starting")
 
 
 class RunHistoryDialog(QDialog):
@@ -64,6 +81,15 @@ class RunHistoryDialog(QDialog):
         self.details = QLabel("Select a run")
         self.details.setWordWrap(True)
         header_row.addWidget(self.details, 1)
+        self.stop_button = Button(
+            "Stop run",
+            variant="stop",
+            icon=asset_icon("stop.svg"),
+            tooltip="Stop this run: its Excel is closed and nothing is emailed.",
+        )
+        self.stop_button.clicked.connect(self._stop_selected)
+        self.stop_button.hide()
+        header_row.addWidget(self.stop_button, 0, Qt.AlignmentFlag.AlignTop)
         right_lay.addLayout(header_row)
 
         self.email_banner = QLabel("")
@@ -153,9 +179,14 @@ class RunHistoryDialog(QDialog):
 
     def _set_badge(self, status: str | None) -> None:
         if self._badge is not None:
+            # Out of the layout and hidden now: deleteLater only runs on the next loop turn,
+            # and until then the old pill showed beside the new one.
+            self.status_badge_holder.removeWidget(self._badge)
+            self._badge.hide()
             self._badge.deleteLater()
         self._badge = status_badge(status)
-        self.status_badge_holder.addWidget(self._badge)
+        # Top-aligned: a pill, not a block stretched to the details' height.
+        self.status_badge_holder.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
 
     def _show_selected(self) -> None:
         item = self.runs.currentItem()
@@ -178,8 +209,22 @@ class RunHistoryDialog(QDialog):
             if attachments is not None
             else ""
         )
+        live_line = ""
+        if r.get("status") == "running":
+            try:
+                live = self._api.get_run(r["run_id"]).get("live") or {}
+            except ApiError:
+                live = {}
+            now = _live_text(live)
+            live_line = f"<br><b>now:</b> {html.escape(now)}" if now else ""
+            self.stop_button.setVisible(bool(live))
+            self.stop_button.setEnabled(not live.get("stop_requested_by"))
+            self.stop_button.setText("Stopping…" if live.get("stop_requested_by") else "Stop run")
+        else:
+            self.stop_button.hide()
         self.details.setText(
-            f"<b>{r['run_id']}</b> · trigger: {r.get('trigger')} · test: {r.get('is_test')}<br>"
+            f"<b>{r['run_id']}</b> · trigger: {r.get('trigger')} · test: {r.get('is_test')}"
+            f"{live_line}<br>"
             f"started: {r.get('started_at')} · finished: {r.get('finished_at') or '—'}{took}<br>"
             f"output: {'<br>&nbsp;&nbsp;'.join(outputs) or '—'}<br>"
             f"email: {r.get('email_note') or '—'}{attachment_line}"
@@ -192,6 +237,28 @@ class RunHistoryDialog(QDialog):
         except ApiError as e:
             self._raw_log = f"(could not load log: {e})"
         self._render_log(live=r.get("status") == "running")
+
+    def _stop_selected(self) -> None:
+        item = self.runs.currentItem()
+        if item is None:
+            return
+        run = item.data(0x0100)
+        answer = QMessageBox.question(
+            self,
+            "Stop run",
+            f"Stop run {run['run_id']} of '{run.get('job_name', '')}'?\n\nExcel is closed, "
+            "nothing is emailed, and the run is recorded as Stopped.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._api.stop_run(run["run_id"])
+        except ApiError as e:
+            toast(self, f"Couldn't stop the run: {e}", "error")
+            return
+        toast(self, "Stopping the run…", "info")
+        self.reload()
+        self._show_selected()
 
     def _render_log(self, *, live: bool = False) -> None:
         min_level = self.level.currentText()

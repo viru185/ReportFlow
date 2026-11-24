@@ -11,6 +11,7 @@ variant        use
 ``primary``    the one main action of a window or card (Save, + New Job, Update now)
 ``quiet``      a low-key action that shouldn't compete (Remove on a schedule card)
 ``danger``     a destructive action; turns red on hover (Delete group)
+``stop``       ends something in progress: red outline (Stop on a running job's card)
 ``dashed``     "add another" (+ Add time, + Add schedule)
 =============  ===========================================================================
 """
@@ -21,7 +22,16 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QAbstractButton, QPushButton, QToolButton, QWidget
 
-VARIANTS = ("secondary", "primary", "quiet", "danger", "quiet-danger", "dashed", "segment")
+VARIANTS = (
+    "secondary",
+    "primary",
+    "quiet",
+    "danger",
+    "quiet-danger",
+    "stop",
+    "dashed",
+    "segment",
+)
 ICON_VARIANTS = ("icon", "icon-danger", "close", "dismiss", "tool")
 
 

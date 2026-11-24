@@ -268,7 +268,12 @@ def test_job_card_run_status_and_stage_alignment(qtbot, themed_app, stage, enabl
     qtbot.addWidget(window)
     window.show()
     for status, edge in [("running", "running"), ("success", "success"), ("failed", "failed")]:
-        job.update(last_status=status, last_run_at=datetime.now().isoformat())
+        now = datetime.now().isoformat()
+        # 0.16: "running" is the service's live run, not just the last row's status.
+        live = {"run_id": "r1", "phase": "running", "step": "Refreshing data", "step_since": now}
+        job.update(
+            last_status=status, last_run_at=now, active=live if status == "running" else None
+        )
         window.refresh()
         card = window.jobs_layout.itemAt(0).widget()
         # A paused card dims to a grey edge — unless a manual run is in progress on it.
@@ -279,8 +284,10 @@ def test_job_card_run_status_and_stage_alignment(qtbot, themed_app, stage, enabl
         assert not any("PAUSED" in label.text() for label in labels)
         assert any("running ·" in label.text() for label in labels) == (status == "running")
         run = next(b for b in card.findChildren(QPushButton) if b.text() == "Run")
-        build = next(b for b in card.findChildren(QPushButton) if b.text() == "Build only")
-        assert run.isEnabled() == build.isEnabled() == (status != "running")
+        assert run.isEnabled() == (status != "running")
+        # While it runs, Stop takes Build only's place (0.16).
+        second = "Stop" if status == "running" else "Build only"
+        assert next(b for b in card.findChildren(QPushButton) if b.text() == second).isEnabled()
         badge = card.findChild(QLabel, "jobStage")
         qtbot.waitUntil(lambda badge=badge: badge.isVisible() and badge.height() > 0)
         badge_center = badge.mapTo(card, QPoint(0, badge.height() // 2)).y()

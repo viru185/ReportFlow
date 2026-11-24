@@ -81,6 +81,9 @@ _STATUS_TONES = {
     "running": "warning",
     "interrupted": "danger",
     "stopped": "neutral",
+    # phases of an in-flight run (shown instead of "running")
+    "waiting": "warning",
+    "stopping": "warning",
 }
 
 
@@ -296,6 +299,19 @@ QPushButton[variant="quiet"], QPushButton[variant="quiet-danger"] {{
 QPushButton[variant="quiet"]:hover {{
     background: {FIELD_BG};
     color: {TEXT};
+}}
+QPushButton[variant="stop"] {{
+    background: transparent;
+    border-color: {DANGER_BORDER};
+    color: {DANGER};
+}}
+QPushButton[variant="stop"]:hover {{
+    background: {DANGER_BG};
+    border-color: {DANGER};
+}}
+QPushButton[variant="stop"]:disabled {{
+    border-color: {BORDER};
+    color: {TEXT_MUTED};
 }}
 QPushButton[variant="quiet-danger"]:hover, QPushButton[variant="danger"]:hover {{
     background: {DANGER_BG};
