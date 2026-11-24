@@ -320,6 +320,9 @@ class JobConfig(_Base):
     # time; PDFs get an automatic per-sheet suffix.
     output_dir: Path | None = None
     output_name: str | None = None
+    # 0.16: delete this job's reports once they are this many days old — only files ReportFlow
+    # wrote for this job and nobody changed since, never the newest report. None = keep all.
+    delete_reports_after_days: int | None = Field(default=None, ge=1, le=3650)
 
     freeze_values: bool = True
 

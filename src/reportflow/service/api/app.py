@@ -29,6 +29,7 @@ from reportflow.core.email import (
 )
 from reportflow.core.email.recipients import resolve
 from reportflow.core.ipc.contract import RunStatus
+from reportflow.core.report_cleanup import delete_old_reports
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 from reportflow.core.state import RunStore, RunTrigger
 from reportflow.service.bootstrap import seed_data_files
@@ -78,6 +79,15 @@ class ServiceState:
             )
         except Exception as e:  # noqa: BLE001 — housekeeping must never take the service down
             logger.error("Log maintenance failed: {}", e)
+        # Jobs that opted in to "Delete this job's reports after N days" (also done after
+        # each of their runs; this catches jobs that haven't run lately).
+        for job in self.config.jobs:
+            if not job.delete_reports_after_days:
+                continue
+            try:
+                delete_old_reports(self.run_store, job.name, job.delete_reports_after_days)
+            except Exception as e:  # noqa: BLE001
+                logger.error("Deleting old reports of '{}' failed: {}", job.name, e)
 
     def _load_or_default(self) -> AppConfig:
         try:

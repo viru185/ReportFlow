@@ -781,6 +781,7 @@ def _every_field_job():
         "email_template_path": "C:/ProgramData/ReportFlow/templates/jobs/src.html",
         "output_dir": "C:/reports",
         "output_name": "{job}_{time}",
+        "delete_reports_after_days": 45,
         "freeze_values": False,
         "schedule_crons": ["0 6 * * *", "0 10 * * SUN"],
         "timeout_seconds": 2700,
@@ -845,6 +846,22 @@ def test_editor_round_trips_every_job_field(qtbot):
     dlg = JobEditorDialog(FakeApi(), source.model_dump(mode="json"))
     qtbot.addWidget(dlg)
     assert JobConfig.model_validate(dlg.payload()) == source
+
+
+def test_deleting_old_reports_is_off_until_ticked(qtbot):
+    from reportflow.ui.windows.job_editor import JobEditorDialog
+
+    dlg = JobEditorDialog(FakeApi(), None)
+    qtbot.addWidget(dlg)
+    assert not dlg.delete_old.isChecked() and not dlg.delete_days.isEnabled()
+    assert dlg.payload()["delete_reports_after_days"] is None  # off by default
+    dlg.delete_old.setChecked(True)
+    assert dlg.delete_days.isEnabled()
+    assert dlg.payload()["delete_reports_after_days"] == 30
+    dlg.delete_days.setValue(1)
+    assert dlg.delete_days.text() == "1 day"
+    dlg.delete_old.setChecked(False)
+    assert dlg.payload()["delete_reports_after_days"] is None  # the number is ignored when off
 
 
 def test_main_window_duplicate_fetches_the_template(qtbot, monkeypatch):

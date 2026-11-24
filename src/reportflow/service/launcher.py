@@ -44,6 +44,7 @@ from reportflow.core.ipc import (
     WorkbookTask,
     WorkerProgress,
     WorkerRequest,
+    WorkerResult,
     progress_path,
     read_progress,
     read_result,
@@ -51,6 +52,7 @@ from reportflow.core.ipc import (
 )
 from reportflow.core.output_names import DEFAULT_OUTPUT_STEM, expand_output_name
 from reportflow.core.procs import kill_verified
+from reportflow.core.report_cleanup import delete_old_reports, record_run_files
 from reportflow.core.state import RunRecord, RunStore, RunTrigger
 from reportflow.worker.private_copy import remove_run_copies
 
@@ -790,10 +792,35 @@ class Launcher:
                 record.error_summary = (result.message or "run failed").strip()[:500]
         self.run_store.upsert(record)
         logger.info("Run {} finished: status={} exit={}", request.run_id, record.status, exit_code)
+        if result is not None:
+            self._remember_reports(record, result)
         if record.status in (RunStatus.STOPPED, RunStatus.INTERRUPTED):
             logger.info("Run {} email: {}", record.run_id, record.email_note)
+        else:
+            self._maybe_email(config, job, record, request)
+        self._delete_old_reports(job)
+
+    def _remember_reports(self, record: RunRecord, result: WorkerResult) -> None:
+        """Record the files this run wrote, for "Delete this job's reports after N days"."""
+        try:
+            record_run_files(
+                self.run_store,
+                job_name=record.job_name,
+                run_id=record.run_id,
+                finished_at=record.finished_at or datetime.now().isoformat(timespec="seconds"),
+                ok=record.status is RunStatus.SUCCESS,
+                files=[*result.output_xlsx_paths, *result.pdf_paths, *result.attachment_paths],
+            )
+        except Exception as e:  # noqa: BLE001 — bookkeeping must never fail a run
+            logger.error("Could not record the report files of run {}: {}", record.run_id, e)
+
+    def _delete_old_reports(self, job: JobConfig) -> None:
+        if not job.delete_reports_after_days:
             return
-        self._maybe_email(config, job, record, request)
+        try:
+            delete_old_reports(self.run_store, job.name, job.delete_reports_after_days)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Deleting old reports of '{}' failed: {}", job.name, e)
 
     def _maybe_email(
         self, config: AppConfig, job: JobConfig, record: RunRecord, request: WorkerRequest

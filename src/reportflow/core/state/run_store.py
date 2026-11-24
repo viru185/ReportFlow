@@ -9,6 +9,7 @@ from __future__ import annotations
 import builtins
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from reportflow.core import paths
@@ -38,6 +39,18 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_job ON runs(job_name);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC);
+-- 0.16: every report file a run wrote, for "Delete this job's reports after N days". Kept
+-- apart from the run history so the log purge never loses track of a report on disk.
+CREATE TABLE IF NOT EXISTS report_files (
+    path       TEXT PRIMARY KEY COLLATE NOCASE,
+    job_name   TEXT NOT NULL,
+    run_id     TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    ok         INTEGER NOT NULL DEFAULT 0,
+    mtime      REAL NOT NULL,
+    size       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_report_files_job ON report_files(job_name);
 """
 
 # Columns added after the first release; applied to pre-existing databases on open.
@@ -60,6 +73,19 @@ def _status(value: str) -> RunStatus:
         return RunStatus(value)
     except ValueError:
         return RunStatus.FAILED
+
+
+@dataclass(frozen=True)
+class ReportFile:
+    """One file a run wrote (output workbook, email copy, PDF), as ReportFlow left it."""
+
+    path: str
+    job_name: str
+    run_id: str
+    created_at: str  # ISO, seconds — the run's finish time
+    ok: bool  # the run succeeded
+    mtime: float  # the file's modified time and size when the run finished: a file that
+    size: int  # no longer matches was changed by someone and is never deleted
 
 
 class RunStore:
@@ -215,10 +241,62 @@ class RunStore:
         return cur.rowcount
 
     def rename_job(self, old_name: str, new_name: str) -> int:
-        """Re-point a renamed job's history at its new name. Returns the rows moved."""
+        """Re-point a renamed job's history (and its report files) at its new name. Returns
+        the history rows moved."""
         with self._connect() as conn:
             cur = conn.execute("UPDATE runs SET job_name=? WHERE job_name=?", (new_name, old_name))
+            conn.execute(
+                "UPDATE report_files SET job_name=? WHERE job_name=?", (new_name, old_name)
+            )
         return cur.rowcount
+
+    def record_report_files(self, files: builtins.list[ReportFile]) -> None:
+        """Remember the files a run wrote. A path written again (same name next run) now
+        belongs to the newer run."""
+        if not files:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO report_files (path, job_name, run_id, created_at, ok, mtime, size)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    job_name=excluded.job_name, run_id=excluded.run_id,
+                    created_at=excluded.created_at, ok=excluded.ok,
+                    mtime=excluded.mtime, size=excluded.size
+                """,
+                [
+                    (f.path, f.job_name, f.run_id, f.created_at, int(f.ok), f.mtime, f.size)
+                    for f in files
+                ],
+            )
+
+    def report_files(self, job_name: str) -> builtins.list[ReportFile]:
+        """Every remembered report file of ``job_name``, oldest first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM report_files WHERE job_name=? ORDER BY created_at, path",
+                (job_name,),
+            ).fetchall()
+        return [
+            ReportFile(
+                path=r["path"],
+                job_name=r["job_name"],
+                run_id=r["run_id"],
+                created_at=r["created_at"],
+                ok=bool(r["ok"]),
+                mtime=float(r["mtime"]),
+                size=int(r["size"]),
+            )
+            for r in rows
+        ]
+
+    def forget_report_files(self, paths: builtins.list[str]) -> None:
+        """Stop tracking these paths (deleted, gone, or changed by someone)."""
+        if not paths:
+            return
+        with self._connect() as conn:
+            conn.executemany("DELETE FROM report_files WHERE path=?", [(p,) for p in paths])
 
     def latest_failure_for_job(self, job_name: str) -> RunRecord | None:
         """The last failed run is preserved for visibility even after later successes."""

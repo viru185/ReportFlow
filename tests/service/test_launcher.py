@@ -487,3 +487,45 @@ def test_stage_placeholder_says_production_for_a_promoted_job(tmp_path):
     )
     assert Launcher._email_context(job, record)["stage"] == "Production"
     assert Launcher._email_context(_job(tmp_path), record)["stage"] == "Testing"
+
+
+def _old_report(launcher: Launcher, folder: Path, days_ago: int) -> Path:
+    """A report an earlier run of 'daily' wrote ``days_ago`` days ago."""
+    from datetime import datetime, timedelta
+
+    from reportflow.core.report_cleanup import record_run_files
+
+    folder.mkdir(parents=True, exist_ok=True)
+    old = folder / "old_report.xlsx"
+    old.write_bytes(b"PK old")
+    when = (datetime.now() - timedelta(days=days_ago)).isoformat(timespec="seconds")
+    record_run_files(
+        launcher.run_store, job_name="daily", run_id="old", finished_at=when, ok=True, files=[old]
+    )
+    return old
+
+
+def test_a_run_records_its_files_and_deletes_old_reports_when_asked(tmp_path):
+    job = _job(tmp_path, delete_reports_after_days=30)
+    launcher = _launcher(tmp_path, _config(job))
+    old = _old_report(launcher, tmp_path / "out", 45)
+    recent = tmp_path / "out" / "keep_me.xlsx"
+    recent.write_bytes(b"not ReportFlow's")
+
+    rec = launcher.run_job_by_name("daily", RunTrigger.DRY_RUN)
+    assert rec.status is RunStatus.SUCCESS
+    made = {*rec.output_xlsx_paths, *rec.pdf_paths, *(rec.attachment_paths or [])}
+    assert made and all(Path(p).exists() for p in made)
+    assert not old.exists()  # older than 30 days, and this run made a newer report
+    assert recent.exists()
+    tracked = {f.path for f in launcher.run_store.report_files("daily")}
+    assert tracked == made
+
+
+def test_old_reports_stay_when_the_job_does_not_ask(tmp_path):
+    job = _job(tmp_path)  # off by default
+    launcher = _launcher(tmp_path, _config(job))
+    old = _old_report(launcher, tmp_path / "out", 400)
+    rec = launcher.run_job_by_name("daily", RunTrigger.DRY_RUN)
+    assert rec.status is RunStatus.SUCCESS and old.exists()
+    assert len(launcher.run_store.report_files("daily")) > 1  # still recorded, in case it's on

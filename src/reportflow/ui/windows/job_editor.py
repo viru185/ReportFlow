@@ -70,6 +70,7 @@ from reportflow.ui.kit import (
     PathLabel,
     SpinBox,
     TableWidget,
+    WrapLabel,
     breakable,
     set_variant,
     styled_completer,
@@ -534,6 +535,39 @@ class JobEditorDialog(FormDialog):
         output_form.addRow("", self.freeze)
         output_form.addRow("If a workbook fails", self.on_failure)
         output_form.addRow(self.output_example)
+        # 0.16: optional clean-up, so dated report names don't pile up forever. Off by default.
+        output_form.addRow(section_title("Old reports"))
+        self.delete_old = QCheckBox("Delete this job's reports after")
+        self.delete_old.setToolTip(
+            "Checked after each run of this job and once a night. Only files ReportFlow made "
+            "for this job are deleted."
+        )
+        self.delete_days = SpinBox()
+        self.delete_days.setRange(1, 3650)
+        self.delete_days.setValue(30)
+        self.delete_days.setMaximumWidth(160)
+        self.delete_days.setEnabled(False)
+        self.delete_days.valueChanged.connect(
+            lambda n: self.delete_days.setSuffix(" day" if n == 1 else " days")
+        )
+        self.delete_days.setSuffix(" days")
+        self.delete_old.toggled.connect(self.delete_days.setEnabled)
+        delete_row = QHBoxLayout()
+        delete_row.setSpacing(10)
+        delete_row.addWidget(self.delete_old)
+        delete_row.addWidget(self.delete_days)
+        delete_row.addStretch(1)
+        delete_group = QVBoxLayout()
+        delete_group.setSpacing(8)
+        delete_group.addLayout(delete_row)
+        delete_group.addWidget(
+            self._help_label(
+                "Deletes only the Excel and PDF files ReportFlow made for this job, once they "
+                "are this old. The newest report is always kept; other files in the folder, "
+                "and reports someone has changed, are never touched."
+            )
+        )
+        output_form.addRow("", delete_group)
         # ---- Schedule tab ----
         schedule_tab = QWidget()
         schedule_lay = QVBoxLayout(schedule_tab)
@@ -777,9 +811,9 @@ class JobEditorDialog(FormDialog):
 
     @staticmethod
     def _help_label(text: str) -> QLabel:
-        label = QLabel(text)
+        label = WrapLabel(text)
         label.setProperty("muted", True)
-        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         return label
 
     def _fetch_config(self) -> dict[str, Any]:
@@ -1597,6 +1631,9 @@ class JobEditorDialog(FormDialog):
             "on_workbook_failure": self.on_failure.currentData(),
             "output_dir": self.output_dir.text().strip() or None,
             "output_name": self.output_name.text().strip() or None,
+            "delete_reports_after_days": (
+                self.delete_days.value() if self.delete_old.isChecked() else None
+            ),
             "freeze_values": self.freeze.isChecked(),
             "schedule_crons": self.schedule.to_crons(),
             "timeout_seconds": self._timeout_seconds(),
@@ -1680,6 +1717,9 @@ class JobEditorDialog(FormDialog):
         self.on_failure.setCurrentIndex(max(failure_index, 0))
         self.output_dir.setText(job.get("output_dir") or "")
         self.output_name.setText(job.get("output_name") or "")
+        keep_days = job.get("delete_reports_after_days")
+        self.delete_old.setChecked(bool(keep_days))
+        self.delete_days.setValue(int(keep_days or 30))
         self.freeze.setChecked(job.get("freeze_values", True))
         self.schedule.load(job.get("schedule_crons") or [])
         self._loaded_timeout_seconds = job.get("timeout_seconds") or None

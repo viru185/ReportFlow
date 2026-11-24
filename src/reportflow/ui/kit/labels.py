@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QFontMetrics, QGuiApplication, QPainter, QPaintEvent
+from PySide6.QtGui import QFontMetrics, QGuiApplication, QPainter, QPaintEvent, QResizeEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from reportflow.ui.assets import asset_icon
@@ -87,6 +87,31 @@ def open_folder(path: str) -> None:
         subprocess.Popen(["explorer", "/select,", str(target)])  # noqa: S603,S607
     elif target.exists() and hasattr(os, "startfile"):
         os.startfile(str(target))  # noqa: S606 — Windows only, the user's own folder
+
+
+class WrapLabel(QLabel):
+    """A word-wrapped label whose size hint is its height at the width it really has.
+
+    Qt sizes a wrapped label's hint for a guessed, narrow width — too tall. A form row whose
+    field is a box of widgets is laid out at that hint, not at its height for the real width,
+    so a two-line hint got room for five: a gap under the text, and a page that scrolled for
+    nothing (0.16 Output tab).
+    """
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        hint = super().sizeHint()
+        if self.testAttribute(Qt.WidgetAttribute.WA_Resized) and self.width() > 0:
+            hint.setHeight(self.heightForWidth(self.width()))
+        return hint
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.updateGeometry()  # the hint follows the width
 
 
 class PathLabel(QWidget):

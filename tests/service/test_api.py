@@ -714,3 +714,41 @@ def test_a_scheduled_start_is_skipped_while_the_job_runs(client):
         before = len(state.run_store.list("daily"))
         state.scheduler._fire("daily")
         assert len(state.run_store.list("daily")) == before  # no second run recorded
+
+
+def test_nightly_maintenance_deletes_old_reports_of_jobs_that_ask(client):
+    from datetime import datetime, timedelta
+
+    from reportflow.core.report_cleanup import record_run_files
+
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    asks = {**_job_payload(tmp_path), "delete_reports_after_days": 7}
+    assert c.post("/jobs", json=asks).status_code in (200, 201)
+    quiet = {**_job_payload(tmp_path), "name": "weekly", "output_name": "w_{run_id}"}
+    assert c.post("/jobs", json=quiet).status_code in (200, 201)
+    state = c.app.state.svc
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    long_ago = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    yesterday = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    files = {}
+    for job, run_id, when in (
+        ("daily", "d1", long_ago),
+        ("daily", "d2", yesterday),
+        ("weekly", "w1", long_ago),
+        ("weekly", "w2", yesterday),
+    ):
+        files[run_id] = out / f"{run_id}.xlsx"
+        files[run_id].write_bytes(b"PK")
+        record_run_files(
+            state.run_store,
+            job_name=job,
+            run_id=run_id,
+            finished_at=when,
+            ok=True,
+            files=[files[run_id]],
+        )
+    state.run_maintenance()
+    assert not files["d1"].exists()  # 'daily' asked for 7 days
+    assert files["d2"].exists() and files["w1"].exists() and files["w2"].exists()

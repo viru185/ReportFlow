@@ -11,7 +11,14 @@ something different uses another variant, not its own stylesheet.
 
 from reportflow.ui.kit.buttons import Button, IconButton, SegmentButton, segmented, set_variant
 from reportflow.ui.kit.inputs import ComboBox, SpinBox, TimeEdit, styled_completer
-from reportflow.ui.kit.labels import ElidedLabel, PathLabel, Tag, breakable, open_folder
+from reportflow.ui.kit.labels import (
+    ElidedLabel,
+    PathLabel,
+    Tag,
+    WrapLabel,
+    breakable,
+    open_folder,
+)
 from reportflow.ui.kit.popups import Menu, Popover, round_popup
 from reportflow.ui.kit.reorder import DragHandle, Reorder
 from reportflow.ui.kit.views import (
@@ -40,6 +47,7 @@ __all__ = [
     "TableWidget",
     "Tag",
     "TimeEdit",
+    "WrapLabel",
     "breakable",
     "open_folder",
     "round_popup",
