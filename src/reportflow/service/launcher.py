@@ -2,13 +2,20 @@
 
 Responsibilities:
 * Build the ``WorkerRequest`` (resolving output-path tokens and the timeout).
-* Launch the worker with no console window and its own process group so the whole tree is
-  killable.
-* Enforce the timeout; on expiry, tree-kill the worker (which reaps its Excel).
+* Admit runs through ONE queue (0.16): a run starts when everything it needs is free at
+  once — its input workbooks (two runs never open the same file together), its concurrency
+  group, a global slot (``max_global_concurrency``, read live). First come, first served; a
+  later run may start when nothing it needs is taken or reserved by an earlier one. Each
+  waiting run knows why it waits. One run per job at a time (``JobBusyError``).
+* Launch the worker with no console window and its own process group.
+* Supervise it: Stop (``stop()``), the time limit and service shutdown kill the worker FIRST
+  (killing Excel first makes the worker retry with a new Excel), then close the Excel
+  processes the run recorded in ``progress.json`` — Excel is started by COM, so it is NOT a
+  child of the worker, and the old tree-kill left it running with the file open.
 * Read the worker's ``result.json`` (authoritative) + exit code and record the run.
 * Send email per lifecycle policy: testing-stage jobs -> test recipients on every run;
-  live jobs -> production recipients. Build-only runs never email. NEVER email on failure.
-* Bound parallelism: a global concurrency cap plus a per-concurrency-group mutex.
+  live jobs -> production recipients. Build-only runs never email. NEVER email on failure,
+  a stop or an interruption. The run's queue resources are released before emailing.
 """
 
 from __future__ import annotations
@@ -17,10 +24,13 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -32,11 +42,15 @@ from reportflow.core.ipc import (
     RunStatus,
     SheetTask,
     WorkbookTask,
+    WorkerProgress,
     WorkerRequest,
+    progress_path,
+    read_progress,
     read_result,
     write_request,
 )
 from reportflow.core.output_names import DEFAULT_OUTPUT_STEM, expand_output_name
+from reportflow.core.procs import kill_verified
 from reportflow.core.state import RunRecord, RunStore, RunTrigger
 
 _DRY_RUN_NOTE = "not sent — build only"
@@ -137,7 +151,62 @@ def resolve_output_paths(
     return resolved
 
 
+class JobBusyError(RuntimeError):
+    """The job already has a run waiting or running — one run per job at a time."""
+
+    def __init__(self, job: str, run_id: str, phase: str) -> None:
+        state = "waiting to start" if phase == "queued" else "running"
+        super().__init__(f"'{job}' is already {state} (run {run_id}) — stop it or wait for it")
+        self.job, self.run_id, self.phase = job, run_id, phase
+
+
+class StopRefusedError(RuntimeError):
+    """The run is past the point where Stop means anything (finishing, or timing out)."""
+
+
+class ServiceClosingError(RuntimeError):
+    """The service is shutting down: no new runs."""
+
+
+_POLL_SECONDS = 0.5
+_WAIT_SECONDS = 5.0  # a waiting run re-checks the queue at least this often
+
+
+def _file_key(path: str | Path) -> str:
+    """One workbook, however its path is spelled (case, ``..``, forward slashes)."""
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _clock(moment: datetime | None) -> str:
+    return (moment or datetime.now()).strftime("%H:%M:%S")
+
+
+@dataclass(eq=False)
+class _Slot:
+    """One run from submit until it is recorded. Guarded by ``Launcher._cv``."""
+
+    run_id: str
+    job_key: str
+    job_name: str
+    trigger: RunTrigger
+    files: frozenset[str] = frozenset()
+    file_names: dict[str, str] = field(default_factory=dict)  # key -> file name for messages
+    group: str | None = None
+    phase: str = "queued"  # queued | starting | running | stopping | finishing
+    admitted: bool = False
+    waiting_for: str | None = None
+    stop_by: str | None = None
+    stop_at: datetime | None = None
+    kill_reason: str | None = None  # stop | timeout | shutdown — the first one wins
+    proc: subprocess.Popen | None = None
+    progress: WorkerProgress | None = None
+    worker_started_at: datetime | None = None
+
+
 class Launcher:
+    # Executables a run's recorded processes may be — nothing else is ever killed.
+    _EXCEL_IMAGES: frozenset[str] = frozenset({"excel.exe"})
+
     def __init__(
         self,
         run_store: RunStore,
@@ -148,16 +217,13 @@ class Launcher:
         self.run_store = run_store
         self.get_config = get_config
         self._worker_command = worker_command
-        self._global_sem = threading.BoundedSemaphore(
-            max(1, get_config().app.max_global_concurrency)
-        )
-        self._group_locks: dict[str, threading.Lock] = {}
-        self._group_guard = threading.Lock()
-        self._active: dict[str, subprocess.Popen] = {}
-        self._active_guard = threading.Lock()
-        # run_id -> job name for every run from prepare to finish — including runs still
-        # queued behind the concurrency cap, which have no worker process yet.
-        self._inflight: dict[str, str] = {}
+        self._cv = threading.Condition()
+        self._slots: dict[str, _Slot] = {}
+        self._by_job: dict[str, str] = {}  # job name (casefolded) -> run_id
+        self._queue: list[_Slot] = []  # waiting runs, first come first served
+        self._admitted: list[_Slot] = []
+        self._closing = False
+        self._threads: dict[str, threading.Thread] = {}
 
     # -- public ------------------------------------------------------------------
     def run_job_by_name(self, name: str, trigger: RunTrigger) -> RunRecord:
@@ -169,42 +235,184 @@ class Launcher:
         return self.run(config, job, trigger)
 
     def submit_job_by_name(self, name: str, trigger: RunTrigger) -> str:
-        """Non-blocking run: records the RUNNING row, starts a worker thread, returns run_id."""
+        """Non-blocking run: records the RUNNING row, starts a run thread, returns run_id.
+        Raises ``JobBusyError`` when the job already has a run waiting or running."""
         config = self.get_config()
         job = config.job(name)
         if job is None:
             raise KeyError(f"unknown job: {name}")
-        request, record = self._prepare(config, job, trigger)
+        slot, request, record = self._prepare(config, job, trigger)
         thread = threading.Thread(
-            target=self._run_prepared,
-            args=(config, job, request, record),
+            target=self._run_slot,
+            args=(slot, config, job, request, record),
             name=f"run-{record.run_id}",
             daemon=True,
         )
+        with self._cv:
+            self._threads[record.run_id] = thread
         thread.start()
         return record.run_id
 
+    def run(self, config: AppConfig, job: JobConfig, trigger: RunTrigger) -> RunRecord:
+        slot, request, record = self._prepare(config, job, trigger)
+        self._run_slot(slot, config, job, request, record)
+        return record
+
     def active_run_ids(self) -> list[str]:
-        with self._active_guard:
-            return list(self._active)
+        """Runs whose worker is running (or being stopped)."""
+        with self._cv:
+            return [s.run_id for s in self._slots.values() if s.proc is not None]
+
+    def inflight_run_ids(self) -> list[str]:
+        """Every run from submit until it is recorded — waiting ones included."""
+        with self._cv:
+            return list(self._slots)
+
+    def queued_run_ids(self) -> list[str]:
+        with self._cv:
+            return [s.run_id for s in self._queue]
 
     def inflight_job_names(self) -> set[str]:
         """Jobs with a run queued or running (e.g. a rename must wait for them)."""
-        with self._active_guard:
-            return set(self._inflight.values())
+        with self._cv:
+            return {s.job_name for s in self._slots.values()}
+
+    def live(self, run_id: str) -> dict[str, Any] | None:
+        """What an in-flight run is doing — for the dashboard and the run history."""
+        with self._cv:
+            slot = self._slots.get(run_id)
+            return self._live_locked(slot) if slot is not None else None
+
+    def live_for_job(self, name: str) -> dict[str, Any] | None:
+        with self._cv:
+            run_id = self._by_job.get(name.casefold())
+            slot = self._slots.get(run_id) if run_id else None
+            return self._live_locked(slot) if slot is not None else None
+
+    def stop(self, run_id: str, by: str) -> str:
+        """Ask an in-flight run to stop; returns its phase. ``KeyError``: not in flight;
+        ``StopRefusedError``: it is finishing, or already timing out / shutting down."""
+        with self._cv:
+            slot = self._slots.get(run_id)
+            if slot is None:
+                raise KeyError(run_id)
+            if slot.phase == "finishing":
+                raise StopRefusedError("it is already finishing — it can no longer be stopped")
+            if slot.kill_reason in ("timeout", "shutdown"):
+                raise StopRefusedError(f"it is already being ended ({slot.kill_reason})")
+            if slot.stop_by is None:
+                slot.stop_by = by or "someone"
+                slot.stop_at = datetime.now()
+                logger.info("Run {} ({!r}): stop requested by {}", run_id, slot.job_name, by)
+            self._cv.notify_all()
+            return slot.phase
+
+    def shutdown(self, grace: float = 8.0) -> None:
+        """The service is stopping: no new runs; waiting runs leave the queue and running
+        ones are killed (and recorded as interrupted) within one poll."""
+        with self._cv:
+            self._closing = True
+            self._cv.notify_all()
+            threads = list(self._threads.values())
+        deadline = time.monotonic() + grace
+        for thread in threads:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    # -- the queue ------------------------------------------------------------------
+    @staticmethod
+    def _live_locked(slot: _Slot) -> dict[str, Any]:
+        progress = slot.progress
+        started = slot.worker_started_at
+        return {
+            "run_id": slot.run_id,
+            "phase": slot.phase,
+            "waiting_for": slot.waiting_for,
+            "step": progress.step if progress else None,
+            "step_since": progress.since if progress else None,
+            "workbook": progress.workbook if progress else None,
+            "worker_started_at": started.isoformat(timespec="seconds") if started else None,
+            "stop_requested_by": slot.stop_by,
+            "trigger": str(slot.trigger),
+        }
+
+    def _dispatch_locked(self) -> None:
+        """Admit every waiting run whose resources are all free (see the module docstring)."""
+        cap = max(1, self.get_config().app.max_global_concurrency)
+        held_files: dict[str, _Slot] = {}
+        held_groups: dict[str, _Slot] = {}
+        for slot in self._admitted:
+            held_files.update(dict.fromkeys(slot.files, slot))
+            if slot.group:
+                held_groups[slot.group] = slot
+        reserved_files: dict[str, _Slot] = {}
+        reserved_groups: dict[str, _Slot] = {}
+        for slot in list(self._queue):
+            reason = None
+            for key in sorted(slot.files):
+                other = held_files.get(key) or reserved_files.get(key)
+                if other is not None:
+                    name = slot.file_names.get(key, "")
+                    reason = f"same workbook as '{other.job_name}' ({name})"
+                    break
+            if reason is None and slot.group:
+                other = held_groups.get(slot.group) or reserved_groups.get(slot.group)
+                if other is not None:
+                    reason = f"concurrency group '{slot.group}' is used by '{other.job_name}'"
+            if reason is None and len(self._admitted) >= cap:
+                reason = f"all {cap} run slot(s) are busy"
+            if reason is not None:
+                slot.waiting_for = reason
+                reserved_files.update(dict.fromkeys(slot.files, slot))
+                if slot.group:
+                    reserved_groups.setdefault(slot.group, slot)
+                continue
+            slot.admitted, slot.waiting_for = True, None
+            self._queue.remove(slot)
+            self._admitted.append(slot)
+            held_files.update(dict.fromkeys(slot.files, slot))
+            if slot.group:
+                held_groups[slot.group] = slot
+        self._cv.notify_all()
+
+    def _wait_admitted(self, slot: _Slot) -> bool:
+        """Block until the run is admitted (True), or it is stopped / the service closes
+        while it waits (False — it never started)."""
+        with self._cv:
+            self._queue.append(slot)
+            self._dispatch_locked()
+            while not slot.admitted:
+                if slot.stop_by is not None or self._closing:
+                    if slot in self._queue:
+                        self._queue.remove(slot)
+                    self._dispatch_locked()
+                    return False
+                self._cv.wait(timeout=_WAIT_SECONDS)
+                if not slot.admitted:
+                    self._dispatch_locked()  # the cap is read live
+            slot.phase = "starting"
+            return True
+
+    def _release_admission(self, slot: _Slot) -> None:
+        with self._cv:
+            if slot in self._admitted:
+                self._admitted.remove(slot)
+            if slot in self._queue:
+                self._queue.remove(slot)
+            self._dispatch_locked()
+
+    def _forget(self, slot: _Slot) -> None:
+        with self._cv:
+            self._slots.pop(slot.run_id, None)
+            if self._by_job.get(slot.job_key) == slot.run_id:
+                self._by_job.pop(slot.job_key, None)
+            self._threads.pop(slot.run_id, None)
+            if slot in self._admitted:
+                self._admitted.remove(slot)
+            if slot in self._queue:
+                self._queue.remove(slot)
+            self._dispatch_locked()
 
     # -- internals ---------------------------------------------------------------
-    def _group_lock(self, group: str | None) -> threading.Lock | None:
-        if not group:
-            return None
-        with self._group_guard:
-            return self._group_locks.setdefault(group, threading.Lock())
-
-    def run(self, config: AppConfig, job: JobConfig, trigger: RunTrigger) -> RunRecord:
-        request, record = self._prepare(config, job, trigger)
-        self._run_prepared(config, job, request, record)
-        return record
-
     @staticmethod
     def _resolve_is_test(job: JobConfig, trigger: RunTrigger) -> bool:
         """The job's lifecycle stage decides who a run emails, resolved at fire time.
@@ -219,36 +427,61 @@ class Launcher:
 
     def _prepare(
         self, config: AppConfig, job: JobConfig, trigger: RunTrigger
-    ) -> tuple[WorkerRequest, RunRecord]:
-        is_test = self._resolve_is_test(job, trigger)
+    ) -> tuple[_Slot, WorkerRequest, RunRecord]:
         run_id = uuid.uuid4().hex[:12]
-        now = datetime.now()
-        run_dir = paths.run_dir(run_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        request = self._build_request(config, job, run_id, run_dir, now, is_test=is_test)
-        record = RunRecord(
-            run_id=run_id,
-            job_name=job.name,
-            trigger=trigger,
-            status=RunStatus.RUNNING,
-            is_test=is_test,
-            started_at=now.isoformat(timespec="seconds"),
-            worker_log_path=str(request.log_path),
-        )
-        self.run_store.upsert(record)
-        with self._active_guard:
-            self._inflight[run_id] = job.name
-        return request, record
-
-    def _run_prepared(
-        self, config: AppConfig, job: JobConfig, request: WorkerRequest, record: RunRecord
-    ) -> None:
-        group_lock = self._group_lock(job.concurrency_group)
-        if group_lock is not None:
-            group_lock.acquire()
+        slot = _Slot(run_id=run_id, job_key=job.name.casefold(), job_name=job.name, trigger=trigger)
+        with self._cv:
+            if self._closing:
+                raise ServiceClosingError("the ReportFlow service is stopping")
+            busy = self._by_job.get(slot.job_key)
+            if busy is not None:
+                raise JobBusyError(job.name, busy, self._slots[busy].phase)
+            self._slots[run_id] = slot
+            self._by_job[slot.job_key] = run_id
         try:
-            with self._global_sem:
-                self._execute(config, job, request, record)
+            is_test = self._resolve_is_test(job, trigger)
+            now = datetime.now()
+            run_dir = paths.run_dir(run_id)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            request = self._build_request(config, job, run_id, run_dir, now, is_test=is_test)
+            record = RunRecord(
+                run_id=run_id,
+                job_name=job.name,
+                trigger=trigger,
+                status=RunStatus.RUNNING,
+                is_test=is_test,
+                started_at=now.isoformat(timespec="seconds"),
+                worker_log_path=str(request.log_path),
+            )
+            self.run_store.upsert(record)
+        except BaseException:
+            self._forget(slot)
+            raise
+        return slot, request, record
+
+    def _run_slot(
+        self,
+        slot: _Slot,
+        config: AppConfig,
+        job: JobConfig,
+        request: WorkerRequest,
+        record: RunRecord,
+    ) -> None:
+        try:
+            # Computed here, not in _prepare (the API thread): a path on an unreachable
+            # share can take a long time to resolve.
+            names = {
+                _file_key(wb.input_excel_path): Path(wb.input_excel_path).name
+                for wb in job.workbooks
+            }
+            with self._cv:
+                slot.files = frozenset(names)
+                slot.file_names = names
+                slot.group = (job.concurrency_group or "").strip().casefold() or None
+            if not self._wait_admitted(slot):
+                self._record_not_started(slot, record)
+                return
+            self._execute(config, job, request, record, slot)
         except Exception as e:  # noqa: BLE001 — background thread must not die silently
             logger.exception("Run {} crashed in launcher: {}", request.run_id, e)
             record.status = RunStatus.CRASHED
@@ -256,10 +489,27 @@ class Launcher:
             record.finished_at = datetime.now().isoformat(timespec="seconds")
             self.run_store.upsert(record)
         finally:
-            if group_lock is not None:
-                group_lock.release()
-            with self._active_guard:
-                self._inflight.pop(request.run_id, None)
+            self._forget(slot)
+
+    def _record_not_started(self, slot: _Slot, record: RunRecord) -> None:
+        """A run stopped (or interrupted by a shutdown) while it was still waiting."""
+        record.finished_at = datetime.now().isoformat(timespec="seconds")
+        record.duration_seconds = _elapsed_seconds(record.started_at, record.finished_at)
+        if slot.stop_by is not None:
+            record.status = RunStatus.STOPPED
+            record.error_summary = (
+                f"Stopped by {slot.stop_by} at {_clock(slot.stop_at)} before it started"
+            )
+            record.email_note = "not sent — stopped"
+        else:
+            record.status = RunStatus.INTERRUPTED
+            record.error_summary = (
+                "Interrupted — the ReportFlow service was stopping before this run started. "
+                "Nothing was emailed; run it again."
+            )
+            record.email_note = "not sent — interrupted"
+        self.run_store.upsert(record)
+        logger.info("Run {} {} before it started", record.run_id, record.status)
 
     def _build_request(
         self,
@@ -306,7 +556,12 @@ class Launcher:
         )
 
     def _execute(
-        self, config: AppConfig, job: JobConfig, request: WorkerRequest, record: RunRecord
+        self,
+        config: AppConfig,
+        job: JobConfig,
+        request: WorkerRequest,
+        record: RunRecord,
+        slot: _Slot,
     ) -> None:
         req_path = write_request(request, request.result_path.parent / "request.json")
         stdio_path = request.result_path.parent / "worker_stdio.log"
@@ -334,20 +589,80 @@ class Launcher:
             record.finished_at = datetime.now().isoformat(timespec="seconds")
             self.run_store.upsert(record)
             return
-        with self._active_guard:
-            self._active[request.run_id] = proc
-        timed_out = False
+        with self._cv:
+            slot.proc = proc
+            slot.phase = "running"
+            slot.worker_started_at = datetime.now()
+        exit_code, reason = self._supervise(slot, proc, request)
+        if reason is not None:
+            logger.warning("Run {}: {} — ending the worker, then its Excel", request.run_id, reason)
+            exit_code = self._kill_worker(proc)
+        # Close every Excel the run recorded (after the worker is gone, so it can't start a
+        # new one) — also after a normal exit: a hung Excel would keep the file open.
+        slot.progress = read_progress(progress_path(request.result_path)) or slot.progress
+        self._close_excels(slot)
+        with self._cv:
+            if reason is None and slot.stop_by is not None:
+                reason = "stop"  # Stop raced the worker's normal exit: still not emailed
+            slot.phase = "finishing"
+        self._release_admission(slot)  # free the queue before emailing (SMTP can be slow)
+        self._finalize(config, job, request, record, exit_code, reason=reason, slot=slot)
+
+    def _supervise(
+        self, slot: _Slot, proc: subprocess.Popen, request: WorkerRequest
+    ) -> tuple[int | None, str | None]:
+        """Wait for the worker. Returns (exit code, reason it must be killed or None)."""
+        deadline = time.monotonic() + request.timeout_seconds
+        progress_file = progress_path(request.result_path)
+        while True:
+            try:
+                return proc.wait(timeout=_POLL_SECONDS), None
+            except subprocess.TimeoutExpired:
+                pass
+            progress = read_progress(progress_file)
+            with self._cv:
+                if progress is not None:
+                    slot.progress = progress
+                reason = None
+                if slot.stop_by is not None:
+                    reason = "stop"
+                elif self._closing:
+                    reason = "shutdown"
+                elif time.monotonic() >= deadline:
+                    reason = "timeout"
+                if reason is not None:
+                    slot.kill_reason = reason
+                    slot.phase = "stopping"
+                    return None, reason
+
+    @staticmethod
+    def _kill_worker(proc: subprocess.Popen) -> int | None:
+        """Kill the worker through its own handle (never a reused PID), then any children."""
         try:
-            exit_code = proc.wait(timeout=request.timeout_seconds)
+            import psutil
+
+            children = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:  # noqa: BLE001 — already gone
+            children = []
+        try:
+            proc.kill()
+        except OSError as e:
+            logger.debug("worker kill failed: {}", e)
+        for child in children:
+            try:
+                child.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            return proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
-            timed_out = True
-            logger.warning("Run {} timed out; killing worker tree", request.run_id)
-            self._tree_kill(proc.pid)
-            exit_code = proc.wait(timeout=30)
-        finally:
-            with self._active_guard:
-                self._active.pop(request.run_id, None)
-        self._finalize(config, job, request, record, exit_code, timed_out=timed_out)
+            logger.error("worker pid {} did not exit after kill", proc.pid)
+            return None
+
+    def _close_excels(self, slot: _Slot) -> None:
+        progress = slot.progress
+        for ref in progress.excels if progress else []:
+            kill_verified(ref, images=self._EXCEL_IMAGES)
 
     def _finalize(
         self,
@@ -355,25 +670,44 @@ class Launcher:
         job: JobConfig,
         request: WorkerRequest,
         record: RunRecord,
-        exit_code: int,
+        exit_code: int | None,
         *,
-        timed_out: bool,
+        reason: str | None,
+        slot: _Slot,
     ) -> None:
         record.exit_code = exit_code
         record.finished_at = datetime.now().isoformat(timespec="seconds")
         record.duration_seconds = _elapsed_seconds(record.started_at, record.finished_at)
+        step = slot.progress.step if slot.progress else None
+        while_doing = f" while: {step}" if step else ""
         result = None
         if request.result_path.exists():
             try:
                 result = read_result(request.result_path)
             except Exception as e:  # noqa: BLE001
                 logger.error("Could not parse result for run {}: {}", request.run_id, e)
-        if timed_out:
+        if reason == "stop":
+            record.status = RunStatus.STOPPED
+            built = " — the report was built but not emailed" if result and result.ok else ""
+            record.error_summary = (
+                f"Stopped by {slot.stop_by} at {_clock(slot.stop_at)}{while_doing}{built}"
+            )
+            record.email_note = "not sent — stopped"
+        elif reason == "shutdown":
+            record.status = RunStatus.INTERRUPTED
+            record.error_summary = (
+                f"Interrupted — the ReportFlow service was stopping{while_doing}. Nothing "
+                "was emailed; run it again."
+            )
+            record.email_note = "not sent — interrupted"
+        elif reason == "timeout":
             record.status = RunStatus.TIMED_OUT
             # Say what to do: the usual cause is simply a big report (lots of PI data).
+            last = f" Last step: {step}." if step else ""
             record.error_summary = (
                 f"timed out after {_format_limit(request.timeout_seconds)} (the job's time "
-                "limit). If the report is just large, raise Time limit in Edit → Advanced."
+                f"limit).{last} If the report is just large, raise Time limit in Edit → "
+                "Advanced."
             )
         elif result is None:
             record.status = RunStatus.CRASHED
@@ -392,6 +726,9 @@ class Launcher:
                 record.error_summary = (result.message or "run failed").strip()[:500]
         self.run_store.upsert(record)
         logger.info("Run {} finished: status={} exit={}", request.run_id, record.status, exit_code)
+        if record.status in (RunStatus.STOPPED, RunStatus.INTERRUPTED):
+            logger.info("Run {} email: {}", record.run_id, record.email_note)
+            return
         self._maybe_email(config, job, record, request)
 
     def _maybe_email(
@@ -462,19 +799,3 @@ class Launcher:
         }
         context["subject"] = render_subject(job.subject or f"{job.name} report", context)
         return context
-
-    @staticmethod
-    def _tree_kill(pid: int) -> None:
-        try:
-            import psutil
-
-            parent = psutil.Process(pid)
-            children = parent.children(recursive=True)
-            for child in children:
-                try:
-                    child.kill()
-                except psutil.Error:
-                    pass
-            parent.kill()
-        except Exception as e:  # noqa: BLE001
-            logger.error("tree kill of pid {} failed: {}", pid, e)

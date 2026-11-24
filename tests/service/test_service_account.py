@@ -17,6 +17,8 @@ from reportflow.core.config.models import AppConfig, SmtpConfig, TestSettings
 from reportflow.service import service_account as sa
 from reportflow.service.api import ServiceState, create_app
 
+from .inflight import queued_run
+
 FAKE = str(Path(__file__).parent / "fake_worker.py")
 
 
@@ -192,11 +194,12 @@ def test_set_service_account_waits_for_running_jobs(client, monkeypatch):
     monkeypatch.setattr(sa, "validate_credentials", lambda u, p: None)
     monkeypatch.setattr(sa, "apply_service_account", lambda u, p: applied.append(u) or u)
     launcher = client.app.state.svc.launcher
-    launcher._inflight["r1"] = "Daily Energy Report"
+    fake = queued_run(launcher, "Daily Energy Report")
+    fake.__enter__()
     try:
         resp = client.post("/system/service-account", json={"user": "CORP\\u", "password": "p"})
     finally:
-        launcher._inflight.pop("r1")
+        fake.__exit__(None, None, None)
     assert resp.status_code == 409 and "Daily Energy Report" in resp.json()["detail"]
     assert applied == []  # nothing was changed
 

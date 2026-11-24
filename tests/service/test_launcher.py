@@ -243,7 +243,8 @@ def test_multi_workbook_run_attaches_every_output(tmp_path, monkeypatch):
         on_workbook_failure="send_partial",
     )
     launcher = _launcher(tmp_path, _config(job))
-    request, _ = launcher._prepare(_config(job), job, RunTrigger.DRY_RUN)
+    slot, request, _ = launcher._prepare(_config(job), job, RunTrigger.DRY_RUN)
+    launcher._forget(slot)  # only the request is looked at here
     assert request.continue_on_workbook_failure is True
     assert [w.input_excel_path.name for w in request.workbooks] == ["Sales.xlsx", "Stock.xlsx"]
 

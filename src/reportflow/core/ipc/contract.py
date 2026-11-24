@@ -116,3 +116,31 @@ class WorkerResult(_IpcBase):
     @property
     def ok(self) -> bool:
         return self.status is RunStatus.SUCCESS
+
+
+class ProcessRef(_IpcBase):
+    """A process the run started. ``create_time`` (psutil) tells it apart from a later
+    process that reuses its PID — nothing is ever killed on the PID alone."""
+
+    pid: int
+    create_time: float
+    image: str  # lower-case executable name, e.g. "excel.exe"
+
+
+class WorkerProgress(_IpcBase):
+    """What a run is doing right now — ``progress.json`` beside ``result.json``, rewritten
+    by the worker at every step (0.16). The service shows the step on the dashboard and in
+    the history, and uses the process list to close a stopped/timed-out run's Excel (Excel
+    is started by COM, so it is NOT a child of the worker)."""
+
+    run_id: str
+    step: str
+    since: str  # ISO-8601, when this step began
+    workbook: str | None = None  # file name of the workbook being built
+    worker: ProcessRef | None = None
+    excels: list[ProcessRef] = Field(default_factory=list)  # a COM retry starts a new one
+
+
+def progress_path(result_path: Path) -> Path:
+    """Where a run's progress file lives (the run folder)."""
+    return Path(result_path).parent / "progress.json"

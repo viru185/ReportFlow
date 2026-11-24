@@ -32,6 +32,7 @@ from loguru import logger
 
 from reportflow.worker.diagnostics import VstoDiagnostics, redact_diagnostic_text, windows_identity
 from reportflow.worker.freeze import freeze_sheet
+from reportflow.worker.progress import Progress
 
 # Excel COM constants (avoid importing the type library).
 _XL_CALC_DONE = 0  # xlDone
@@ -223,10 +224,15 @@ class ExcelRun:
     """Context manager that owns a single disposable Excel instance for one run."""
 
     def __init__(
-        self, *, deadline: float | None = None, diagnostics: VstoDiagnostics | None = None
+        self,
+        *,
+        deadline: float | None = None,
+        diagnostics: VstoDiagnostics | None = None,
+        progress: Progress | None = None,
     ) -> None:
         self._deadline = deadline
         self.diagnostics = diagnostics
+        self.progress = progress
         self.pi_datalink_connected = False
         self._source_paths: dict[int, Path] = {}
         self._com_initialized = False
@@ -250,8 +256,11 @@ class ExcelRun:
         self._com_initialized = True
         self._acquire_startup_lock()
         try:
+            self._step("Starting Excel")
             self.app = self._create_app_with_retry()
             self.excel_pid = int(self.app.pid)
+            if self.progress is not None:
+                self.progress.add_excel(self.excel_pid)  # Stop / a timeout can close it
             logger.info("Excel session started (pid={})", self.excel_pid)
             if self.diagnostics is not None:
                 self.diagnostics.excel(self.app)
@@ -262,6 +271,11 @@ class ExcelRun:
             self._teardown()
             raise
         return self
+
+    def _step(self, text: str, *, workbook: str | None = None) -> None:
+        """Tell the service what the run is doing (shown on the dashboard)."""
+        if self.progress is not None:
+            self.progress.step(text, workbook=workbook)
 
     def _connect_com_addins(self, app: xw.App) -> None:
         """Connect COM add-ins (e.g. PI DataLink) in this automation instance.
@@ -496,6 +510,7 @@ class ExcelRun:
         assert self.app is not None
         if not template_path.exists():
             raise ExcelJobError(f"workbook template not found: {template_path}")
+        self._step(f"Opening {template_path.name}", workbook=template_path.name)
         logger.info("Opening workbook: {}", template_path)
         book = self.app.books.open(
             str(template_path),
@@ -538,6 +553,7 @@ class ExcelRun:
         self, book: xw.Book, sheet_names: list[str], post_refresh_wait_seconds: int = 0
     ) -> None:
         """Force a synchronous refresh of connections/Power Query, then wait for calc."""
+        self._step("Refreshing data")
         # Make every query synchronous so RefreshAll blocks instead of returning early.
         try:
             for conn in book.api.Connections:
@@ -583,6 +599,7 @@ class ExcelRun:
         :func:`_settle_verdict`); a sheet still below its baseline at the budget earns ONE
         bounded grace extension, then a deliver-anyway warning naming the sheet.
         """
+        self._step("Waiting for add-in data (PI DataLink …)")
         assert self.app is not None
         logger.info("Settling async add-in data (budget {}s)…", budget_seconds)
         deadline = time.monotonic() + budget_seconds
@@ -691,6 +708,7 @@ class ExcelRun:
         try:
             for name in sheet_names:
                 self._check_deadline(f"freezing sheet {name}")
+                self._step(f"Freezing values on '{name}'")
                 sheet = book.sheets[name].api
                 if sheet.UsedRange.HasFormula is not False and sheet.ProtectContents:
                     raise ExcelJobError(
@@ -775,6 +793,7 @@ class ExcelRun:
         its worksheet functions are unregistered, so every formula that calls them errors.
         Run this while the formulas are still present (before freeze).
         """
+        self._step("Checking for error cells")
         findings: dict[str, tuple[int, list[str]]] = {}
         for name in sheet_names:
             self._check_deadline(f"scanning {name} for error cells")
@@ -833,6 +852,7 @@ class ExcelRun:
 
         Runs AFTER freeze, so selected sheets hold static values.
         """
+        self._step("Removing the sheets not included")
         keep = set(sheet_names)
         # Capture names FIRST: the COM object is unusable after delete().
         doomed = [s.name for s in book.sheets if s.name not in keep]
@@ -902,6 +922,7 @@ class ExcelRun:
         produced: list[Path] = []
         for name in sheet_names:
             self._check_deadline(f"exporting PDF for {name}")
+            self._step(f"Exporting PDF of '{name}'")
             pdf_path = _pdf_path_for_sheet(output_pdf_path, name, single=single)
             pdf_path.parent.mkdir(parents=True, exist_ok=True)
             book.sheets[name].to_pdf(str(pdf_path))
@@ -936,6 +957,7 @@ class ExcelRun:
         Hard guard: refuse to save onto the input file even if a job misconfiguration
         resolves the output to the same path.
         """
+        self._step(f"Saving {output_xlsx_path.name}")
         source = self._source_paths.get(id(book), Path(str(book.api.FullName)))
         if output_xlsx_path.resolve() == source.resolve():
             raise ExcelJobError(

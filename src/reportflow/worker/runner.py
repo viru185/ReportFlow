@@ -46,6 +46,7 @@ from reportflow.worker.excel import (
     is_transient_com_error,
 )
 from reportflow.worker.pdf import merge_pdfs
+from reportflow.worker.progress import Progress
 
 _MAX_COM_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 2.0
@@ -213,13 +214,17 @@ def _build_workbook(
 
 
 def _execute_once(
-    request: WorkerRequest, deadline: float, outcome: _Attempt, diagnostics: VstoDiagnostics
+    request: WorkerRequest,
+    deadline: float,
+    outcome: _Attempt,
+    diagnostics: VstoDiagnostics,
+    progress: Progress | None = None,
 ) -> None:
     """Run every workbook in one fresh Excel session, mutating ``outcome``.
 
     ``outcome`` is caller-owned so the reaped-PID accounting survives even when this raises.
     """
-    run = ExcelRun(deadline=deadline, diagnostics=diagnostics)
+    run = ExcelRun(deadline=deadline, diagnostics=diagnostics, progress=progress)
     multi = len(request.workbooks) > 1
     try:
         with run:
@@ -282,6 +287,7 @@ def run_job(request: WorkerRequest) -> WorkerResult:
         )
     diagnostics = VstoDiagnostics(request.result_path.parent)
     diagnostics.start()
+    progress = Progress(request.run_id, request.result_path)
     try:
         try:
             _validate_output_paths(request)
@@ -293,7 +299,7 @@ def run_job(request: WorkerRequest) -> WorkerResult:
             deadline = time.monotonic() + request.timeout_seconds
             result_attempt = _Attempt()
             try:
-                _execute_once(request, deadline, result_attempt, diagnostics)
+                _execute_once(request, deadline, result_attempt, diagnostics, progress)
                 status = RunStatus.SUCCESS
                 warns = result_attempt.warnings
                 message = f"completed with {len(warns)} warning(s)" if warns else "completed"
@@ -316,6 +322,7 @@ def run_job(request: WorkerRequest) -> WorkerResult:
                 logger.debug(error_detail)
                 break
     finally:
+        progress.step("Finishing")
         diagnostics.finish()
         finished = datetime.now()
         result = WorkerResult(

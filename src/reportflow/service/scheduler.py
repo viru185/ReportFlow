@@ -16,7 +16,7 @@ from loguru import logger
 
 from reportflow.core.config.models import AppConfig
 from reportflow.core.state import RunTrigger
-from reportflow.service.launcher import Launcher
+from reportflow.service.launcher import JobBusyError, Launcher
 
 # Nightly disk housekeeping (delete logs/runs past retention) — quiet hours.
 _MAINTENANCE_JOB_ID = "_reportflow_maintenance"
@@ -120,5 +120,8 @@ class SchedulerService:
         # recipients, live -> production), so promoting a job needs no re-scheduling.
         try:
             self.launcher.submit_job_by_name(name, RunTrigger.SCHEDULED)
+        except JobBusyError as e:
+            # One run per job: a run that is still going (or stuck) is not doubled up.
+            logger.warning("Skipped the scheduled start of {!r}: {}", name, e)
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to launch scheduled job {!r}: {}", name, e)

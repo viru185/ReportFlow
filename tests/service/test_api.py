@@ -12,7 +12,11 @@ from fastapi.testclient import TestClient
 
 from reportflow.core.config.loader import save_config
 from reportflow.core.config.models import AppConfig, SmtpConfig, TestSettings
+from reportflow.core.ipc.contract import RunStatus
+from reportflow.core.state import RunTrigger
 from reportflow.service.api import ServiceState, create_app
+
+from .inflight import queued_run
 
 FAKE = str(Path(__file__).parent / "fake_worker.py")
 
@@ -477,12 +481,9 @@ def test_rename_refuses_existing_name_and_running_job(client):
     assert resp.status_code == 409 and "already exists" in resp.json()["detail"]
 
     launcher = c.app.state.svc.launcher
-    launcher._inflight["r-queued"] = "daily"  # a run queued or in flight
-    try:
+    with queued_run(launcher, "daily"):  # a run queued or in flight
         resp = c.put("/jobs/daily", json=dict(job, name="renamed"))
         assert resp.status_code == 409 and "running" in resp.json()["detail"]
-    finally:
-        launcher._inflight.pop("r-queued")
     assert c.get("/jobs/daily").status_code == 200  # nothing changed
 
 
@@ -638,3 +639,78 @@ def test_send_test_email_validates_and_reports_plainly(client, monkeypatch):
     monkeypatch.setattr("reportflow.core.email.sender.send_template_test", refuse)
     resp = c.post("/email/send-test", json={"to": "me@corp.example.com", "template": "x"})
     assert resp.status_code == 400 and "isn't set up" in resp.json()["detail"]
+
+
+# -- 0.16: stop a run, one run per job ------------------------------------------------
+
+
+def _wait_for(predicate, timeout: float = 20.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.05)
+    raise AssertionError("timed out waiting")
+
+
+def test_stop_a_running_job_and_one_run_per_job(client, monkeypatch):
+    c, tmp_path = client
+    monkeypatch.setenv("REPORTFLOW_FAKE_MODE", "hang")
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    run_id = c.post("/jobs/daily/dry-run").json()["run_id"]
+    # A second start, and a delete, are refused while it runs.
+    busy = c.post("/jobs/daily/run")
+    assert busy.status_code == 409 and "already" in busy.json()["detail"]
+    assert c.delete("/jobs/daily").status_code == 409
+    summary = next(j for j in c.get("/jobs").json() if j["name"] == "daily")
+    assert summary["last_run_id"] == run_id and summary["active"]["run_id"] == run_id
+    assert c.get(f"/runs/{run_id}").json()["live"]["phase"] in ("queued", "starting", "running")
+
+    stop = c.post(f"/runs/{run_id}/stop", json={"by": r"CORP\tester"})
+    assert stop.status_code == 202 and stop.json()["status"] == "stopping"
+    done = _wait_for(
+        lambda: (
+            (r := c.get(f"/runs/{run_id}").json())["status"] != "running"
+            and r["live"] is None
+            and r
+        )
+    )
+    assert done["status"] == "stopped" and r"Stopped by CORP\tester" in done["error_summary"]
+    # Finished: a second stop is refused; an unknown run is 404.
+    again = c.post(f"/runs/{run_id}/stop", json={"by": "x"})
+    assert again.status_code == 409 and "already finished" in again.json()["detail"]
+    assert c.post("/runs/nope/stop", json={"by": "x"}).status_code == 404
+
+
+def test_a_running_row_with_nothing_behind_it_can_be_marked_stopped(client):
+    from reportflow.core.state import RunRecord
+
+    c, _ = client
+    store = c.app.state.svc.run_store
+    store.upsert(
+        RunRecord(
+            run_id="orphan",
+            job_name="daily",
+            trigger=RunTrigger.MANUAL,
+            status=RunStatus.RUNNING,
+            started_at="2026-11-24T11:54:30",
+        )
+    )
+    resp = c.post("/runs/orphan/stop", json={"by": r"CORP\tester"})
+    assert resp.status_code == 202 and resp.json()["status"] == "stopped"
+    assert store.get("orphan").status is RunStatus.STOPPED
+
+
+def test_a_scheduled_start_is_skipped_while_the_job_runs(client):
+    c, tmp_path = client
+    _make_wb(tmp_path / "t.xlsx")
+    c.post("/jobs", json=_job_payload(tmp_path))
+    state = c.app.state.svc
+    with queued_run(state.launcher, "daily"):
+        before = len(state.run_store.list("daily"))
+        state.scheduler._fire("daily")
+        assert len(state.run_store.list("daily")) == before  # no second run recorded

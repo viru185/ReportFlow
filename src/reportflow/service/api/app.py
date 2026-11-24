@@ -28,10 +28,16 @@ from reportflow.core.email import (
     send_dev_log_bundle,
 )
 from reportflow.core.email.recipients import resolve
+from reportflow.core.ipc.contract import RunStatus
 from reportflow.core.secrets import SMTP_PASSWORD_KEY
 from reportflow.core.state import RunStore, RunTrigger
 from reportflow.service.bootstrap import seed_data_files
-from reportflow.service.launcher import Launcher
+from reportflow.service.launcher import (
+    JobBusyError,
+    Launcher,
+    ServiceClosingError,
+    StopRefusedError,
+)
 from reportflow.service.scheduler import SchedulerService
 from reportflow.service.workbook import WorkbookError, WorkbookNotFound, discover_sheets
 
@@ -67,7 +73,7 @@ class ServiceState:
         try:
             purge_logs(
                 self.config.app.log_retention_days,
-                active_run_ids=set(self.launcher.active_run_ids()),
+                active_run_ids=set(self.launcher.inflight_run_ids()),  # waiting ones too
                 run_store=self.run_store,
             )
         except Exception as e:  # noqa: BLE001 — housekeeping must never take the service down
@@ -266,6 +272,10 @@ class EmailTemplateUpdate(BaseModel):
     content: str
 
 
+class StopRequest(BaseModel):
+    by: str = ""  # the Windows user who pressed Stop (display only: localhost API)
+
+
 class JobOrder(BaseModel):
     """Every job's name, in the order the dashboard lists them."""
 
@@ -329,6 +339,10 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             "last_output_xlsx": last_success.output_xlsx if last_success else None,
             "last_email_note": latest.email_note if latest else None,
             "last_email_failed": bool(latest and (latest.email_note or "").startswith("failed:")),
+            "last_run_id": latest.run_id if latest else None,
+            # 0.16: what the job's in-flight run is doing (None when it has none) — phase,
+            # why it waits, the worker's current step, who asked it to stop.
+            "active": svc().launcher.live_for_job(job.name),
         }
 
     # -- system ----------------------------------------------------------------
@@ -343,6 +357,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         return {
             "version": __version__,
             "active_runs": svc().launcher.active_run_ids(),
+            "queued_runs": svc().launcher.queued_run_ids(),
             "scheduled_jobs": svc().scheduler.scheduled_job_names(),
             "job_count": len(svc().config.jobs),
             "config_error": svc().config_error,
@@ -479,7 +494,7 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         stats = purge_logs(
             req.older_than_days,
             everything=req.all,
-            active_run_ids=set(st.launcher.active_run_ids()),
+            active_run_ids=set(st.launcher.inflight_run_ids()),  # waiting ones too
             run_store=st.run_store,
         )
         return {"ok": True, **stats.as_dict()}
@@ -584,7 +599,11 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
     @app.delete("/jobs/{name}")
     def delete_job(name: str) -> dict[str, Any]:
         logger.info("API: delete job {!r}", name)
-        _require_job(name)
+        job = _require_job(name)
+        if job.name in svc().launcher.inflight_job_names():
+            raise HTTPException(
+                status_code=409, detail=f"'{job.name}' is running — stop it or let it finish first"
+            )
         jobs = [j for j in svc().config.jobs if j.name.casefold() != name.casefold()]
         _save_jobs_or_400(svc(), jobs)
         return {"ok": True}
@@ -594,16 +613,22 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         # The job's stage decides recipients: testing -> test recipients, live -> production.
         logger.info("API: manual run requested for {!r}", name)
         _require_job(name)
-        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.MANUAL)
-        return RunResponse(run_id=run_id)
+        return RunResponse(run_id=_submit(name, RunTrigger.MANUAL))
 
     @app.post("/jobs/{name}/dry-run", response_model=RunResponse)
     def dry_run_job(name: str) -> RunResponse:
         # Build + validate the report (so the #NAME?/error-cell scan runs) but never email.
         logger.info("API: build-only run requested for {!r}", name)
         _require_job(name)
-        run_id = svc().launcher.submit_job_by_name(name, RunTrigger.DRY_RUN)
-        return RunResponse(run_id=run_id)
+        return RunResponse(run_id=_submit(name, RunTrigger.DRY_RUN))
+
+    def _submit(name: str, trigger: RunTrigger) -> str:
+        try:
+            return svc().launcher.submit_job_by_name(name, trigger)
+        except JobBusyError as e:  # one run per job at a time (0.16)
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except ServiceClosingError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
 
     @app.post("/jobs/{name}/stage")
     def set_job_stage(name: str, update: StageUpdate) -> dict[str, Any]:
@@ -656,7 +681,36 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
         rec = svc().run_store.get(run_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="unknown run")
-        return rec.model_dump(mode="json")
+        return {**rec.model_dump(mode="json"), "live": svc().launcher.live(run_id)}
+
+    @app.post("/runs/{run_id}/stop", status_code=202)
+    def stop_run(run_id: str, request: StopRequest) -> dict[str, Any]:
+        """Stop a waiting or running run: its worker is killed, then its Excel, and it is
+        recorded as Stopped — never emailed. A "running" row with no run behind it (left by
+        an old crash) is simply marked Stopped."""
+        st = svc()
+        by = request.by.strip() or "someone"
+        try:
+            phase = st.launcher.stop(run_id, by)
+        except StopRefusedError as e:
+            raise HTTPException(status_code=409, detail=f"Can't stop this run: {e}") from e
+        except KeyError:
+            rec = st.run_store.get(run_id)
+            if rec is None:
+                raise HTTPException(status_code=404, detail="unknown run") from None
+            if rec.status is not RunStatus.RUNNING:
+                raise HTTPException(
+                    status_code=409, detail=f"This run already finished ({rec.status})."
+                ) from None
+            rec.status = RunStatus.STOPPED
+            rec.finished_at = datetime.now().isoformat(timespec="seconds")
+            rec.error_summary = f"Marked as stopped by {by} (the run was no longer active)"
+            rec.email_note = "not sent — stopped"
+            st.run_store.upsert(rec)
+            logger.info("API: orphaned run {} marked stopped by {}", run_id, by)
+            return {"run_id": run_id, "status": "stopped", "phase": "none"}
+        logger.info("API: stop requested for run {} by {}", run_id, by)
+        return {"run_id": run_id, "status": "stopping", "phase": phase}
 
     @app.get("/runs/{run_id}/log")
     def get_run_log(run_id: str, tail: int = 400) -> dict[str, Any]:
