@@ -161,7 +161,7 @@ def _build_workbook(
         if findings:
             warnings.extend(format_error_cell_warnings(findings))
         if request.freeze_values:
-            run.freeze_sheets(book, names)
+            warnings.extend(run.freeze_sheets(book, names))
         if request.fail_if_sheet_empty:
             run.validate_sheets_not_empty(book, names)
         pdf_paths: list[Path] = []

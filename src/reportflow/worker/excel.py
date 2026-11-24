@@ -31,10 +31,11 @@ import xlwings as xw
 from loguru import logger
 
 from reportflow.worker.diagnostics import VstoDiagnostics, redact_diagnostic_text, windows_identity
+from reportflow.worker.freeze import freeze_sheet
 
 # Excel COM constants (avoid importing the type library).
 _XL_CALC_DONE = 0  # xlDone
-_XL_PASTE_VALUES = -4163  # xlPasteValues
+_XL_CALC_MANUAL = -4135  # xlCalculationManual
 _CALC_POLL_SECONDS = 0.15
 
 # Error-cell detection (Range.SpecialCells).
@@ -669,31 +670,66 @@ class ExcelRun:
             iterations += 1
             time.sleep(_CALC_POLL_SECONDS)
 
-    def freeze_sheets(self, book: xw.Book, sheet_names: list[str]) -> None:
-        """Convert formulas to static values on the SELECTED sheets only.
+    def freeze_sheets(self, book: xw.Book, sheet_names: list[str]) -> list[str]:
+        """Convert formulas to static values on the SELECTED sheets only, without the
+        clipboard (``worker/freeze.py`` — 0.16: the old Copy → PasteSpecial hung inside a
+        service, and concurrent runs shared one clipboard). Returns run warnings.
 
-        Uses COM ``Copy`` -> ``PasteSpecial(xlPasteValues)`` — the same mechanism as the
-        customer's proven legacy script. It preserves formatting exactly and avoids
-        round-tripping large ranges through Python.
+        Calculation is manual while freezing (no recalculation after every write, and a later
+        sheet can't change once an earlier one is frozen) and restored afterwards — the mode
+        is saved into the file, so it must never stay manual.
         """
         assert self.app is not None
-        for name in sheet_names:
-            self._check_deadline(f"freezing sheet {name}")
-            sheet = book.sheets[name]
-            used = sheet.api.UsedRange
-            cell_count = int(used.Cells.Count)
-            used.Copy()
-            used.PasteSpecial(Paste=_XL_PASTE_VALUES)
-            try:
-                self.app.api.CutCopyMode = False
-            except Exception as e:  # noqa: BLE001 — cosmetic (clears the marching ants)
-                logger.debug("Could not reset CutCopyMode: {}", e)
-            logger.info("Froze formulas to values on sheet {!r} ({} cells)", name, cell_count)
+        app = self.app.api
+        calculation = None
+        try:
+            calculation = app.Calculation
+            app.Calculation = _XL_CALC_MANUAL
+        except Exception as e:  # noqa: BLE001 — best effort: freezing works either way
+            logger.debug("Could not switch calculation to manual: {}", e)
+        warnings: list[str] = []
+        try:
+            for name in sheet_names:
+                self._check_deadline(f"freezing sheet {name}")
+                sheet = book.sheets[name].api
+                if sheet.UsedRange.HasFormula is not False and sheet.ProtectContents:
+                    raise ExcelJobError(
+                        f"sheet {name!r} is protected, so its formulas can't be frozen to "
+                        'values — unprotect it in the workbook, or turn off "Freeze formulas '
+                        'to values" for this job'
+                    )
+                report = freeze_sheet(
+                    sheet, check=self._check_deadline, is_transient=is_transient_com_error
+                )
+                if not report.blocks:
+                    logger.info("Sheet {!r} has no formulas — nothing to freeze", name)
+                else:
+                    logger.info(
+                        "Froze formulas to values on sheet {!r}: {} cell(s) in {} block(s), "
+                        "{} re-quoted, {} array(s), {:.2f}s",
+                        name,
+                        report.frozen,
+                        report.blocks,
+                        report.requoted,
+                        report.arrays,
+                        report.seconds,
+                    )
+                for table in report.resized_tables:
+                    logger.info("Kept table {!r} on sheet {!r} at its size", table, name)
+                warnings.extend(report.warnings())
+        finally:
+            if calculation is not None:
+                try:
+                    app.Calculation = calculation
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Could not restore calculation mode {}: {}", calculation, e)
+        return warnings
 
     def collapse_selection(self, book: xw.Book, sheet_names: list[str]) -> None:
         """Select A1 on every selected sheet and finish on the first one.
 
-        PasteSpecial leaves the whole used range selected, and Excel PERSISTS the
+        The old PasteSpecial freeze left the whole used range selected (0.16 freezes without
+        it, but refresh and user selections can still be anywhere), and Excel PERSISTS the
         per-sheet selection into the saved file — recipients opened the report with the
         entire sheet highlighted. Walk the sheets in reverse so the last activation is
         the FIRST selected sheet: that's the tab the workbook opens on. Cosmetic —

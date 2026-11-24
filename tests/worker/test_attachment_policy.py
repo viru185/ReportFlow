@@ -48,6 +48,7 @@ def test_failed_sheet_removal_cannot_produce_an_excel_email_attachment(tmp_path)
     )
     run.scan_error_cells.return_value = {}
     run.settle_warnings = []
+    run.freeze_sheets.return_value = []  # 0.16: the freeze reports its warnings
     run.save_output.return_value = task.output_xlsx_path
     with pytest.raises(ExcelJobError, match="sheet selection failed"):
         _build_workbook(run, request, task)
@@ -88,6 +89,7 @@ def test_combined_pdf_keeps_distinct_sheets_with_same_sanitized_name(tmp_path):
     run.open_workbook.return_value = SimpleNamespace(sheets=[])
     run.scan_error_cells.return_value = {}
     run.settle_warnings = []
+    run.freeze_sheets.return_value = []  # 0.16: the freeze reports its warnings
     run.save_output.return_value = task.output_xlsx_path
 
     def export(book, names, output):

@@ -107,9 +107,21 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
   `open_workbook`): stable = exactly unchanged everywhere, a decrease resets, no sheet may
   sit below its baseline, one bounded 30 s grace past the budget, then a deliver-anyway
   warning naming the lagging sheet. Pure predicate: `worker/excel.py::_settle_verdict`.
-- **PasteSpecial leaves the whole used range selected and Excel persists it into the
-  file** — recipients opened reports with everything highlighted. `collapse_selection`
-  selects A1 per sheet and leaves the first selected sheet active before every save.
+- **Never freeze through the clipboard (0.16).** Copy → PasteSpecial hung inside the service
+  (session 0: Office's clipboard use is unsupported; every run shares one clipboard, so two
+  runs could also paste each other's data) — the 2026-11-24 server hangs all sat in it.
+  `worker/freeze.py` reads the used range first (bulk `Formula` + `Value2`; replacing a spill
+  anchor clears its children), writes formula results back as values in rectangles, quotes any
+  text Excel would re-read when written (a digit, `= + - @ ' #`, TRUE/FALSE — "1-2" became a
+  date AND got a date format), and freezes leftovers one by one (a write overlapping part of a
+  legacy array is ignored WITHOUT an error). A sheet without formulas is never written.
+  Calculation is manual while freezing and always restored (the mode is saved in the file).
+- **Excel persists each sheet's selection into the file** — recipients once opened reports
+  with everything highlighted. `collapse_selection` selects A1 per sheet and leaves the first
+  selected sheet active before every save.
+- **Real-Excel tests: assert after the Excel session ends.** A failing assert inside it keeps
+  COM proxies alive in the traceback past CoUninitialize and breaks the next test with RPC
+  faults (`tests/worker/test_freeze_excel.py::_freeze_and_measure`).
 - **The old `send_report_email` checkbox is gone (0.8.0).** Legacy configs migrate via a
   `JobConfig` before-validator: `send_report_email=True` → `stage="live"`, else testing.
   Never re-add the key; never persist it.
