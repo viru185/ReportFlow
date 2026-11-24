@@ -7,12 +7,34 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import IO
 
 import uvicorn
 from loguru import logger
 
+from reportflow.core import paths
 from reportflow.core.logging_setup import configure_logging
 from reportflow.service.api import ServiceState, create_app
+
+_instance_lock: IO[str] | None = None  # held for the life of the process
+
+
+def take_instance_lock() -> bool:
+    """Only one service may own the data folder: a second copy would also recover (and
+    kill) the first one's runs. Windows drops the lock when the process ends."""
+    global _instance_lock
+    import msvcrt
+
+    lock_path = paths.state_dir() / "service.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+")  # noqa: SIM115 — kept open on purpose
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return False
+    _instance_lock = handle
+    return True
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
@@ -33,7 +55,17 @@ def main(argv: list[str] | None = None) -> int:
         return author.show()
     parse(argv)
     configure_logging("service")
+    if not take_instance_lock():
+        logger.error(
+            "Another ReportFlow service is already running on this computer (it holds {}). "
+            "This copy stops.",
+            paths.state_dir() / "service.lock",
+        )
+        return 1
     state = ServiceState()
+    recovered = state.launcher.recover_interrupted()
+    if recovered:
+        logger.warning("{} run(s) were cut off by the last stop/restart", recovered)
     if state.config.app.debug_logging:
         from reportflow.core.logging_setup import reconfigure
 

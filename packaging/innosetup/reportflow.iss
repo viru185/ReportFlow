@@ -90,6 +90,9 @@ Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} Start SERVICE
 ; exits with code 75: NSSM turns that into a stop with an error, and service recovery (enabled
 ; for stops with an error) starts the service again — under the new account.
 Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppExit 75 Exit"; Flags: runhidden
+; On stop, NSSM sends Ctrl+C and waits up to 15 s: the service ends its in-flight runs, closes
+; their Excel and records them as interrupted (0.16) instead of being cut off mid-run.
+Filename: "{app}\nssm\nssm.exe"; Parameters: "set {#MyServiceName} AppStopMethodConsole 15000"; Flags: runhidden
 Filename: "{sys}\sc.exe"; Parameters: "failure {#MyServiceName} reset= 86400 actions= restart/5000/restart/5000/restart/5000"; Flags: runhidden
 Filename: "{sys}\sc.exe"; Parameters: "failureflag {#MyServiceName} 1"; Flags: runhidden
 ; When the admin supplied a service account, run the service (and its Excel workers) as that

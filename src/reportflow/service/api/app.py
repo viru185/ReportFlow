@@ -303,6 +303,10 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             yield
         finally:
             st.scheduler.shutdown()
+            # In-flight runs are ended and recorded as interrupted (their Excel closed)
+            # rather than left "running" forever; anything a hard stop still cuts off is
+            # recovered at the next start (Launcher.recover_interrupted).
+            st.launcher.shutdown(grace=8.0)
             logger.info("Service stopped")
 
     app = FastAPI(title="ReportFlow Service", version=__version__, lifespan=lifespan)

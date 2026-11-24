@@ -206,6 +206,9 @@ class _Slot:
 class Launcher:
     # Executables a run's recorded processes may be — nothing else is ever killed.
     _EXCEL_IMAGES: frozenset[str] = frozenset({"excel.exe"})
+    _WORKER_IMAGES: frozenset[str] = frozenset(
+        {"reportflow-worker.exe", "python.exe", "pythonw.exe"}
+    )
 
     def __init__(
         self,
@@ -317,6 +320,63 @@ class Launcher:
         deadline = time.monotonic() + grace
         for thread in threads:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    def recover_interrupted(self) -> int:
+        """At start-up: a "running" row that no run of this service owns was cut off by a
+        stop, a restart or a crash. Close what it left behind (its worker, its Excel —
+        verified, see ``core/procs.py``) and record it as interrupted, with its last step.
+        Returns how many runs were recovered."""
+        with self._cv:
+            owned = set(self._slots)
+        recovered = 0
+        for record in self.run_store.list_by_status(RunStatus.RUNNING):
+            if record.run_id in owned:
+                continue
+            run_dir = (
+                Path(record.worker_log_path).parent
+                if record.worker_log_path
+                else paths.run_dir(record.run_id)
+            )
+            progress = read_progress(run_dir / "progress.json")
+            if progress is not None:
+                if progress.worker is not None:
+                    kill_verified(progress.worker, images=self._WORKER_IMAGES)
+                for ref in progress.excels:
+                    kill_verified(ref, images=self._EXCEL_IMAGES)
+            result = None
+            if (run_dir / "result.json").exists():
+                try:
+                    result = read_result(run_dir / "result.json")
+                except Exception:  # noqa: BLE001 — a half-written file: treat as none
+                    result = None
+            step = progress.step if progress else None
+            record.status = RunStatus.INTERRUPTED
+            record.finished_at = record.finished_at or datetime.now().isoformat(timespec="seconds")
+            record.email_note = "not sent — interrupted"
+            if result is not None and result.ok:
+                record.output_xlsx_paths = [str(p) for p in result.output_xlsx_paths]
+                record.output_xlsx = (
+                    record.output_xlsx_paths[0] if record.output_xlsx_paths else None
+                )
+                record.pdf_paths = [str(p) for p in result.pdf_paths]
+                record.error_summary = (
+                    "Interrupted — the ReportFlow service stopped or restarted after this "
+                    "report was built but before it was emailed. Run it again to send it."
+                )
+            else:
+                at = f" while this run was at: {step}" if step else " while this run was waiting"
+                record.error_summary = (
+                    f"Interrupted — the ReportFlow service stopped or restarted{at}. Nothing "
+                    "was emailed; run it again."
+                )
+            self.run_store.upsert(record)
+            recovered += 1
+            logger.warning(
+                "Run {} ({!r}) was cut off by a service stop/restart — recorded as interrupted",
+                record.run_id,
+                record.job_name,
+            )
+        return recovered
 
     # -- the queue ------------------------------------------------------------------
     @staticmethod
