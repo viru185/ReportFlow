@@ -102,10 +102,11 @@ whole run (the default — nothing is sent) or the others are still sent, with a
 
 ### What a run does
 
-For each workbook ReportFlow opens the input file, refreshes external data and Power Query,
-waits for the calculation, optionally freezes formulas to values on the included sheets, exports
-the PDFs using the workbook's own print layout, hides the sheets marked Hidden and saves the
-output Excel. **Your input files are never modified.**
+For each workbook ReportFlow copies the latest saved input file into the run's own folder and
+opens that copy (see [Excel files](#advanced)), refreshes external data and Power Query, waits for
+the calculation, optionally freezes formulas to values on the included sheets, exports the PDFs
+using the workbook's own print layout, hides the sheets marked Hidden and saves the output Excel.
+**Your input files are never modified.**
 
 ### Choose email attachments {#attachments}
 
@@ -135,9 +136,24 @@ output Excel. **Your input files are never modified.**
 - Each run writes `<filename>.xlsx` per workbook, plus one `<filename>_<sheet>.pdf` per sheet with
   PDF ticked. With several workbooks, `_{workbook}` is added to the name automatically so their
   files never overwrite each other.
-- The **Each run creates** card at the bottom of the tab lists every file a run makes — where it is
-  saved, the full copy (*kept on disk*), the Excel attachment and the PDFs (*emailed*) — with real
-  names. With several workbooks, pick which one to show; each gets its own set.
+- The **Each run creates** card lists every file a run makes — where it is saved, the full copy
+  (*kept on disk*), the Excel attachment and the PDFs (*emailed*) — with real names. With several
+  workbooks, pick which one to show; each gets its own set.
+
+### Old reports {#oldreports}
+
+Because each report's name carries the date, the output folder gains a new set of files with every
+run. To keep it from filling up, tick **Delete this job's reports after [N] days** (off by
+default):
+
+- Only the files ReportFlow made for **this job** are deleted — its output Excel, the Excel
+  attachment and the PDFs, once they are older than N days. Other files in the folder are never
+  touched, nor are other jobs' reports.
+- The **newest report is always kept**, however old (also the newest *successful* one, if a later
+  run failed).
+- A report someone has **changed** since ReportFlow wrote it (opened and saved, or replaced) is left
+  alone. One that is open in Excel right now is deleted next time.
+- It happens after each run of the job and once a night.
 
 ## Schedules {#schedule}
 
@@ -280,19 +296,23 @@ Each job card has two run buttons; the job's stage decides who gets the email:
 - **Build only** — builds and checks the report (for example that PI DataLink produced real
   values) but **sends no email at all**.
 
-While a run is in flight the card counts the elapsed time and the run buttons lock, so a job
-can't be started twice by accident. Scheduled cards also show the next run ("next: tomorrow
-06:00").
+While a run is in flight the card counts the elapsed time and shows **what it is doing** —
+"Freezing values on 'Problem Points' · 3m 40s". Run is greyed out, so a job can't be started twice,
+and **Stop** takes the place of *Build only*. A run that hasn't started yet says what it is
+waiting for — "Waiting — same workbook as 'Daily sales' (Sales.xlsx)", "concurrency group 'pi'
+is used by 'Daily sales'" or "all 2 run slot(s) are busy".
+Scheduled cards also show the next run ("next: tomorrow 06:00").
 
 The card's **coloured left edge** is the last run's outcome at a glance: green = success,
-red = failed, amber = running, grey = never ran. The detail line shows the next run, the last
-outcome ("last: success 2h ago") and the sheet count.
+red = failed (also timed out or interrupted), amber = running, grey = never ran or stopped. The
+detail line shows the next run, the last outcome ("last: success 2h ago") and the sheet count.
 
 The cards stay in the order you arrange them — for every user of this ReportFlow. Hover a card
 and drag the **⠿** grip at its left edge, or select a card and press **Alt+↑** / **Alt+↓**.
 
 Everything occasional is behind the card's **⋯** menu, so daily actions stay one click:
 
+- **Stop run** — while the job runs or waits (see [Stopping a run](#stop)).
 - **Open last report** — Explorer opens with the last successful report selected.
 - **Edit** / **Logs** — the job editor and that job's run history.
 - **Duplicate** — a new job with *everything* copied: workbooks, sheet choices, output,
@@ -304,13 +324,29 @@ Everything occasional is behind the card's **⋯** menu, so daily actions stay o
 - **Move up** / **Move down** — the same as dragging the card.
 - **Delete** — removes the job (it asks first).
 
-Jobs run in parallel, each in its own Excel. Failed runs are never retried automatically — they
-stay visible in the history.
+Jobs run in parallel, each in its own Excel, up to **Maximum parallel runs** (File → Settings).
+Jobs that use the **same workbook** take turns, so they never open it at the same moment. Failed
+runs are never retried automatically — they stay visible in the history.
+
+### Stopping a run {#stop}
+
+Click **Stop** on the card — or **Stop run** in its ⋯ menu, or in the job's run history. ReportFlow
+asks first, then ends the run within seconds: its Excel is closed, **nothing is emailed**, and the
+run is recorded as **Stopped**, with who stopped it, when, and the step it was at. A stopped run
+is not a failure. Stopping a run that is still waiting simply takes it out of the queue.
+
+> 💡 **Tip:** a run that seems stuck on one step for a long time can be stopped and run again. The
+> history keeps the step it was at — useful to send along with the logs.
 
 ## Logs and history {#logs}
 
 - **Logs** on a job card — that job's run history: status, timings, output paths, error summaries
-  and the colour-coded log of each run.
+  and the colour-coded log of each run. A run in progress shows its current step and a **Stop run**
+  button. Besides *Success* and *Failed*, a run can end as:
+  - **Timed out** — it reached the job's [time limit](#advanced); the last step is named.
+  - **Stopped** — someone clicked Stop (not a failure).
+  - **Interrupted** — the ReportFlow service stopped or restarted while the run was in flight (for
+    example during an update). Nothing was emailed; run it again.
 - **Logs → Application logs** — the full rolling logs of the Service, Worker and UI. Switch
   between them with one click, filter by level, search the text, read it colour-coded by severity.
 - **Logs → Send logs to support** — emails a diagnostic bundle (logs and sanitized settings, never
@@ -356,6 +392,8 @@ stay visible in the history.
 - When an update exists you see the version and its release notes — nothing installs until you
   click **Update now**. The download shows its progress, and the installer upgrades in place,
   keeping all jobs, settings and logs.
+- **Help → What's new** lists what changed in each version, newest first. It also opens by
+  itself once, the first time a new version runs.
 - **Beta versions** (e.g. `0.13.0-beta`) are published on GitHub as *pre-releases* for trying new
   features. The update check never offers them — install a beta by hand from the GitHub releases
   page. Someone running a beta is offered the final release when it comes out.
@@ -378,6 +416,13 @@ stay visible in the history.
 - **Concurrency group** — jobs with the same group name run one at a time instead of in parallel
   (useful when several jobs hit the same slow database). Leave it empty for normal parallel runs.
   Groups other jobs already use are suggested as you type, so a typo doesn't create a second group.
+- **Excel files: Work on a private copy of each workbook** (on by default) — each run copies the
+  latest *saved* version of the workbook into its own folder and builds from that copy, then
+  deletes it. So someone having the file open never makes the run read-only (which can stop PI
+  DataLink refreshing), and the original is never changed. Edits not yet saved on someone's PC
+  are not in the copy; a file saved during a run is picked up by the next run. Links to other
+  workbooks in the same folder keep pointing there. Turn it off only for a workbook whose macros
+  look for files next to it.
 - **Freeze formulas** (Output tab) — turns formulas into plain values on the included sheets of the
   *output copy*, so recipients see numbers even without your data connections.
 - **Fail if a sheet comes out empty** (on by default) — a run whose included sheet has no data

@@ -116,12 +116,46 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
   date AND got a date format), and freezes leftovers one by one (a write overlapping part of a
   legacy array is ignored WITHOUT an error). A sheet without formulas is never written.
   Calculation is manual while freezing and always restored (the mode is saved in the file).
+- **Stopping a run: kill the worker FIRST, then its Excel — by verified PID (0.16).** Excel is
+  started by COM (DCOM launches it), not as the worker's child, so a process-tree kill of the
+  worker never reached it: a timed-out run left EXCEL.EXE holding the workbook, and the next run
+  opened it read-only. Kill Excel first and the worker's COM retry just starts a new one. The
+  worker records itself and every Excel it starts (a retry starts another) in
+  `runs/<id>/progress.json`; `core/procs.py::kill_verified` kills one only if PID + image name +
+  create time all match (PIDs are reused). Same path for Stop, timeout, service shutdown and
+  restart recovery (`Launcher.recover_interrupted`: RUNNING rows the new service doesn't own →
+  *interrupted*). Shutdown needs NSSM `AppStopMethodConsole 15000` (installer) to get its time.
+- **One admission queue (0.16).** `service/launcher.py` admits a run only when it can take ALL
+  its resources at once — its input files (normalised paths), its concurrency group, a global
+  slot (cap read live) — first come first served with reservations, so two jobs never open the
+  same workbook together (field: both hung) and nothing deadlocks. One run per job
+  (`JobBusyError` → 409; the scheduler logs a skip). A waiting run's `waiting_for` is what the
+  card shows. Purge must spare `inflight_run_ids()` — queued runs too.
+- **Each run opens a PRIVATE COPY of its workbook (0.16).** A workbook open on someone's PC
+  made runs open it read-only (133 runs on the customer server). `worker/private_copy.py`
+  copies the last saved file to `runs/<id>/inputs/<n>/<same name>` (share-read works while it
+  is open) and rewrites same-folder external links in `xl/externalLinks/_rels/*.rels` to the
+  original folder BEFORE opening (no `ChangeLink`: it refreshes and can prompt). The save guard
+  protects original and copy. `inputs/` is deleted after the run and by the launcher after
+  stop/timeout/recovery, and "Export logs" never includes it (customer data). Opt-out per job
+  (`private_copy`) for macros that use `ThisWorkbook.Path`.
+- **Old reports are deleted only from `report_files` (0.16).** "Delete this job's reports
+  after N days" deletes nothing it didn't record: each run's outputs go into `runs.db`'s
+  `report_files` (path NOCASE, mtime, size), kept apart from the run history so the log purge
+  can't lose them. A file whose mtime/size changed is someone's — kept and forgotten; the
+  newest run's and newest successful run's files are always kept. `core/report_cleanup.py`.
 - **Excel persists each sheet's selection into the file** — recipients once opened reports
   with everything highlighted. `collapse_selection` selects A1 per sheet and leaves the first
   selected sheet active before every save.
 - **Real-Excel tests: assert after the Excel session ends.** A failing assert inside it keeps
   COM proxies alive in the traceback past CoUninitialize and breaks the next test with RPC
-  faults (`tests/worker/test_freeze_excel.py::_freeze_and_measure`).
+  faults (`tests/worker/test_freeze_excel.py::_freeze_and_measure`). A run's teardown calls
+  CoUninitialize on the TEST thread too, so a second Excel the test itself opened is cut off —
+  hold a workbook "open elsewhere" from a subprocess (`test_private_copy_excel.py`).
+- **A wrapped QLabel next to a nested layout in a form is too tall.** Its size hint assumes a
+  narrow width, and a QFormLayout row whose field is a box layout is laid out at that hint —
+  a 2-line hint got room for 5 (gap, page scrolling for nothing). Use `kit.WrapLabel` for
+  wrapped help text: its hint is its height at its real width.
 - **The old `send_report_email` checkbox is gone (0.8.0).** Legacy configs migrate via a
   `JobConfig` before-validator: `send_report_email=True` → `stage="live"`, else testing.
   Never re-add the key; never persist it.
@@ -179,12 +213,16 @@ New features ship as a **beta first** (owner's workflow since 0.11):
 1. Bump `version` in `pyproject.toml` (single source) — `X.Y.Z-beta` for a beta, `X.Y.Z`
    for the final release. `release.yml` fails if the tag disagrees
    (`scripts/check_release_tag.py`).
-2. Gate green + `uv run pytest -m excel`.
-3. Validate the installer builds: `uv run reportflow-build all` (exes + installer;
+2. Write the version's section at the top of `src/reportflow/ui/help/whats_new.md`
+   (Help → What's new; New / Fixed / Faster, for users). `uv run python scripts/whats_new.py
+   X.Y.Z` drafts it from the feat/fix/perf commits — rewrite it. A test fails when the file's
+   newest section is older than `pyproject.toml`, and when `ui.spec` misses a help file.
+3. Gate green + `uv run pytest -m excel`.
+4. Validate the installer builds: `uv run reportflow-build all` (exes + installer;
    finds Inno Setup 7/6 itself, passes the version and the numeric file version a beta
    needs, and refuses `dist\` exes from another version). CI still calls ISCC directly
    (`release.yml`, the runner's preinstalled Inno Setup 6).
-4. **Beta:** tag `vX.Y.Z-beta` (any branch) and push it → published as a GitHub
+5. **Beta:** tag `vX.Y.Z-beta` (any branch) and push it → published as a GitHub
    **pre-release**, never "latest", no CHANGELOG commit. **Final:** merge to `main`, tag
    `vX.Y.Z`, push both → normal release. The in-app updater reads the LATEST release (betas
    are invisible to it) and runs the setup exe with `/SILENT` (so installer wizard pages,

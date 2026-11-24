@@ -149,9 +149,15 @@ Click **+ New Job**. The editor is organized in sections:
   saved, the full copy (*kept on disk*), the Excel attachment and the PDFs (*emailed*); with
   several workbooks, pick which one to show ("one set per workbook"). It warns when a custom name
   has no time.
-- **Freeze formulas to values**.
+- **Freeze formulas to values** — done cell by cell through Excel's object model, never the
+  Windows clipboard (0.16: a Copy/PasteSpecial could hang a run for good, e.g. on a filtered
+  sheet). Filters, hidden rows, tables, merges and formats stay as they were.
 - **If a workbook fails** (several workbooks only) — fail the whole run and send nothing
   (default), or send the workbooks that worked with a warning naming the failed one.
+- **Old reports** — optional (off by default): **Delete this job's reports after [N] days**.
+  Only files ReportFlow wrote for this job (output Excel, Excel attachment, PDFs — recorded per
+  run in `runs.db`) are deleted; a report someone changed since is left alone, the newest report
+  is always kept, and nothing else in the folder is touched. Runs after each run and nightly.
 
 **Schedule** — no schedule = manual. **+ Add schedule** adds a compact card for a **Daily**,
 **Weekly**, **Monthly** or **Custom (cron)** rule; add several to combine them — e.g. daily at
@@ -173,8 +179,11 @@ Insert placeholder** beside it), recipients, and the template editor (next secti
 **Advanced** — **Time limit** (minutes; the run is stopped and marked *Timed out* after
 this — raise it for big PI reports that need 20+ minutes), **Wait for add-in data** (keep
 waiting up to N seconds while PI DataLink fills cells; moves on as soon as the data stops
-changing), **Concurrency group** (groups other jobs use are suggested as you type), the
-empty/error-cell checks, **Blank out values**, notes.
+changing), **Concurrency group** (groups other jobs use are suggested as you type), **Excel
+files: Work on a private copy of each workbook** (on by default — each run copies the latest
+saved workbook into `runs\<id>\inputs\` and builds from the copy, so a workbook someone has
+open is no longer opened read-only and the original is never written; same-folder links still
+point at the original folder), the empty/error-cell checks, **Blank out values**, notes.
 Each setting has a one-line explanation right under it.
 
 Only a workbook, at least one sheet, and the **To** addresses are required. Everything
@@ -259,15 +268,22 @@ Two single-click actions on each job card — the job's stage answers "who gets 
   configured time registers its own trigger, honouring the job's stage. Scheduled cards show
   **when the next run fires** ("next: tomorrow 06:00").
 
-While a job is **running**, its card shows a live elapsed counter and the run buttons lock so
-it can't be double-fired. Multiple jobs run in parallel, each in its own disposable worker
-process. A failed run is never retried automatically — it's recorded and visible in history.
+While a job is **running**, its card shows a live elapsed counter and **what the run is doing**
+("Freezing values on 'Problem Points' · 3m 40s"); a run that hasn't started says what it waits
+for. **Run** is greyed out (a job runs once at a time — a second start is refused, a scheduled one
+skipped with a log line) and **■ Stop** takes *Build only*'s place: it asks, then kills the worker
+and its Excel, emails nothing, and records the run as **Stopped** (by whom, when, at which step).
+Stop is also in the card's ⋯ menu and in the run history. Multiple jobs run in parallel, each in
+its own disposable worker process; jobs that use the **same workbook** take turns. A failed run is
+never retried automatically — it's recorded and visible in history. A run the service was cut off
+from (restart, update) is marked **Interrupted** at the next start, its leftover Excel closed.
 
 Drag a card's **⠿** grip (shown on hover) to put the jobs in the order you want — it's saved for
 everyone using this ReportFlow — or select a card and press **Alt+↑/↓**.
 
 Each card's **coloured left edge** tells the last run's outcome at a glance — green =
-success, red = failed, amber = running, grey = never ran (or paused) — and the detail line
+success, red = failed / timed out / interrupted, amber = running, grey = never ran, stopped
+or paused — and the detail line
 reads `next: tomorrow 06:00 · last: success 2h ago · 4 sheet(s)`.
 
 Everything occasional lives behind the card's **⋯** menu (so daily actions stay one click):
@@ -285,7 +301,8 @@ Everything occasional lives behind the card's **⋯** menu (so daily actions sta
 ### Logs & diagnostics
 
 - **Logs** on a job card — that job's run history: status, timings, output paths, error
-  summary, and the worker log tail. It refreshes live while a run is in progress.
+  summary, and the worker log tail. It refreshes live while a run is in progress, shows its
+  current step, and has **Stop run**; a stopped, timed-out or interrupted run keeps its last step.
 - **Logs → Application logs** — the full rolling logs of the Service, Worker, and UI, with a
   one-click Service/Worker/UI switcher and per-token colour (timestamp, level, message).
 - **Logs → Send logs to support** / **Export logs to zip** — bundle the logs + sanitized
@@ -318,6 +335,9 @@ the left, application & service on the right):
   Overwrite / Skip / Import as copy.
 - **File → Export/Import settings…** — the same for application settings. The SMTP
   password never travels; re-enter it after importing.
+- **What's new** — **Help → What's new** (also a button on the About page) lists what changed
+  per version, newest first, with the installed one marked; it opens by itself once the first
+  time a new version runs (not on a fresh install with no jobs).
 - **Updates** — **Help → Check for updates…** looks for a newer release on GitHub; tick the
   startup check in Settings to have the app look on every start (off by default; skipped when
   offline). Nothing installs until you click **Update now**; the download shows progress and
@@ -698,13 +718,14 @@ Bound to `127.0.0.1` only.
 | `GET/POST/DELETE /system/smtp-password` | Status / store / clear the DPAPI SMTP password. |
 | `GET /system/logs?process=&tail=` | Tail the Service/Worker/UI rolling log. |
 | `GET /jobs` · `GET/POST/PUT/DELETE /jobs/{name}` | Job CRUD (a PUT with a new name renames the job; history + template follow). |
-| `POST /jobs/{name}/run` · `POST /jobs/{name}/dry-run` | Run per the job's stage / build only. |
+| `POST /jobs/{name}/run` · `POST /jobs/{name}/dry-run` | Run per the job's stage / build only (409 while the job is already waiting or running). |
+| `POST /runs/{id}/stop` | Stop a run (`{"by": "DOMAIN\user"}`): 202 accepted, 409 finishing, 404 unknown, 200 an orphaned "running" row marked stopped. |
 | `POST /jobs/{name}/stage` | Promote to production (`live`) / demote to testing. |
 | `PUT /email-groups` | Replace the email groups (`renamed_from` carries jobs; in-use deletes refused). |
 | `GET/POST /system/pi-trust` | Is PI DataLink trusted for the service account / trust it. |
 | `POST /system/purge-logs` | Delete old (or all) run folders, logs, bundles. |
 | `GET/PUT /jobs/{name}/email-template` | Read / write the job's per-job email template. |
-| `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs. |
+| `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs (`live`: phase, waiting_for, step, stop_requested_by). |
 | `POST /workbook/sheets` | Read sheet names (openpyxl, no COM); 404 when the service can't find the file. |
 | `POST /email/preview` | Render the email template with sample data. |
 | `POST /email/template-check` | Can the service read + render a template file (for linked templates)? |
@@ -715,8 +736,17 @@ Bound to `127.0.0.1` only.
 - **Excel isolation.** Only the worker imports `xlwings`. The service launches one worker
   subprocess per run and communicates via a request/result JSON file + exit code — never stdout.
 - **No ghost Excel.** Each worker uses a dedicated hidden Excel instance whose PID is captured
-  and force-reaped in `finally` (`quit` → `kill` → psutil verify). The service tree-kills a hung
-  worker on timeout.
+  and force-reaped in `finally` (`quit` → `kill` → psutil verify). Excel is started by COM, not
+  as the worker's child, so on stop/timeout/shutdown the service kills the worker first, then
+  each Excel the run recorded in `runs/<id>/progress.json` — only if PID, image name and
+  create time all still match.
+- **One admission queue.** A run is admitted only when it can take all it needs at once — its
+  input workbooks, its concurrency group and a global slot — first come, first served, so jobs
+  sharing a workbook take turns and nothing deadlocks. One run per job.
+- **No clipboard.** Freezing formulas reads `Formula`/`Value2` in bulk and writes values back in
+  rectangles (`worker/freeze.py`); Copy/PasteSpecial could block a run on an invisible dialog.
+- **Private copies.** Each run opens a copy of the workbook from `runs/<id>/inputs/`, deleted
+  afterwards and never included in "Export logs".
 - **Parallel-safe startup.** Concurrent Excel activations can raise transient COM errors
   (`RPC server unavailable`), so worker startup is serialized with a session-local named mutex
   and the whole session is retried on transient COM errors (idempotent output). Deterministic
@@ -743,7 +773,10 @@ Bound to `127.0.0.1` only.
 `pyproject.toml` and push tag `vX.Y.Z-beta` (from any branch). Betas are **not numbered** — if a
 beta needs a fix, bump the version (`v0.11.0-beta` → `v0.11.1-beta`), never `-beta.2`. It is published as a GitHub
 **pre-release**, never marked latest, so the in-app updater ignores it and testers install it
-by hand. When it's verified, set `version = "X.Y.Z"`, merge to `main` and push tag `vX.Y.Z`:
+by hand. Each release adds its user-facing section at the top of
+`src/reportflow/ui/help/whats_new.md` (Help → What's new) — `uv run python scripts/whats_new.py
+X.Y.Z` drafts it from the commits; rewrite it for users. A test fails when that file is older than
+`pyproject.toml`. When it's verified, set `version = "X.Y.Z"`, merge to `main` and push tag `vX.Y.Z`:
 that release is offered to everyone, its notes include the beta's changes, and the workflow
 commits the regenerated `CHANGELOG.md` to `main` (betas skip that step and get no changelog
 section of their own).
