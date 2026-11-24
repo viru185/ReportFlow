@@ -1,6 +1,28 @@
 # Changelog
 
 All notable changes to ReportFlow are documented here.
+## [0.16.0] - 2026-11-24
+
+### Bug Fixes
+- Freeze formulas to values without the clipboard
+
+### Chores
+- 0.16.0-beta
+- Prepare 0.16.0
+
+### Documentation
+- The 0.16 round in the user guide, the README and the project guide
+
+### Features
+- Stopped and interrupted runs
+- Stop a run, one queue, close Excel on stop and timeout
+- Stop and what a run is doing, on the card and in the history
+- Recover runs cut off by a restart; stop runs cleanly
+- Open a private copy of each workbook
+- Delete a job's old reports after N days (off by default)
+- What's new, under Help and once after an update
+- Fix PI DataLink also switches it back on in Excel
+
 ## [0.15.0] - 2026-11-21
 
 ### Chores
