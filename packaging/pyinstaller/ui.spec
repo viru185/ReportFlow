@@ -76,6 +76,9 @@ a = Analysis(
         # The Help guide (loaded from next to the help_dialog module).
         (os.path.join(ROOT, "src", "reportflow", "ui", "help", "user_guide.md"),
          os.path.join("reportflow", "ui", "help")),
+        # Help → What's new (0.16).
+        (os.path.join(ROOT, "src", "reportflow", "ui", "help", "whats_new.md"),
+         os.path.join("reportflow", "ui", "help")),
         # The version lives only in pyproject.toml; frozen exes read package metadata.
         *copy_metadata("reportflow"),
     ],

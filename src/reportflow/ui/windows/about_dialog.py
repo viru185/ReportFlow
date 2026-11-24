@@ -99,6 +99,7 @@ class AboutDialog(QDialog):
         *,
         api: Any = None,
         on_help: Callable[[], None] | None = None,
+        on_whats_new: Callable[[], None] | None = None,
         on_check_updates: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
@@ -185,6 +186,10 @@ class AboutDialog(QDialog):
             guide = Button("User guide", icon=asset_icon("list.svg"))
             guide.clicked.connect(on_help)
             actions.addWidget(guide)
+        if on_whats_new is not None:
+            whats_new = Button("What's new", icon=asset_icon("new.svg"))
+            whats_new.clicked.connect(on_whats_new)
+            actions.addWidget(whats_new)
         if on_check_updates is not None:
             updates = Button("Check for updates…", icon=asset_icon("refresh.svg"))
             updates.clicked.connect(on_check_updates)

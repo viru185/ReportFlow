@@ -49,6 +49,7 @@ from reportflow.ui.style import (
     status_edge,
 )
 from reportflow.ui.updater import UpdateInfo, check_latest
+from reportflow.ui.windows import whats_new_dialog
 from reportflow.ui.windows.about_dialog import AboutDialog
 from reportflow.ui.windows.help_dialog import HelpDialog
 from reportflow.ui.windows.job_editor import JobEditorDialog
@@ -132,6 +133,7 @@ class MainWindow(QMainWindow):
         # (a card's ⋯ menu) is open — rebuilding destroys the menu under the cursor.
         self._cards_signature: str | None = None
         self._refresh_pending = False
+        self._job_count = 0
         self.setWindowTitle(about.NAME)
         self.resize(920, 620)
         self._build_menu()
@@ -143,6 +145,7 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
         self.refresh()
+        QTimer.singleShot(800, self._whats_new_after_update)
         QTimer.singleShot(1500, self._startup_update_check)
 
     # -- construction ------------------------------------------------------------
@@ -181,6 +184,8 @@ class MainWindow(QMainWindow):
         help_menu = bar.addMenu("&Help")
         help_guide = help_menu.addAction("Help guide", self._open_help)
         help_guide.setShortcut(QKeySequence(Qt.Key.Key_F1))
+        help_menu.addAction("What's new", self._open_whats_new)
+        help_menu.addSeparator()
         help_menu.addAction("Check for updates…", self._manual_update_check)
         help_menu.addAction(f"About {about.NAME}", self._open_about)
 
@@ -286,6 +291,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Disconnected — is the ReportFlow service running?")
             return
         self._connected = True
+        self._job_count = len(jobs)
         self.conn_label.setText(connection_pill(True))
         self.conn_label.setToolTip("")
         self.system_banner.setVisible(bool(status.get("service_account_is_system")))
@@ -973,6 +979,20 @@ class MainWindow(QMainWindow):
     def _open_help(self) -> None:
         HelpDialog(self).exec()
 
+    def _open_whats_new(self) -> None:
+        whats_new_dialog.WhatsNewDialog(self).exec()
+
+    def _whats_new_after_update(self) -> None:
+        """The first time a new version runs, show what changed — once. Without the service
+        (no job list yet) it waits for the next start rather than guess."""
+        if not self._connected:
+            return
+        if not whats_new_dialog.should_show_after_update(has_jobs=self._job_count > 0):
+            return
+        dialog = whats_new_dialog.WhatsNewDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.open()  # window-modal, but no nested event loop at startup
+
     def closeEvent(self, event: QCloseEvent) -> None:
         save_geometry(self, "main_window")  # reopen where the user left it
         super().closeEvent(event)
@@ -982,6 +1002,7 @@ class MainWindow(QMainWindow):
             self,
             api=self._api,
             on_help=self._open_help,
+            on_whats_new=self._open_whats_new,
             on_check_updates=self._manual_update_check,
         ).exec()
 

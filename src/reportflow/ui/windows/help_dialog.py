@@ -165,7 +165,7 @@ _CODE_BG = QColor("#1b2638")
 _CODE_FG = QColor("#9cc3f5")
 
 
-def _style_document(doc: QTextDocument) -> None:
+def style_document(doc: QTextDocument) -> None:
     """Give the plain Markdown rendering the app's look: headings, callouts, code, tables."""
     # A "|" inside a table cell has to be written "\|"; Qt keeps the backslash in code.
     escaped_pipe = "\\|"
@@ -307,7 +307,7 @@ class HelpDialog(QDialog):
         self.browser.setMarkdown(markdown)
         doc = self.browser.document()
         doc.setDocumentMargin(24)
-        _style_document(doc)
+        style_document(doc)
         self._positions = self._heading_blocks()
 
         # Left: search and the section list.

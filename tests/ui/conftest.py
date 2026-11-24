@@ -20,6 +20,10 @@ def _isolated_ui(tmp_path, monkeypatch):
         QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "qsettings")
     )
     monkeypatch.setattr(feedback, "confirm_discard", lambda *_a, **_k: True)
+    # What's new opens by itself once after an update; tests about it patch this again.
+    from reportflow.ui.windows import whats_new_dialog
+
+    monkeypatch.setattr(whats_new_dialog, "should_show_after_update", lambda **_k: False)
     yield
     # A popover left open would make later windows behave as if a menu were open (the
     # dashboard defers its card rebuild while any popup shows).
