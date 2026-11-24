@@ -93,7 +93,8 @@ class ApiClient:
     def pi_trust_status(self) -> dict:
         return self._request("GET", "/system/pi-trust")
 
-    def trust_pi_addins(self) -> dict:
+    def fix_pi_datalink(self) -> dict:
+        """Trust the PI add-ins and take them off Excel's Disabled Items list."""
         return self._request("POST", "/system/pi-trust")
 
     # -- jobs --

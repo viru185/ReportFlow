@@ -257,22 +257,23 @@ class SettingsDialog(FormDialog):
         )
         account_hint.setWordWrap(True)
         account_hint.setProperty("muted", True)
-        # Windows only loads PI DataLink for an account that trusts it. A desktop user grants
-        # that by accepting a one-time prompt; a service account never sees the prompt, so
-        # PI cells silently keep their last-saved values (Merian, Nov 2026).
+        # PI DataLink loads only for an account that trusts it (a desktop user accepts a
+        # one-time prompt a service account never sees — Merian, Nov 2026) and whose Excel
+        # hasn't switched it off after a crash (Disabled Items — HIL, Sep 2026). Either way PI
+        # cells silently keep their last-saved values. One button fixes both.
         self.pi_trust_status = QLabel("")
         self.pi_trust_status.setWordWrap(True)
-        trust_pi = Button(
-            "Trust PI DataLink for this account",
-            tooltip="Windows only loads PI DataLink for an account that has accepted its "
-            "one-time trust prompt. The service account never sees that prompt, so this "
-            "records the same trust for it — only for the PI add-ins an administrator "
-            "installed.",
+        fix_pi = Button(
+            "Fix PI DataLink",
+            tooltip="Makes Excel load PI DataLink for the service account: records the trust "
+            "a desktop user gives on its one-time prompt, and takes PI add-ins off Excel's "
+            "Disabled Items list (where Excel puts an add-in after crashing while loading "
+            "it). Only for the PI add-ins an administrator installed; nothing else changes.",
         )
-        trust_pi.clicked.connect(self._trust_pi_addins)
+        fix_pi.clicked.connect(self._fix_pi_datalink)
         trust_row = QHBoxLayout()
         trust_row.addWidget(self.pi_trust_status, 1)
-        trust_row.addWidget(trust_pi)
+        trust_row.addWidget(fix_pi)
 
         account_form.addRow(account_hint)
         account_form.addRow("Runs as", self.service_account)
@@ -571,44 +572,60 @@ class SettingsDialog(FormDialog):
             self.pi_trust_status.setText("No PI add-ins are installed on this machine.")
             _set_tone(self.pi_trust_status, "")
             return
+        problems = []
+        disabled = [str(n) for n in status.get("disabled") or []]
+        if disabled:
+            problems.append(f"switched off by Excel after a crash: {', '.join(disabled)}")
         missing = _addin_labels(a for a in addins if not a.get("trusted"))
         if missing:
+            problems.append(f"not trusted: {', '.join(missing)}")
+        if problems:
             self.pi_trust_status.setText(
-                f"⚠ Not trusted for {account}: {', '.join(missing)} — PI cells will keep their "
-                "last-saved values."
+                f"⚠ For {account} — {'; '.join(problems)}. PI cells will keep their last-saved "
+                "values until you click Fix PI DataLink."
             )
             _set_tone(self.pi_trust_status, "danger")
         else:
             names = ", ".join(_addin_labels(addins))
-            self.pi_trust_status.setText(f"✓ Trusted for {account}: {names}")
+            self.pi_trust_status.setText(f"✓ Trusted and enabled for {account}: {names}")
             _set_tone(self.pi_trust_status, "success")
 
-    def _trust_pi_addins(self) -> None:
+    def _fix_pi_datalink(self) -> None:
         try:
-            resp = self._api.trust_pi_addins()
+            resp = self._api.fix_pi_datalink()
         except ApiError as e:
-            toast(self, f"Couldn't trust PI DataLink: {e}", "error")
+            toast(self, f"Couldn't fix PI DataLink: {e}", "error")
             return
         results = resp.get("results") or []
-        if not results:
+        reenabled = [str(n) for n in resp.get("reenabled") or []]
+        not_reenabled = [str(p) for p in resp.get("reenable_failed") or []]
+        if not results and not reenabled and not not_reenabled:
             toast(self, "No PI add-ins are installed on this machine.", "info")
             return
-        lines = "\n".join(f"• {r.get('label') or r['name']}: {r['result']}" for r in results)
-        failed = any(str(r["result"]).startswith("failed") for r in results)
         account = resp.get("account", "the service account")
         self._show_pi_trust()
+        failed = not_reenabled or any(str(r["result"]).startswith("failed") for r in results)
         if failed:
-            # Some add-ins couldn't be trusted: the details matter, so they stay readable.
+            # Something couldn't be fixed: the details matter, so they stay readable.
+            lines = [f"• {r.get('label') or r['name']}: {r['result']}" for r in results]
+            lines += [f"• {n}: switched on again in Excel" for n in reenabled]
+            lines += [f"• {p} (still switched off in Excel)" for p in not_reenabled]
             QMessageBox.warning(
                 self,
-                "Trust PI DataLink",
-                f"For {account}:\n{lines}\n\nRun a Build only to confirm PI DataLink connects.",
+                "Fix PI DataLink",
+                f"For {account}:\n" + "\n".join(lines) + "\n\nRun a Build only to confirm PI "
+                "DataLink connects.",
             )
             return
-        names = ", ".join(_addin_labels(results))
+        done = []
+        if results:
+            done.append(f"trusted {', '.join(_addin_labels(results))}")
+        if reenabled:
+            done.append(f"switched {', '.join(reenabled)} back on in Excel")
         toast(
             self,
-            f"Trusted for {account}: {names}. Run a Build only to confirm PI DataLink connects.",
+            f"Fixed for {account}: {'; '.join(done)}. Run a Build only to confirm PI DataLink "
+            "connects.",
             "success",
         )
 

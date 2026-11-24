@@ -98,7 +98,7 @@ KEPT_FACTS = [
     "cannot load when the service runs as LocalSystem",
     "#NAME?",
     "set-service-account.ps1",
-    "Trust PI DataLink for this account",
+    "Fix PI DataLink",
     "connected=True",
     "Mark-of-the-Web",
     "Unblock",

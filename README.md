@@ -363,12 +363,13 @@ and PI access):
   banner has a **Set account…** button that jumps straight here. (Once the service runs as an
   ordinary user, changing the account again needs an administrator: rerun the installer or the
   script below.)
-- **Then trust PI DataLink for that account:** Windows only loads PI DataLink for an account
-  that has accepted its one-time trust prompt, which a service account never sees — PI DataLink
-  then stays off and every PI cell keeps its last-saved value (the report still goes out, with
-  stale data). **File → Settings → Service account** shows whether it is trusted; **Trust PI
-  DataLink for this account** records that trust for the service account (only for PI add-ins
-  an administrator installed). A run whose PI DataLink isn't trusted says so in its warnings.
+- **Then click Fix PI DataLink:** PI DataLink stays off for the service account — and every PI
+  cell keeps its last-saved value while the report still goes out — when Windows hasn't trusted
+  it (its one-time trust prompt never reaches a service account) or when Excel switched it off
+  (its *Disabled Items* list, after Excel crashed or was stopped while loading it — the HIL
+  server, Sep–Nov 2026). **File → Settings → Service account** shows which; **Fix PI DataLink**
+  fixes both for the service account (only PI add-ins an administrator installed). A run whose
+  PI DataLink didn't load says why in its warnings.
 - **Fresh install:** the installer asks for an optional **service account** and validates the
   credentials before continuing — enter the PI-enabled user there.
 - **Admin PowerShell (alternative):** `scripts\set-service-account.ps1 -User "DOMAIN\your_pi_user"`.
@@ -722,7 +723,7 @@ Bound to `127.0.0.1` only.
 | `POST /runs/{id}/stop` | Stop a run (`{"by": "DOMAIN\user"}`): 202 accepted, 409 finishing, 404 unknown, 200 an orphaned "running" row marked stopped. |
 | `POST /jobs/{name}/stage` | Promote to production (`live`) / demote to testing. |
 | `PUT /email-groups` | Replace the email groups (`renamed_from` carries jobs; in-use deletes refused). |
-| `GET/POST /system/pi-trust` | Is PI DataLink trusted for the service account / trust it. |
+| `GET/POST /system/pi-trust` | PI DataLink for the service account: trusted / switched off by Excel (Disabled Items) — and Fix PI DataLink (trust it and switch it back on). |
 | `POST /system/purge-logs` | Delete old (or all) run folders, logs, bundles. |
 | `GET/PUT /jobs/{name}/email-template` | Read / write the job's per-job email template. |
 | `GET /runs` · `GET /runs/{id}` · `GET /runs/{id}/log` | Run history and logs (`live`: phase, waiting_for, step, stop_requested_by). |

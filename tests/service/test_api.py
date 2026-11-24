@@ -539,11 +539,27 @@ def test_pi_trust_endpoints(client, monkeypatch):
         return [{**addin, "result": "trusted"}]
 
     monkeypatch.setattr(vsto_trust, "trust_pi_addins", trust)
+    # Excel had also switched PI DataLink off (its Disabled Items list) — the HIL case.
+    from reportflow.core import excel_disabled
+
+    off = ["PI DataLink"]
+    monkeypatch.setattr(excel_disabled, "disabled_pi_addins", lambda: list(off))
+
+    def reenable():
+        names = list(off)
+        off.clear()
+        return names, []
+
+    monkeypatch.setattr(excel_disabled, "reenable_pi_addins", reenable)
     status = c.get("/system/pi-trust").json()
     assert status["account"] and status["addins"][0]["trusted"] is False
+    assert status["addins"][0]["disabled"] is True and status["disabled"] == ["PI DataLink"]
     applied = c.post("/system/pi-trust").json()
     assert applied["results"][0]["result"] == "trusted"
-    assert c.get("/system/pi-trust").json()["addins"][0]["trusted"] is True
+    assert applied["reenabled"] == ["PI DataLink"] and applied["reenable_failed"] == []
+    after = c.get("/system/pi-trust").json()
+    assert after["addins"][0]["trusted"] is True
+    assert after["addins"][0]["disabled"] is False and after["disabled"] == []
 
 
 def test_email_groups_rename_follows_into_jobs_and_in_use_groups_stay(client):

@@ -74,10 +74,19 @@ contract can change freely; the CONFIG cannot — old job shapes must keep loadi
   account** (Merian, Oct–Nov 2026). VSTO refused the add-in — "has not been granted trust …
   not on the inclusion list" — because trust is per account and a service never sees the
   one-time prompt. Every "successful" run then emailed the workbook's last-saved PI values.
-  `core/vsto_trust.py` (Settings → Service account → Trust PI DataLink) writes the same
+  `core/vsto_trust.py` (Settings → Service account → Fix PI DataLink) writes the same
   `HKCU\Software\Microsoft\VSTO\Security\Inclusion\<guid>` entry (`Url`, `PublicKey`) the
   prompt would — verified against Microsoft's `UserInclusionList` — only for HKLM-registered
   PI add-ins, and only inside the service process (its HKCU is the service account's).
+- **Trusted is not enough either: Excel can switch PI DataLink off for good (HIL, Sep–Nov
+  2026).** Excel crashed (busy 3-job starts, a startup retry killing a hung Excel) while loading
+  PI DataLink, so it put PI DataLink on the account's `HKCU\Software\Microsoft\Office\<ver>\
+  Excel\Resiliency\DisabledItems` and never loaded it again: `COMAddIn.Connect = True` →
+  E_ABORT `0x80004004`, no VSTO message, two months of stale PI reports; clicking Trust fixed
+  only PIAFBuilder. `core/excel_disabled.py` removes PI entries (and their `StartupItems` crash
+  markers) — never others: the list also holds documents. Matched by text, not by the
+  REG_BINARY layout. Same button as trust ("Fix PI DataLink", in the service process). Stop and
+  timeouts kill Excel too — a run warning names this cause first.
 - **The service can't restart itself from inside its own process tree.** NSSM kills the
   tree on stop, so the 0.11 `cmd /c timeout … & nssm restart` helper never restarted it
   after an account change. Now `service_account.schedule_restart` exits with code 75; the

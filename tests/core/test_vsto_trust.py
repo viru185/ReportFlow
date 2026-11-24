@@ -160,17 +160,24 @@ def test_failures_are_reported_per_addin(tmp_path, monkeypatch):
     assert vsto_trust.trust_pi_addins()[0]["result"] == "failed: access denied"
 
 
-@pytest.mark.parametrize("untrusted", [["PI DataLink"], []])
-def test_run_warning_points_at_the_trust_button_only_when_untrusted(monkeypatch, untrusted):
+@pytest.mark.parametrize(
+    ("untrusted", "disabled"),
+    [(["PI DataLink"], []), ([], []), ([], ["PI DataLink"]), (["PI DataLink"], ["PI DataLink"])],
+)
+def test_run_warning_names_the_reason_and_the_fix_button(monkeypatch, untrusted, disabled):
     from reportflow.worker import runner
 
     monkeypatch.setattr(runner, "untrusted_pi_addins", lambda: untrusted)
+    monkeypatch.setattr(runner, "disabled_pi_addins", lambda: disabled)
     monkeypatch.setattr(runner, "windows_identity", lambda: r"NMC\SVC_PI")
     warning = runner._addin_warning("PI DataLink")
-    if untrusted:
+    if disabled:  # the HIL case: Excel switched it off — said first, it's what blocks it
+        assert r"Excel has switched it off for NMC\SVC_PI" in warning
+        assert "Disabled Items" in warning and "Fix PI DataLink" in warning
+    elif untrusted:
         assert r"has not trusted it for NMC\SVC_PI" in warning
-        assert "Trust PI DataLink" in warning
+        assert "Fix PI DataLink" in warning
     else:
         assert "see pi_diagnostics" in warning
     # a non-PI add-in never gets the PI hint
-    assert "Trust PI DataLink" not in runner._addin_warning("Inquire")
+    assert "Fix PI DataLink" not in runner._addin_warning("Inquire")

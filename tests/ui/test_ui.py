@@ -105,23 +105,41 @@ class FakeApi:
         ("PIAFBuilder", "PIAFBuilder", "C:/x86/PIAFBuilder.vsto"),
     )
 
+    pi_disabled: tuple[str, ...] = ()  # PI add-ins Excel switched off after a crash
+
     def pi_trust_status(self):
         return {
             "account": r"CORP\pi_reports",
             "addins": [
-                {"name": n, "label": label, "manifest": m, "trusted": self.pi_trusted}
+                {
+                    "name": n,
+                    "label": label,
+                    "manifest": m,
+                    "trusted": self.pi_trusted,
+                    "disabled": n in self.pi_disabled,
+                }
                 for n, label, m in self._PI_ADDINS
             ],
+            "disabled": list(self.pi_disabled),
         }
 
-    def trust_pi_addins(self):
+    def fix_pi_datalink(self):
+        already = self.pi_trusted
         self.pi_trusted = True
+        reenabled, self.pi_disabled = list(self.pi_disabled), ()
         return {
             "account": r"CORP\pi_reports",
             "results": [
-                {"name": n, "label": label, "manifest": m, "result": "trusted"}
+                {
+                    "name": n,
+                    "label": label,
+                    "manifest": m,
+                    "result": "already trusted" if already else "trusted",
+                }
                 for n, label, m in self._PI_ADDINS
             ],
+            "reenabled": reenabled,
+            "reenable_failed": [],
         }
 
     def list_jobs(self):
@@ -1830,12 +1848,12 @@ def test_settings_trust_pi_datalink_for_the_service_account(qtbot, monkeypatch):
     # Untrusted is called out in plain words, with the consequence; the two PI DataLink
     # copies are told apart by the Excel that loads them.
     assert (
-        r"Not trusted for CORP\pi_reports: PI DataLink (64-bit Excel), "
+        r"For CORP\pi_reports — not trusted: PI DataLink (64-bit Excel), "
         "PI DataLink (32-bit Excel), PIAFBuilder"
     ) in dlg.pi_trust_status.text()
     assert "last-saved values" in dlg.pi_trust_status.text()
 
-    dlg._trust_pi_addins()
+    dlg._fix_pi_datalink()
     assert api.pi_trusted
     from reportflow.ui.feedback import toasts
 
@@ -1843,7 +1861,30 @@ def test_settings_trust_pi_datalink_for_the_service_account(qtbot, monkeypatch):
     assert (
         "PI DataLink (64-bit Excel), PI DataLink (32-bit Excel), PIAFBuilder" in message
     ) and not shown  # a success is a notice, not an OK popup
-    assert dlg.pi_trust_status.text().startswith("✓ Trusted for CORP\\pi_reports")
+    assert dlg.pi_trust_status.text().startswith("✓ Trusted and enabled for CORP\\pi_reports")
+
+
+def test_settings_fix_pi_datalink_switches_it_back_on_in_excel(qtbot, monkeypatch):
+    """The HIL case: trusted, but Excel had put PI DataLink on its Disabled Items list."""
+    from PySide6.QtWidgets import QPushButton
+
+    from reportflow.ui.feedback import toasts
+    from reportflow.ui.windows.settings_dialog import SettingsDialog
+
+    api = FakeApi()
+    api.pi_trusted = True
+    api.pi_disabled = ("PI DataLink",)
+    dlg = SettingsDialog(api)
+    qtbot.addWidget(dlg)
+    status = dlg.pi_trust_status.text()
+    assert "switched off by Excel after a crash: PI DataLink" in status
+    assert "not trusted" not in status and dlg.pi_trust_status.property("tone") == "danger"
+    fix = next(b for b in dlg.findChildren(QPushButton) if b.text() == "Fix PI DataLink")
+    fix.click()
+    assert api.pi_disabled == ()
+    [message] = toasts(dlg)
+    assert "switched PI DataLink back on in Excel" in message
+    assert dlg.pi_trust_status.text().startswith("✓ Trusted and enabled")
 
 
 # -- email groups, recipient chips, suggestions ---------------------------------------

@@ -412,26 +412,45 @@ def create_app(state: ServiceState | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return {"ok": True, "account": account, "restarting": True}
 
-    # PI DataLink trust lives in the CURRENT account's HKCU, so these must run in the service
-    # process — which runs as the service account the workers (and their Excel) use.
+    # PI DataLink loads only when VSTO trusts it AND Excel hasn't switched it off (Disabled
+    # Items, after a crash). Both live in the CURRENT account's HKCU, so these must run in the
+    # service process — which runs as the service account the workers (and their Excel) use.
     @app.get("/system/pi-trust")
     def get_pi_trust() -> dict[str, Any]:
-        from reportflow.core import vsto_trust
+        from reportflow.core import excel_disabled, vsto_trust
         from reportflow.service.service_account import current_account
 
-        return {"account": current_account()["account"], "addins": vsto_trust.trust_status()}
+        disabled = excel_disabled.disabled_pi_addins()
+        off = {excel_disabled.addin_key(name) for name in disabled}
+        addins = [
+            {**row, "disabled": excel_disabled.addin_key(row["name"]) in off}
+            for row in vsto_trust.trust_status()
+        ]
+        return {"account": current_account()["account"], "addins": addins, "disabled": disabled}
 
     @app.post("/system/pi-trust")
     def apply_pi_trust() -> dict[str, Any]:
-        from reportflow.core import vsto_trust
+        """Settings → Fix PI DataLink: trust the PI add-ins and take them off Excel's
+        Disabled Items list, for the service account."""
+        from reportflow.core import excel_disabled, vsto_trust
         from reportflow.service.service_account import current_account
 
         account = current_account()["account"]
-        logger.info("API: trust PI add-ins for {}", account)
+        logger.info("API: fix PI DataLink for {}", account)
         results = vsto_trust.trust_pi_addins()
         for row in results:
             logger.info("PI add-in {!r} ({}): {}", row["label"], row["manifest"], row["result"])
-        return {"account": account, "results": results}
+        reenabled, failed = excel_disabled.reenable_pi_addins()
+        for name in reenabled:
+            logger.info("PI add-in {!r}: taken off Excel's Disabled Items list", name)
+        for problem in failed:
+            logger.warning("Could not take a PI add-in off Excel's Disabled Items: {}", problem)
+        return {
+            "account": account,
+            "results": results,
+            "reenabled": reenabled,
+            "reenable_failed": failed,
+        }
 
     @app.put("/email-groups")
     def update_email_groups(update: EmailGroupsUpdate) -> dict[str, Any]:

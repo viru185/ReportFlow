@@ -275,13 +275,22 @@ class AboutDialog(QDialog):
         addins = trust.get("addins") or []
         labels = list(dict.fromkeys(str(a.get("label") or a.get("name")) for a in addins))
         missing = [str(a.get("label") or a.get("name")) for a in addins if not a.get("trusted")]
-        if not addins:
+        disabled = [str(n) for n in trust.get("disabled") or []]
+        if disabled:
+            self._set(
+                self.pi_trust,
+                f"Switched off by Excel: {', '.join(disabled)} — Settings → Service account → "
+                "Fix PI DataLink",
+            )
+            tone = "danger"
+        elif not addins:
             self._set(self.pi_trust, "Not installed on this machine")
             tone = ""
         elif missing:
             self._set(
                 self.pi_trust,
-                f"Not trusted: {', '.join(dict.fromkeys(missing))} — Settings → Service account",
+                f"Not trusted: {', '.join(dict.fromkeys(missing))} — Settings → Service account "
+                "→ Fix PI DataLink",
             )
             tone = "danger"
         else:

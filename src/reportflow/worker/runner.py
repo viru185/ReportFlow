@@ -26,6 +26,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from reportflow.core.excel_disabled import addin_key, disabled_pi_addins
 from reportflow.core.ipc import (
     RunStatus,
     WorkbookTask,
@@ -123,12 +124,28 @@ def _pi_untrusted() -> bool:
         return False
 
 
+def _pi_disabled(name: str) -> bool:
+    """True when Excel has put this PI add-in on the account's Disabled Items list — the
+    reason PI DataLink stayed off on the HIL server from 29 Sep 2026 (0.16)."""
+    try:
+        return addin_key(name) in {addin_key(n) for n in disabled_pi_addins()}
+    except OSError as e:  # advisory only
+        logger.debug("Could not read Excel's Disabled Items list: {}", e)
+        return False
+
+
 def _addin_warning(name: str) -> str:
+    if is_pi_addin(name) and _pi_disabled(name):
+        return (
+            f"add-in {name!r} did not connect: Excel has switched it off for "
+            f"{windows_identity()} (its Disabled Items list, after an Excel crash), so PI cells "
+            "keep their last-saved values — open Settings → Service account → Fix PI DataLink"
+        )
     if is_pi_addin(name) and _pi_untrusted():
         return (
             f"add-in {name!r} did not connect: Windows has not trusted it for "
             f"{windows_identity()}, so PI cells keep their last-saved values — open Settings → "
-            "Service account → Trust PI DataLink"
+            "Service account → Fix PI DataLink"
         )
     return (
         f"add-in {name!r} did not connect — automatic data refresh may be unavailable; "
@@ -142,11 +159,17 @@ def _build_workbook(
     """Build local Excel, chosen PDFs, and an exact-sheet Excel email copy."""
     names = task.sheet_names
     if request.require_pi_datalink and not run.pi_datalink_connected:
+        if _pi_disabled("PI DataLink"):
+            raise ExcelJobError(
+                f"PI DataLink is required but Excel has switched it off for "
+                f"{windows_identity()} (its Disabled Items list, after an Excel crash). Open "
+                "Settings → Service account → Fix PI DataLink, then run again."
+            )
         if _pi_untrusted():
             raise ExcelJobError(
                 f"PI DataLink is required but Windows has not trusted it for "
                 f"{windows_identity()}, so it cannot load. Open Settings → Service account → "
-                "Trust PI DataLink, then run again."
+                "Fix PI DataLink, then run again."
             )
         raise ExcelJobError(
             f"PI DataLink is required but did not connect under {windows_identity()}. "

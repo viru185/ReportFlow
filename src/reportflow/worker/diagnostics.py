@@ -167,6 +167,10 @@ class VstoDiagnostics:
                     self.evidence["excel"]["disabled_items_count"] = winreg.QueryInfoKey(key)[1]
             except OSError:
                 self.evidence["excel"]["disabled_items_count"] = 0
+            # Names only, and only PI add-ins (0.16: PI DataLink sat on this list for weeks).
+            from reportflow.core.excel_disabled import disabled_pi_addins
+
+            self.evidence["excel"]["disabled_pi_addins"] = disabled_pi_addins()
         except Exception as exc:
             logger.debug("Excel diagnostic properties unavailable: {}", str(exc))
 

@@ -46,6 +46,16 @@ def test_service_facts_and_a_version_mismatch_warning(qtbot):
     assert dlg.pi_trust.text().startswith("Trusted") and dlg.pi_trust.property("tone") == "success"
 
 
+def test_pi_datalink_switched_off_by_excel_is_called_out(qtbot):
+    api = FakeApi()
+    api.pi_trusted = True
+    api.pi_disabled = ("PI DataLink",)
+    dlg = _about(qtbot, api)
+    assert dlg.pi_trust.text().startswith("Switched off by Excel: PI DataLink")
+    assert "Fix PI DataLink" in dlg.pi_trust.text()
+    assert dlg.pi_trust.property("tone") == "danger"
+
+
 def test_an_unreachable_service_is_said_plainly(qtbot):
     dlg = _about(qtbot, FakeApi(connected=False))
     assert "Not reachable" in dlg.service_state.text()

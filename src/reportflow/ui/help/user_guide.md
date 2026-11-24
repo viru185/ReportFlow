@@ -483,14 +483,23 @@ ReportFlow server.
 - **Admin PowerShell (alternative):** run
   `scripts\set-service-account.ps1 -User "DOMAIN\your_pi_user"`.
 
-**Then trust PI DataLink for that account.** Windows only loads PI DataLink for an account that
-has accepted its one-time trust prompt. A person accepts it the first time they open Excel; a
-service account never sees the prompt, so PI DataLink stays off and every PI cell keeps the value
-last saved in the workbook — the report still goes out, with stale data. In **File → Settings →
-Service account**, the *PI DataLink* line shows whether it is trusted; click **Trust PI DataLink
-for this account** to record the same trust for the service account (only for the PI add-ins an
-administrator installed). PI usually installs one PI DataLink for 64-bit Excel and one for 32-bit
-Excel, so both are listed. A run whose PI DataLink isn't trusted says so in its warnings.
+**Then click Fix PI DataLink.** Two things can keep PI DataLink off for the service account, and
+either way every PI cell keeps the value last saved in the workbook — the report still goes out,
+with stale data:
+
+- **It isn't trusted.** Windows only loads PI DataLink for an account that has accepted its
+  one-time trust prompt. A person accepts it the first time they open Excel; a service account
+  never sees the prompt.
+- **Excel switched it off.** When Excel crashes, or is stopped, while it loads PI DataLink, it
+  puts PI DataLink on that account's *Disabled Items* list and never loads it again — silently.
+  A person would re-enable it in Excel (File → Options → Add-ins → Disabled Items); nobody ever
+  opens Excel as the service account.
+
+In **File → Settings → Service account**, the *PI DataLink* line shows which, if any, applies.
+**Fix PI DataLink** fixes both for the service account: it records the trust the prompt would,
+and takes PI add-ins off Excel's Disabled Items list (only PI add-ins an administrator installed;
+nothing else changes). PI usually installs one PI DataLink for 64-bit Excel and one for 32-bit
+Excel, so both are listed. A run whose PI DataLink didn't load says why in its warnings.
 
 After applying the account, click **Build only** on the job to check. The worker log should show
 `Executing as DOMAIN\your_pi_user` (no trailing `$`) and

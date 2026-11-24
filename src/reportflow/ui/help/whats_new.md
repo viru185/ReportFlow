@@ -30,6 +30,10 @@
 - Jobs that use the same workbook take turns instead of colliding, and a job can't be
   started again while it is still running or waiting.
 - Stopping or updating the service ends its runs cleanly.
+- **PI DataLink switched off by Excel.** After Excel crashes while loading PI DataLink, it
+  silently stops loading it for that account — reports then go out with last-saved PI values.
+  Settings now says so, runs warn about it, and **Fix PI DataLink** (formerly *Trust PI
+  DataLink*) switches it back on along with trusting it.
 
 ## 0.15.0
 
