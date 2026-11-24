@@ -1,6 +1,8 @@
 """Service <-> Worker IPC contract and atomic JSON I/O."""
 
 from reportflow.core.ipc.contract import (
+    FAILURE_STATUSES,
+    FINAL_STATUSES,
     RunStatus,
     SheetTask,
     WorkbookTask,
@@ -15,6 +17,8 @@ from reportflow.core.ipc.result_io import (
 )
 
 __all__ = [
+    "FAILURE_STATUSES",
+    "FINAL_STATUSES",
     "RunStatus",
     "SheetTask",
     "WorkbookTask",

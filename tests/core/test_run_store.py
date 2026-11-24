@@ -144,3 +144,37 @@ def test_migration_adds_email_note_to_old_db(tmp_path):
     old.email_note = "sent to 1 test recipient(s)"
     store.upsert(old)
     assert store.get("old").email_note == "sent to 1 test recipient(s)"
+
+
+# -- 0.16: stopped and interrupted runs ------------------------------------------------
+
+
+def test_a_stopped_run_is_not_a_failure_but_an_interrupted_one_is(tmp_path):
+    store = RunStore(tmp_path / "runs.db")
+    store.upsert(_rec("a", status=RunStatus.INTERRUPTED, started="2026-11-24T11:54:30"))
+    store.upsert(_rec("b", status=RunStatus.STOPPED, started="2026-11-24T12:01:00"))
+    assert store.latest_failure_for_job("daily").run_id == "a"
+    assert store.latest_for_job("daily").status is RunStatus.STOPPED
+
+
+def test_list_by_status_finds_runs_left_running(tmp_path):
+    store = RunStore(tmp_path / "runs.db")
+    store.upsert(_rec("a", status=RunStatus.RUNNING))
+    store.upsert(_rec("b", status=RunStatus.SUCCESS))
+    store.upsert(_rec("c", job="other", status=RunStatus.RUNNING))
+    assert [r.run_id for r in store.list_by_status(RunStatus.RUNNING)] == ["a", "c"]
+
+
+def test_runs_started_in_the_same_second_keep_their_order(tmp_path):
+    store = RunStore(tmp_path / "runs.db")
+    for run_id in ("first", "second"):
+        store.upsert(_rec(run_id, started="2026-11-24T12:00:00"))
+    assert store.latest_for_job("daily").run_id == "second"
+
+
+def test_a_status_this_version_does_not_know_reads_as_failed(tmp_path):
+    store = RunStore(tmp_path / "runs.db")
+    store.upsert(_rec("a"))
+    with store._connect() as conn:
+        conn.execute("UPDATE runs SET status='paused_by_robot' WHERE run_id='a'")
+    assert store.get("a").status is RunStatus.FAILED

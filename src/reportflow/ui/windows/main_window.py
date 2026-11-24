@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from reportflow import __about__ as about
 from reportflow.core import paths
+from reportflow.core.ipc.contract import FAILURE_STATUSES
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import asset_icon, logo_pixmap
 from reportflow.ui.feedback import restore_geometry, save_geometry, toast
@@ -275,9 +276,7 @@ class MainWindow(QMainWindow):
         self.conn_label.setToolTip("")
         self.system_banner.setVisible(bool(status.get("service_account_is_system")))
 
-        failures = sum(
-            1 for j in jobs if (j.get("last_status") or "") in ("failed", "timed_out", "crashed")
-        )
+        failures = sum(1 for j in jobs if (j.get("last_status") or "") in FAILURE_STATUSES)
         self.card_jobs[1].setText(str(len(jobs)))
         self.card_active[1].setText(str(len(status.get("active_runs", []))))
         self.card_failures[1].setText(str(failures))

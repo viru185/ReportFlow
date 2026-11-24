@@ -6,12 +6,13 @@ multiple scheduler threads and the API event loop concurrently.
 
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 from pathlib import Path
 
 from reportflow.core import paths
-from reportflow.core.ipc.contract import RunStatus
+from reportflow.core.ipc.contract import FAILURE_STATUSES, RunStatus
 from reportflow.core.state.models import RunRecord, RunTrigger
 
 _SCHEMA = """
@@ -50,6 +51,15 @@ _MIGRATIONS = [
     # 0.11: several workbooks per job -> several output files per run.
     "ALTER TABLE runs ADD COLUMN output_xlsx_paths TEXT NOT NULL DEFAULT '[]'",
 ]
+
+
+def _status(value: str) -> RunStatus:
+    """A stored status; one this version doesn't know (a newer build wrote it) reads as failed
+    rather than breaking the history."""
+    try:
+        return RunStatus(value)
+    except ValueError:
+        return RunStatus.FAILED
 
 
 class RunStore:
@@ -137,7 +147,7 @@ class RunStore:
             run_id=row["run_id"],
             job_name=row["job_name"],
             trigger=RunTrigger(row["trigger"]),
-            status=RunStatus(row["status"]),
+            status=_status(row["status"]),
             is_test=bool(row["is_test"]),
             started_at=row["started_at"],
             finished_at=row["finished_at"],
@@ -169,7 +179,8 @@ class RunStore:
         if job_name:
             query += " WHERE job_name=?"
             args.append(job_name)
-        query += " ORDER BY COALESCE(started_at, '') DESC LIMIT ?"
+        # rowid breaks ties: two runs started in the same second keep their order.
+        query += " ORDER BY COALESCE(started_at, '') DESC, rowid DESC LIMIT ?"
         args.append(limit)
         with self._connect() as conn:
             rows = conn.execute(query, args).fetchall()
@@ -215,12 +226,21 @@ class RunStore:
             row = conn.execute(
                 """
                 SELECT * FROM runs
-                WHERE job_name=? AND status IN (?, ?, ?)
-                ORDER BY COALESCE(started_at, '') DESC LIMIT 1
+                WHERE job_name=? AND status IN (?, ?, ?, ?)
+                ORDER BY COALESCE(started_at, '') DESC, rowid DESC LIMIT 1
                 """,
-                (job_name, RunStatus.FAILED, RunStatus.TIMED_OUT, RunStatus.CRASHED),
+                (job_name, *sorted(FAILURE_STATUSES)),
             ).fetchone()
         return self._from_row(row) if row else None
+
+    def list_by_status(self, status: RunStatus) -> builtins.list[RunRecord]:
+        """Every run with ``status`` (e.g. the "running" rows a restart left behind)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM runs WHERE status=? ORDER BY COALESCE(started_at, '')",
+                (status,),
+            ).fetchall()
+        return [self._from_row(r) for r in rows]
 
     def latest_success_for_job(self, job_name: str) -> RunRecord | None:
         """The most recent successful run that produced an output file (for 'open last

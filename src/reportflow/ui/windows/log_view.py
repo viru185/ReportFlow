@@ -20,13 +20,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from reportflow.core.ipc.contract import FINAL_STATUSES
 from reportflow.ui.api_client import ApiClient, ApiError
 from reportflow.ui.assets import asset_icon
 from reportflow.ui.kit import ComboBox, IconButton, ListWidget
 from reportflow.ui.log_format import LogHighlighter, filter_log_text
 from reportflow.ui.style import WARNING, status_badge
 
-_TERMINAL_STATUSES = frozenset({"success", "failed", "timed_out", "crashed"})
+_TERMINAL_STATUSES = FINAL_STATUSES
 _LEVELS = ("All", "Debug", "Info", "Success", "Warning", "Error")
 
 

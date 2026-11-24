@@ -15,11 +15,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class RunStatus(StrEnum):
-    RUNNING = "running"  # service-side only: worker in flight (never written by the worker)
+    RUNNING = "running"  # service-side only: waiting or worker in flight (never from the worker)
     SUCCESS = "success"
     FAILED = "failed"
     TIMED_OUT = "timed_out"  # set by the Service when it reaps a hung worker
     CRASHED = "crashed"  # set by the Service when no result file was produced
+    STOPPED = "stopped"  # 0.16: a user stopped it (Stop button) — not a failure
+    INTERRUPTED = "interrupted"  # 0.16: the service stopped/restarted while it was in flight
+
+
+# Runs that went wrong: the dashboard's Failures count, the red card edge, "last failure".
+# A run a user stopped is not one of them.
+FAILURE_STATUSES = frozenset(
+    {RunStatus.FAILED, RunStatus.TIMED_OUT, RunStatus.CRASHED, RunStatus.INTERRUPTED}
+)
+# Everything a run can end as.
+FINAL_STATUSES = frozenset(set(RunStatus) - {RunStatus.RUNNING})
 
 
 class _IpcBase(BaseModel):

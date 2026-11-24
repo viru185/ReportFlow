@@ -18,6 +18,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QSizePolicy
 
 from reportflow.core.config.models import stage_label
+from reportflow.core.ipc.contract import FAILURE_STATUSES
 
 
 def _asset_url(name: str) -> str:
@@ -67,6 +68,8 @@ STATUS_COLORS: dict[str, tuple[str, str]] = {
     "timed_out": (DANGER, DANGER_BG),
     "crashed": (DANGER, DANGER_BG),
     "running": (WARNING, WARNING_BG),
+    "interrupted": (DANGER, DANGER_BG),
+    "stopped": (NEUTRAL, NEUTRAL_BG),  # a user stopped it: not a failure
     "never": (NEUTRAL, NEUTRAL_BG),
 }
 # status -> the tone its pill uses (QLabel[badge="…"] in the QSS)
@@ -76,6 +79,8 @@ _STATUS_TONES = {
     "timed_out": "danger",
     "crashed": "danger",
     "running": "warning",
+    "interrupted": "danger",
+    "stopped": "neutral",
 }
 
 
@@ -1045,7 +1050,7 @@ def status_edge(status: str | None) -> str:
     s = (status or "").lower()
     if s == "success":
         return "success"
-    if s in ("failed", "timed_out", "crashed"):
+    if s in FAILURE_STATUSES:
         return "failed"
     if s == "running":
         return "running"
