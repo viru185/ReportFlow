@@ -52,6 +52,7 @@ from reportflow.core.ipc import (
 from reportflow.core.output_names import DEFAULT_OUTPUT_STEM, expand_output_name
 from reportflow.core.procs import kill_verified
 from reportflow.core.state import RunRecord, RunStore, RunTrigger
+from reportflow.worker.private_copy import remove_run_copies
 
 _DRY_RUN_NOTE = "not sent — build only"
 
@@ -343,6 +344,7 @@ class Launcher:
                     kill_verified(progress.worker, images=self._WORKER_IMAGES)
                 for ref in progress.excels:
                     kill_verified(ref, images=self._EXCEL_IMAGES)
+            remove_run_copies(run_dir)
             result = None
             if (run_dir / "result.json").exists():
                 try:
@@ -608,6 +610,7 @@ class Launcher:
             fail_if_sheet_has_errors=job.fail_if_sheet_has_errors,
             require_pi_datalink=job.require_pi_datalink,
             blank_out_values=job.blank_out_values,
+            private_copy=job.private_copy,
             timeout_seconds=timeout,
             is_test=is_test,
             debug=config.app.debug_logging,
@@ -661,6 +664,7 @@ class Launcher:
         # new one) — also after a normal exit: a hung Excel would keep the file open.
         slot.progress = read_progress(progress_path(request.result_path)) or slot.progress
         self._close_excels(slot)
+        remove_run_copies(request.result_path.parent)
         with self._cv:
             if reason is None and slot.stop_by is not None:
                 reason = "stop"  # Stop raced the worker's normal exit: still not emailed

@@ -126,6 +126,9 @@ def test_source_guard_survives_first_save_as(tmp_path):
     source = tmp_path / "source.xlsx"
     book = SimpleNamespace(api=SimpleNamespace(FullName=str(tmp_path / "local.xlsx")))
     run = excel.ExcelRun()
-    run._source_paths[id(book)] = source.resolve()
-    with pytest.raises(excel.ExcelJobError, match="refusing to overwrite"):
-        run.save_output(book, source)
+    copy = tmp_path / "runs" / "inputs" / "0" / "source.xlsx"
+    # 0.16: the run opened a private copy; the guard protects the original AND the copy.
+    run._source_paths[id(book)] = (source.resolve(), copy.resolve())
+    for protected in (source, copy):
+        with pytest.raises(excel.ExcelJobError, match="refusing to overwrite"):
+            run.save_output(book, protected)

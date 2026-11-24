@@ -342,6 +342,10 @@ class JobConfig(_Base):
     # Unlike ordinary error-cell strictness, this guards against failed PI activation
     # even when pasted/cached values make the workbook appear healthy.
     require_pi_datalink: bool = False
+    # 0.16: open a private copy of each workbook (in the run folder) instead of the original,
+    # so a copy someone has open never makes the run read-only. Off only for workbooks whose
+    # macros depend on where they live.
+    private_copy: bool = True
     # Cell values blanked out of the OUTPUT after saving (e.g. PI DataLink error strings
     # like "Tag not found", "No Data", "#REF!").
     blank_out_values: list[str] = Field(default_factory=list)

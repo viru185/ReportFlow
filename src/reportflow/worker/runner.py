@@ -46,6 +46,7 @@ from reportflow.worker.excel import (
     is_transient_com_error,
 )
 from reportflow.worker.pdf import merge_pdfs
+from reportflow.worker.private_copy import PrivateCopyError, copy_for_run, remove_copy
 from reportflow.worker.progress import Progress
 
 _MAX_COM_ATTEMPTS = 3
@@ -136,7 +137,7 @@ def _addin_warning(name: str) -> str:
 
 
 def _build_workbook(
-    run: ExcelRun, request: WorkerRequest, task: WorkbookTask
+    run: ExcelRun, request: WorkerRequest, task: WorkbookTask, index: int = 0
 ) -> tuple[Path, list[Path], list[Path], list[str]]:
     """Build local Excel, chosen PDFs, and an exact-sheet Excel email copy."""
     names = task.sheet_names
@@ -152,13 +153,26 @@ def _build_workbook(
             "Cached or pasted values do not prove a refresh. See this run's pi_diagnostics "
             "folder in Export logs for the VSTO installation/activation error."
         )
-    book = run.open_workbook(task.input_excel_path, names)
+    source = task.input_excel_path
+    copy: Path | None = None
+    if request.private_copy:
+        run._step(f"Copying {source.name}", workbook=source.name)
+        try:
+            copy = copy_for_run(source, request.result_path.parent, index)
+        except PrivateCopyError as e:
+            raise ExcelJobError(str(e)) from e
+    book = run.open_workbook(copy or source, names, source=source)
     try:
         run.refresh_and_wait(book, names, request.post_refresh_wait_seconds)
         findings = run.scan_error_cells(book, names)
         if findings and request.fail_if_sheet_has_errors:
             raise ExcelJobError(format_error_cell_message(findings, run.failed_addins, _account()))
         warnings = [*run.settle_warnings]
+        if run.opened_read_only:
+            warnings.append(
+                f"{source.name} opened read-only — live data may not have refreshed (is it "
+                "open somewhere, or read-only on disk?)"
+            )
         if findings:
             warnings.extend(format_error_cell_warnings(findings))
         if request.freeze_values:
@@ -210,6 +224,8 @@ def _build_workbook(
     finally:
         run.close_book(book)
         del book
+        if copy is not None:
+            remove_copy(copy)
     return output, pdf_paths, attachments, warnings
 
 
@@ -229,10 +245,10 @@ def _execute_once(
     try:
         with run:
             outcome.warnings.extend(_addin_warning(name) for name in run.failed_addins)
-            for task in request.workbooks:
+            for index, task in enumerate(request.workbooks):
                 label = task.input_excel_path.name
                 try:
-                    output, pdfs, attachments, warnings = _build_workbook(run, request, task)
+                    output, pdfs, attachments, warnings = _build_workbook(run, request, task, index)
                 except Exception as exc:
                     # Transient COM trouble retries the whole session (outputs are
                     # idempotent); only a genuine failure of THIS workbook may be skipped.

@@ -789,6 +789,7 @@ def _every_field_job():
         "fail_if_sheet_empty": False,
         "fail_if_sheet_has_errors": True,
         "require_pi_datalink": True,
+        "private_copy": False,
         "blank_out_values": ["Tag not found"],
         "subject": "Daily {{ today }}",
         "prod": {

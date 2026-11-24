@@ -60,7 +60,8 @@ def build_log_bundle(
             run_dir = runs_root / rid
             if run_dir.exists():
                 for f in run_dir.rglob("*"):
-                    if f.is_file():
+                    # A run's private workbook copies hold the customer's data: never ship.
+                    if f.is_file() and "inputs" not in f.relative_to(run_dir).parts:
                         zf.write(f, arcname=str(Path("runs") / rid / f.relative_to(run_dir)))
 
     return bundle_path

@@ -77,6 +77,7 @@ class WorkerRequest(_IpcBase):
     fail_if_sheet_has_errors: bool = False
     require_pi_datalink: bool = False
     blank_out_values: list[str] = Field(default_factory=list)
+    private_copy: bool = True  # open a copy in the run folder, never the original
 
     timeout_seconds: int = Field(gt=0)
     is_test: bool = False

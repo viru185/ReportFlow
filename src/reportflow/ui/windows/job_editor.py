@@ -695,6 +695,14 @@ class JobEditorDialog(FormDialog):
             "pasted or cached values contain no errors. Diagnostic logs are collected "
             "under the service account; no interactive login is needed."
         )
+        self.private_copy = QCheckBox("Work on a private copy of each workbook (recommended)")
+        self.private_copy.setChecked(True)
+        self.private_copy.setToolTip(
+            "Each run copies the latest saved workbook into its own folder and works on that "
+            "copy, so someone having the file open never makes the run read-only, and the "
+            "original is never touched. Turn off only for a workbook whose macros look for "
+            "files next to it (ThisWorkbook.Path) or that needs its folder's Trusted Location."
+        )
         self.blank_values = QLineEdit()
         self.blank_values.setPlaceholderText("#REF!, #N/A, Tag not found, No Data")
         self.blank_values.setToolTip(
@@ -715,6 +723,20 @@ class JobEditorDialog(FormDialog):
         adv_form.addRow("Time limit", timeout_group)
         adv_form.addRow("Wait for add-in data", wait_group)
         adv_form.addRow("Concurrency group", self.group)
+        copy_group = QVBoxLayout()
+        copy_group.addWidget(self.private_copy)
+        copy_group.addWidget(
+            self._help_label(
+                "Builds from a copy of the latest saved file, so someone having it open never "
+                "makes the run read-only, and the original is never changed. Turn off only if "
+                "the workbook's macros need files next to it."
+            )
+        )
+        adv_form.addRow("Excel files", copy_group)
+        # The form lines labels up with text boxes; a bare checkbox is shorter and would sit
+        # above its label — make it as tall as the text box above so it lines up the same.
+        self.group.ensurePolished()
+        self.private_copy.setMinimumHeight(self.group.sizeHint().height())
         adv_form.addRow(section_title("Report checks"))
         adv_form.addRow("", self.fail_if_empty)
         adv_form.addRow("", self.fail_if_errors)
@@ -725,6 +747,7 @@ class JobEditorDialog(FormDialog):
             space_layout(page.layout())
         timeout_group.setSpacing(8)
         wait_group.setSpacing(8)
+        copy_group.setSpacing(8)
         general_scroll = scroll_page(general_tab)
         # A narrow window stacks the list above the sheets — decided on the width the tab
         # can SHOW (side by side, the box itself is never narrower than both panes).
@@ -1582,6 +1605,7 @@ class JobEditorDialog(FormDialog):
             "fail_if_sheet_empty": self.fail_if_empty.isChecked(),
             "fail_if_sheet_has_errors": self.fail_if_errors.isChecked(),
             "require_pi_datalink": self.require_pi.isChecked(),
+            "private_copy": self.private_copy.isChecked(),
             "blank_out_values": _split_csv(self.blank_values.text()),
             "subject": self.subject.text().strip() or None,
             "stage": self.stage.currentData(),
@@ -1667,6 +1691,7 @@ class JobEditorDialog(FormDialog):
         self.fail_if_empty.setChecked(job.get("fail_if_sheet_empty", True))
         self.fail_if_errors.setChecked(job.get("fail_if_sheet_has_errors", False))
         self.require_pi.setChecked(job.get("require_pi_datalink", False))
+        self.private_copy.setChecked(job.get("private_copy", True))
         self.blank_values.setText(_join_csv(job.get("blank_out_values")))
         self.notes.setPlainText(job.get("notes", ""))
         self.subject.setText(job.get("subject") or "")

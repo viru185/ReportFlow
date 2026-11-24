@@ -23,6 +23,7 @@ def _request(tmp_path, **over):
         job_name="j",
         workbooks=[task],
         timeout_seconds=60,
+        private_copy=False,  # Excel is mocked here: there is no source file to copy
         result_path=tmp_path / "result.json",
         log_path=tmp_path / "worker.log",
     )

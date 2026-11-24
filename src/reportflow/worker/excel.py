@@ -223,6 +223,10 @@ def _pdf_path_for_sheet(template: Path, sheet_name: str, *, single: bool) -> Pat
 class ExcelRun:
     """Context manager that owns a single disposable Excel instance for one run."""
 
+    # The last opened workbook came up read-only (someone has it open, or it's read-only on
+    # disk) — the runner reports it as a run warning.
+    opened_read_only: bool = False
+
     def __init__(
         self,
         *,
@@ -234,7 +238,8 @@ class ExcelRun:
         self.diagnostics = diagnostics
         self.progress = progress
         self.pi_datalink_connected = False
-        self._source_paths: dict[int, Path] = {}
+        self._source_paths: dict[int, tuple[Path, ...]] = {}
+        self.opened_read_only = False
         self._com_initialized = False
         self._startup_mutex: int | None = None
         self.app: xw.App | None = None
@@ -506,7 +511,11 @@ class ExcelRun:
         except OSError as e:
             logger.warning("Could not clear read-only attribute on {}: {}", path, e)
 
-    def open_workbook(self, template_path: Path, sheet_names: list[str]) -> xw.Book:
+    def open_workbook(
+        self, template_path: Path, sheet_names: list[str], *, source: Path | None = None
+    ) -> xw.Book:
+        """Open ``template_path`` — a private copy, when ``source`` names the original the
+        save guard must protect as well (0.16)."""
         assert self.app is not None
         if not template_path.exists():
             raise ExcelJobError(f"workbook template not found: {template_path}")
@@ -518,8 +527,10 @@ class ExcelRun:
             read_only=False,
             ignore_read_only_recommended=True,
         )
+        self.opened_read_only = False
         try:
             if bool(book.api.ReadOnly):
+                self.opened_read_only = True
                 logger.warning(
                     "Workbook opened READ-ONLY despite requesting write access — live "
                     "data refresh may not work (is the file open elsewhere?)"
@@ -527,7 +538,10 @@ class ExcelRun:
         except Exception as e:  # noqa: BLE001
             logger.debug("Could not query ReadOnly state: {}", e)
 
-        self._source_paths[id(book)] = template_path.resolve()
+        # The save guard protects the original AND the copy that was opened.
+        self._source_paths[id(book)] = tuple(
+            {p.resolve() for p in (template_path, source or template_path)}
+        )
         existing = [s.name for s in book.sheets]
         missing = [n for n in sheet_names if n not in existing]
         if missing:
@@ -958,12 +972,13 @@ class ExcelRun:
         resolves the output to the same path.
         """
         self._step(f"Saving {output_xlsx_path.name}")
-        source = self._source_paths.get(id(book), Path(str(book.api.FullName)))
-        if output_xlsx_path.resolve() == source.resolve():
-            raise ExcelJobError(
-                f"output path equals the input workbook ({source}) — refusing to "
-                "overwrite the source file. Choose a different output folder/filename."
-            )
+        sources = self._source_paths.get(id(book), (Path(str(book.api.FullName)),))
+        for source in sources:
+            if output_xlsx_path.resolve() == source.resolve():
+                raise ExcelJobError(
+                    f"output path equals the input workbook ({source}) — refusing to "
+                    "overwrite the source file. Choose a different output folder/filename."
+                )
         output_xlsx_path.parent.mkdir(parents=True, exist_ok=True)
         book.save(str(output_xlsx_path))
         logger.info("Saved output workbook: {}", output_xlsx_path)

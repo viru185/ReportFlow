@@ -106,8 +106,20 @@ def _formula_count(sheet) -> int:
         return 0
 
 
+def _open_clipboard() -> None:
+    """Any app may hold the clipboard for a moment ("Access is denied"): try for ~5 s."""
+    for attempt in range(50):
+        try:
+            win32clipboard.OpenClipboard()
+            return
+        except win32clipboard.error:
+            if attempt == 49:
+                raise
+            time.sleep(0.1)
+
+
 def _set_clipboard(text: str) -> None:
-    win32clipboard.OpenClipboard()
+    _open_clipboard()
     try:
         win32clipboard.EmptyClipboard()
         win32clipboard.SetClipboardText(text)
@@ -116,7 +128,7 @@ def _set_clipboard(text: str) -> None:
 
 
 def _clipboard() -> str:
-    win32clipboard.OpenClipboard()
+    _open_clipboard()
     try:
         return win32clipboard.GetClipboardData()
     finally:
